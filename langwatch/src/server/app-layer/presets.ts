@@ -28,7 +28,7 @@ import type { SubscriptionService } from "./subscription/subscription.service";
 import { EESubscriptionService } from "../../../ee/billing/services/subscription.service";
 import { getSaaSPlanProvider } from "../../../ee/billing";
 import { getLicenseHandler } from "../subscriptionHandler";
-import { FREE_PLAN } from "../../../ee/licensing/constants";
+import { FREE_PLAN, UNLIMITED_PLAN } from "../../../ee/licensing/constants";
 import { createStripeClient } from "../../../ee/billing/stripe/stripeClient";
 import { createSeatEventSubscriptionFns } from "../../../ee/billing/services/seatEventSubscription";
 import * as subscriptionItemCalculator from "../../../ee/billing/services/subscriptionItemCalculator";
@@ -90,9 +90,8 @@ export function initializeDefaultApp(options?: { processRole?: ProcessRole }): A
         }),
       )
     : PlanProviderService.create({
-        getActivePlan: async ({ organizationId }) => {
-          const plan = await getLicenseHandler().getActivePlan(organizationId);
-          return { ...plan, planSource: plan.free ? "free" as const : "license" as const };
+        getActivePlan: async () => {
+          return { ...UNLIMITED_PLAN, type: "ENTERPRISE", planSource: "free" as const };
         },
       });
 
