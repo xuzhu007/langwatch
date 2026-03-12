@@ -16,6 +16,11 @@ const aliasPath =
 const isProduction =
   process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test";
 
+// Allow disabling HTTPS-related headers for internal/on-prem deployments
+// that run in production mode over plain HTTP
+const enforceHttps =
+  isProduction && process.env.DISABLE_HTTPS_HEADERS !== "true";
+
 const cspHeader = `
     default-src 'self';
     script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.posthog.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://*.pendo.io https://client.crisp.chat https://static.hsappstatic.net https://*.google-analytics.com https://www.google.com https://*.reo.dev;
@@ -26,7 +31,7 @@ const cspHeader = `
     base-uri 'self';
     form-action 'self';
     frame-ancestors 'none';
-    ${isProduction ? "upgrade-insecure-requests;" : ""}
+    ${enforceHttps ? "upgrade-insecure-requests;" : ""}
     worker-src 'self' blob:;
     connect-src 'self' https://*.posthog.com https://*.pendo.io wss://*.pendo.io wss://client.relay.crisp.chat https://client.crisp.chat https://analytics.google.com https://stats.g.doubleclick.net https://*.google-analytics.com https://www.google.com https://*.reo.dev;
     frame-src 'self' https://*.posthog.com https://*.pendo.io https://www.youtube.com https://get.langwatch.ai https://www.googletagmanager.com https://www.google.com https://*.reo.dev;
@@ -126,7 +131,7 @@ const config = {
         key: "X-Content-Type-Options",
         value: "nosniff",
       },
-      ...(isProduction
+      ...(enforceHttps
         ? [
             {
               key: "Strict-Transport-Security",
