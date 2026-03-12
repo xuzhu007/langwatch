@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ExternalLink } from "react-feather";
 
 import { useOrganizationTeamProject } from "../hooks/useOrganizationTeamProject";
+import { copyToClipboard as copyToClipboardUtil } from "../utils/clipboard";
 
 import { CopyIcon } from "./icons/Copy";
 import { Link as UiLink } from "./ui/link";
@@ -13,17 +14,17 @@ const MAX_VALUE_LENGTH = 48;
 
 const useCopyToClipboard = () => {
   const [isCopied, setIsCopied] = useState(false);
-  const copyToClipboard = (value: string) => {
-    void navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        setIsCopied(true);
-      })
-      .catch((error) => {
-        console.error("Error copying to clipboard", error);
+  const copy = (value: string) => {
+    void copyToClipboardUtil(value)
+      .then((success) => {
+        if (success) {
+          setIsCopied(true);
+        } else {
+          console.error("Failed to copy to clipboard");
+        }
       });
   };
-  return { isCopied, copyToClipboard };
+  return { isCopied, copyToClipboard: copy };
 };
 
 /**

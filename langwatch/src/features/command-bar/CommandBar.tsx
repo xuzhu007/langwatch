@@ -34,6 +34,7 @@ import {
 import { findEasterEgg } from "./easterEggs";
 import { useEasterEggEffects } from "./effects/useEasterEggEffects";
 import type { NextRouter } from "next/router";
+import { copyToClipboard } from "~/utils/clipboard";
 
 /**
  * Handle page-specific commands for the traces page.
@@ -308,7 +309,7 @@ export function CommandBar() {
 
     if (path) {
       const url = `${window.location.origin}${path}`;
-      void navigator.clipboard.writeText(url);
+      void copyToClipboard(url);
     }
   }, [allItems, selectedIndex, project?.slug]);
 
