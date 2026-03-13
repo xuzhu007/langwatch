@@ -28,8 +28,10 @@ const MODEL_ALIASES: Record<string, string> = {
 /**
  * Providers that need dot-to-dash translation for their model IDs.
  * Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
+ * NOTE: "custom" (OpenAI-compatible) is intentionally excluded — custom models
+ * must preserve their original model IDs (e.g. "Qwen3.5-397B-A17B-FP8").
  */
-const PROVIDERS_NEEDING_TRANSLATION = ["anthropic", "custom"];
+const PROVIDERS_NEEDING_TRANSLATION = ["anthropic"];
 
 /**
  * Extracts the provider from a model ID string.
@@ -48,7 +50,7 @@ function getProvider(modelId: string): string {
  * Translates a model ID for use with LiteLLM.
  *
  * First checks for exact alias matches that need expansion to dated versions.
- * Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
+ * Then converts dots to dashes in model IDs for providers that need it (Anthropic).
  * Other providers (OpenAI, Gemini, etc.) are returned unchanged.
  *
  * @param modelId - The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")

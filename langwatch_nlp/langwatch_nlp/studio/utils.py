@@ -301,7 +301,9 @@ MODEL_ALIASES: Dict[str, str] = {
 
 # Providers that need dot-to-dash translation for their model IDs.
 # Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
-PROVIDERS_NEEDING_TRANSLATION = {"anthropic", "custom"}
+# NOTE: "custom" (OpenAI-compatible) is intentionally excluded — custom models
+# must preserve their original model IDs (e.g. "Qwen3.5-397B-A17B-FP8").
+PROVIDERS_NEEDING_TRANSLATION = {"anthropic"}
 
 
 def translate_model_id_for_litellm(model_id: str | None) -> str | None:
@@ -309,7 +311,7 @@ def translate_model_id_for_litellm(model_id: str | None) -> str | None:
     Translates a model ID for use with LiteLLM.
 
     First checks for exact alias matches that need expansion to dated versions.
-    Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
+    Then converts dots to dashes in model IDs for providers that need it (Anthropic).
     Other providers (OpenAI, Gemini, etc.) are returned unchanged.
 
     Args:

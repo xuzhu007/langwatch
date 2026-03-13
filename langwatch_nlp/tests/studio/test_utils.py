@@ -479,10 +479,15 @@ class TestTranslateModelIdForLitellm:
         result = translate_model_id_for_litellm("anthropic/claude-opus-4.5.1")
         assert result == "anthropic/claude-opus-4-5-1"
 
-    def test_translates_custom_prefix(self):
-        """Translates custom/claude-opus-4.5 to custom/claude-opus-4-5."""
+    def test_preserves_custom_prefix_dots(self):
+        """Preserves custom/Qwen3.5-397B-A17B-FP8 unchanged (custom models keep their IDs)."""
+        result = translate_model_id_for_litellm("custom/Qwen3.5-397B-A17B-FP8")
+        assert result == "custom/Qwen3.5-397B-A17B-FP8"
+
+    def test_preserves_custom_prefix_with_dots(self):
+        """Preserves custom/claude-opus-4.5 unchanged."""
         result = translate_model_id_for_litellm("custom/claude-opus-4.5")
-        assert result == "custom/claude-opus-4-5"
+        assert result == "custom/claude-opus-4.5"
 
     def test_handles_empty_string(self):
         """Handles empty string input."""

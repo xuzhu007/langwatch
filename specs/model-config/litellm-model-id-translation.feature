@@ -80,11 +80,11 @@ Feature: LiteLLM Model ID Translation
     # All dots in version numbers are converted
 
   @unit
-  Scenario: Preserves custom provider prefix
-    Given a model ID "custom/claude-opus-4.5"
+  Scenario: Preserves custom provider model IDs unchanged
+    Given a model ID "custom/Qwen3.5-397B-A17B-FP8"
     When calling translateModelIdForLitellm
-    Then the result should be "custom/claude-opus-4-5"
-    # Translation applies regardless of prefix
+    Then the result should be "custom/Qwen3.5-397B-A17B-FP8"
+    # Custom (OpenAI-compatible) models keep their original IDs
 
   # Unit Tests: Model Alias Mapping
   # Some models require alias expansion to their full dated versions
