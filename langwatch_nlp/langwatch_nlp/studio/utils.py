@@ -311,7 +311,7 @@ def translate_model_id_for_litellm(model_id: str | None) -> str | None:
     Translates a model ID for use with LiteLLM.
 
     First checks for exact alias matches that need expansion to dated versions.
-    Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
+    Then converts dots to dashes in model IDs for providers that need it (Anthropic).
     Other providers (OpenAI, Gemini, etc.) are returned unchanged.
 
     Args:
