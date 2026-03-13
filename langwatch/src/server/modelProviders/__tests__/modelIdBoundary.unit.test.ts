@@ -76,9 +76,14 @@ describe("translateModelIdForLitellm", () => {
   });
 
   describe("Custom provider prefix", () => {
-    it("translates custom/claude-opus-4.5 to custom/claude-opus-4-5", () => {
+    it("preserves custom/Qwen3.5-397B-A17B-FP8 unchanged", () => {
+      const result = translateModelIdForLitellm("custom/Qwen3.5-397B-A17B-FP8");
+      expect(result).toBe("custom/Qwen3.5-397B-A17B-FP8");
+    });
+
+    it("preserves custom/claude-opus-4.5 unchanged", () => {
       const result = translateModelIdForLitellm("custom/claude-opus-4.5");
-      expect(result).toBe("custom/claude-opus-4-5");
+      expect(result).toBe("custom/claude-opus-4.5");
     });
   });
 

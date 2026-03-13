@@ -99,14 +99,13 @@ export class DisabledPipeline<
       name,
     ) as unknown as EventSourcingService<EventType, ProjectionTypes>;
 
-    // Create a proxy that returns DisabledQueueProcessor for any command
-    this.commands = new Proxy(
-      {} as Record<string, EventSourcedQueueProcessor<any>>,
-      {
-        get: (_, commandName) => {
-          return new DisabledQueueProcessor(name, String(commandName));
-        },
-      },
-    );
+    // Pre-populate commands from metadata so Object.entries() works in mapCommands().
+    // A Proxy alone is invisible to Object.entries/Object.keys, which caused
+    // mapCommands() to return an empty object and commands to be undefined at runtime.
+    const cmds: Record<string, EventSourcedQueueProcessor<any>> = {};
+    for (const cmd of metadata.commands) {
+      cmds[cmd.name] = new DisabledQueueProcessor(name, cmd.name);
+    }
+    this.commands = cmds;
   }
 }
