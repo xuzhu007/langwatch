@@ -221,10 +221,11 @@ export default function CheckConfigForm({
     };
 
     setDefaultSettings(
-      getEvaluatorDefaultSettings(availableEvaluators[checkType], undefined),
+      getEvaluatorDefaultSettings(availableEvaluators[checkType], project),
       "settings",
     );
-  }, [checkType, defaultValues?.checkType, defaultValues?.settings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkType, defaultValues?.checkType, defaultValues?.settings, project?.defaultModel]);
 
   const accordionIndex = checkType?.startsWith("custom/") ? 0 : undefined;
   const [accordionValue, setAccordionValue] = useState(

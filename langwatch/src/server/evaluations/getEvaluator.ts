@@ -20,8 +20,17 @@ export const getEvaluatorDefaultSettings = <T extends EvaluatorTypes>(
   if (!evaluator) return {};
   return Object.fromEntries(
     Object.entries(evaluator.settings).map(([key, setting]) => {
-      if (key === "model" && evaluator.name.includes("LLM-as-a-Judge")) {
-        return [key, project?.defaultModel ?? DEFAULT_MODEL];
+      if (key === "model") {
+        const settingDefault = (setting as any).default;
+        // Use project default for standard LLM models (format: "provider/model")
+        // but keep specialized defaults (e.g. "text-moderation-stable" for OpenAI Moderation)
+        if (
+          typeof settingDefault === "string" &&
+          settingDefault.includes("/")
+        ) {
+          return [key, project?.defaultModel ?? DEFAULT_MODEL];
+        }
+        return [key, settingDefault];
       }
       if (key === "embeddings_model") {
         return [key, project?.embeddingsModel ?? DEFAULT_EMBEDDINGS_MODEL];

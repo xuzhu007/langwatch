@@ -9,7 +9,7 @@ import {
   Textarea,
   VStack,
 } from "@chakra-ui/react";
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { ChevronDown, Info, Plus, Trash2, X } from "react-feather";
 import {
   Controller,
@@ -57,12 +57,27 @@ const ModelSelectorWithWarning = ({
   fieldName: string;
   variant: string;
 }) => {
-  const { modelOption } = useModelSelectionOptions(
+  const { modelOption, selectOptions } = useModelSelectionOptions(
     selectorOptions,
     field.value,
     fieldName === "model" ? "chat" : "embedding",
   );
   const isModelDisabled = modelOption?.isDisabled ?? false;
+
+  // Auto-fallback: when the current model is not available in the filtered
+  // options (e.g. the default "openai/gpt-5" when only Custom provider is
+  // enabled), automatically select the first available model.
+  const hasFallenBack = useRef(false);
+  useEffect(() => {
+    if (
+      selectOptions.length > 0 &&
+      !selectOptions.some((opt) => opt.value === field.value) &&
+      !hasFallenBack.current
+    ) {
+      hasFallenBack.current = true;
+      field.onChange(selectOptions[0]!.value);
+    }
+  }, [selectOptions, field]);
 
   return (
     <VStack align="start" width="full">
