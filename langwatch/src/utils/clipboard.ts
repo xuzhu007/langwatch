@@ -9,7 +9,7 @@
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
   // Prefer modern Clipboard API when available
-  if (navigator.clipboard?.writeText) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;

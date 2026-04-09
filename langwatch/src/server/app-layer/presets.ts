@@ -224,7 +224,13 @@ export function initializeDefaultApp(options?: { processRole?: ProcessRole }): A
       )
     : PlanProviderService.create({
         getActivePlan: async () => {
-          return { ...UNLIMITED_PLAN, type: "ENTERPRISE" as const, planSource: "license" as const };
+          return {
+            ...UNLIMITED_PLAN,
+            type: "ENTERPRISE" as const,
+            name: "Enterprise (Self-Hosted)",
+            free: false,
+            planSource: "license" as const,
+          };
         },
       });
 
