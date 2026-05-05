@@ -34,6 +34,11 @@ const mockRedis = {
   get: vi.fn(),
   set: vi.fn(),
   del: vi.fn(),
+  expire: vi.fn(),
+  sadd: vi.fn(),
+  srem: vi.fn(),
+  smembers: vi.fn(),
+  exists: vi.fn(),
 };
 
 vi.mock("~/server/db", () => ({
@@ -239,6 +244,11 @@ describe("Feature: MCP HTTP Server In-App Integration", () => {
     mockRedis.get.mockResolvedValue(null);
     mockRedis.set.mockResolvedValue("OK");
     mockRedis.del.mockResolvedValue(1);
+    mockRedis.expire.mockResolvedValue(1);
+    mockRedis.sadd.mockResolvedValue(1);
+    mockRedis.srem.mockResolvedValue(1);
+    mockRedis.smembers.mockResolvedValue([]);
+    mockRedis.exists.mockResolvedValue(0);
   });
 
   // --- Route Mounting ---
@@ -349,7 +359,7 @@ describe("Feature: MCP HTTP Server In-App Integration", () => {
       const body = await res.json();
       expect(body.access_token).toBeDefined();
       expect(body.token_type).toBe("Bearer");
-      expect(body.expires_in).toBe(3600);
+      expect(body.expires_in).toBe(30 * 24 * 3600); // 30 days
 
       // Verify the auth code was deleted (one-time use)
       expect(mockRedis.del).toHaveBeenCalledWith(`mcp:auth_code:${code}`);
@@ -582,6 +592,61 @@ describe("Feature: MCP HTTP Server In-App Integration", () => {
       });
 
       expect(res.status).toBe(401);
+    });
+  });
+
+  // --- Redis Session Recovery (multi-pod) ---
+
+  describe("when a session exists in Redis but not in local memory (different pod)", () => {
+    it("recovers the session from Redis and handles the request", async () => {
+      mockPrisma.project.findUnique.mockResolvedValue(validProject());
+
+      // 1. Initialize a session normally
+      const initRes = await sendRequest({
+        server,
+        body: mcpInitializeBody(),
+        headers: { authorization: `Bearer ${VALID_API_KEY}` },
+      });
+      expect(initRes.status).toBe(200);
+      const sessionId = initRes.headers["mcp-session-id"];
+      expect(sessionId).toBeDefined();
+
+      // 2. Simulate pod switch: close all local sessions (as if this is a
+      //    different pod) but keep the Redis entry.
+      handler.closeAllSessions();
+
+      // 3. Mock Redis returning the session metadata
+      mockRedis.get.mockImplementation(async (key: string) => {
+        if (key === `mcp:session:${sessionId}`) {
+          return JSON.stringify({
+            encryptedApiKey: `encrypted:${VALID_API_KEY}`,
+            createdAt: Date.now(),
+          });
+        }
+        return null;
+      });
+      mockRedis.expire.mockResolvedValue(1);
+
+      // 4. Re-create the server+handler (simulating a different pod)
+      handler.closeAllSessions();
+
+      // 5. Send a tool list request with the old session ID — should recover
+      const toolsRes = await sendRequest({
+        server,
+        body: {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {},
+        },
+        headers: {
+          authorization: `Bearer ${VALID_API_KEY}`,
+          "mcp-session-id": sessionId!,
+        },
+      });
+      expect(toolsRes.status).toBe(200);
+      const toolsBody = toolsRes.json() as { result?: { tools?: unknown[] } };
+      expect(toolsBody.result?.tools).toBeDefined();
     });
   });
 

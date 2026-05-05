@@ -1,20 +1,32 @@
 import { Box, HStack, Image, Text, VStack } from "@chakra-ui/react";
-import { useMemo, useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Settings } from "react-feather";
 import type { StreamingMessage } from "~/hooks/useSimulationStreamingState";
 import type { ScenarioMessageSnapshotEvent } from "~/server/scenarios/scenario-event.types";
+import { generateClientId } from "~/utils/generateClientId";
 import { TraceMessage } from "../copilot-kit/TraceMessage";
 import { Markdown } from "../Markdown";
 import { RenderInputOutput } from "../traces/RenderInputOutput";
 import { safeJsonParseOrStringFallback } from "./utils/safe-json-parse-or-string-fallback";
-import { generateUUID } from "~/utils/generateUUID";
 
 type RawMessage = ScenarioMessageSnapshotEvent["messages"][number];
 
 type DisplayItem =
-  | { kind: "text"; id: string; role: string; content: string; traceId?: string }
+  | {
+      kind: "text";
+      id: string;
+      role: string;
+      content: string;
+      traceId?: string;
+    }
   | { kind: "image"; id: string; src: string; traceId?: string }
-  | { kind: "tool_call"; id: string; name: string; arguments: unknown; traceId?: string }
+  | {
+      kind: "tool_call";
+      id: string;
+      name: string;
+      arguments: unknown;
+      traceId?: string;
+    }
   | { kind: "tool_result"; id: string; result: unknown; traceId?: string };
 
 interface ScenarioMessageRendererProps {
@@ -76,7 +88,7 @@ export function ScenarioMessageRenderer({
                       "& > .markdown > *:last-child": { marginBottom: 0 },
                     }}
                   >
-                    <Markdown className="markdown">{item.content}</Markdown>
+                    <Markdown>{item.content}</Markdown>
                   </Box>
                 ) : (
                   <Box
@@ -129,14 +141,27 @@ export function ScenarioMessageRenderer({
                   borderRadius="lg"
                   p={3}
                 >
-                  <Text fontSize="xs" fontWeight="semibold" color="fg.muted" mb={2}>
+                  <Text
+                    fontSize="xs"
+                    fontWeight="semibold"
+                    color="fg.muted"
+                    mb={2}
+                  >
                     Tool arguments
                   </Text>
-                  <Box bg="bg.panel" border="1px solid" borderColor="border" borderRadius="md" p={2}>
+                  <Box
+                    bg="bg.panel"
+                    border="1px solid"
+                    borderColor="border"
+                    borderRadius="md"
+                    p={2}
+                  >
                     <RenderInputOutput value={item.arguments as string} />
                   </Box>
                 </Box>
-                {!smallerView && item.traceId && <TraceMessage traceId={item.traceId} />}
+                {!smallerView && item.traceId && (
+                  <TraceMessage traceId={item.traceId} />
+                )}
               </VStack>
             );
 
@@ -152,14 +177,27 @@ export function ScenarioMessageRenderer({
                   borderRadius="lg"
                   p={3}
                 >
-                  <Text fontSize="xs" fontWeight="semibold" color="fg.muted" mb={2}>
+                  <Text
+                    fontSize="xs"
+                    fontWeight="semibold"
+                    color="fg.muted"
+                    mb={2}
+                  >
                     Tool result
                   </Text>
-                  <Box bg="bg.panel" border="1px solid" borderColor="border" borderRadius="md" p={2}>
+                  <Box
+                    bg="bg.panel"
+                    border="1px solid"
+                    borderColor="border"
+                    borderRadius="md"
+                    p={2}
+                  >
                     <RenderInputOutput value={item.result as string} />
                   </Box>
                 </Box>
-                {!smallerView && item.traceId && <TraceMessage traceId={item.traceId} />}
+                {!smallerView && item.traceId && (
+                  <TraceMessage traceId={item.traceId} />
+                )}
               </VStack>
             );
 
@@ -186,16 +224,23 @@ function flattenMessages(
     if (msg.role === "user" || msg.role === "assistant") {
       // Support both snake_case (OpenAI/chatMessageSchema) and camelCase (AG-UI MessageSchema)
       const msgAny = msg as Record<string, unknown>;
-      const toolCalls = (msgAny.tool_calls as Array<{ function?: { name?: string; arguments?: string } }> | undefined)
-        ?? (msgAny.toolCalls as Array<{ function?: { name?: string; arguments?: string } }> | undefined)
-        ?? null;
+      const toolCalls =
+        (msgAny.tool_calls as
+          | Array<{ function?: { name?: string; arguments?: string } }>
+          | undefined) ??
+        (msgAny.toolCalls as
+          | Array<{ function?: { name?: string; arguments?: string } }>
+          | undefined) ??
+        null;
       if (toolCalls) {
         for (const tc of toolCalls) {
           items.push({
             kind: "tool_call",
             id: `${msg.id ?? ""}-tool-${tc.function?.name ?? "unknown"}`,
             name: tc.function?.name ?? "unknown",
-            arguments: safeJsonParseOrStringFallback(tc.function?.arguments ?? "{}"),
+            arguments: safeJsonParseOrStringFallback(
+              tc.function?.arguments ?? "{}",
+            ),
             traceId: msg.trace_id,
           });
         }
@@ -204,9 +249,11 @@ function flattenMessages(
     } else if (msg.role === "tool") {
       items.push({
         kind: "tool_result",
-        id: msg.id ?? generateUUID(),
+        id: msg.id ?? generateClientId(),
         result: safeJsonParseOrStringFallback(
-          typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? {}),
+          typeof msg.content === "string"
+            ? msg.content
+            : JSON.stringify(msg.content ?? {}),
         ),
         traceId: msg.trace_id,
       });
@@ -217,7 +264,12 @@ function flattenMessages(
     const serverIds = new Set(messages.map((m) => m.id).filter(Boolean));
     for (const sm of streamingMessages) {
       if (serverIds.has(sm.messageId)) continue;
-      items.push({ kind: "text", id: sm.messageId, role: sm.role, content: sm.content || "\u2026" });
+      items.push({
+        kind: "text",
+        id: sm.messageId,
+        role: sm.role,
+        content: sm.content || "\u2026",
+      });
     }
   }
 
@@ -229,14 +281,25 @@ function flattenContent(msg: RawMessage): DisplayItem[] {
   // Content is already an array of rich content parts — use directly
   if (Array.isArray(msg.content)) return flattenMixed(msg.content, msg);
 
-  const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? {});
+  const raw =
+    typeof msg.content === "string"
+      ? msg.content
+      : JSON.stringify(msg.content ?? {});
 
   // Try parsing string content as JSON array (e.g. serialized rich content)
   const parsed = safeJsonParseOrStringFallback(raw);
   if (Array.isArray(parsed)) return flattenMixed(parsed, msg);
 
   if (msg.content && msg.content !== "None") {
-    return [{ kind: "text", id: msg.id ?? generateUUID(), role: msg.role ?? "assistant", content: raw, traceId: msg.trace_id }];
+    return [
+      {
+        kind: "text",
+        id: msg.id ?? generateClientId(),
+        role: msg.role ?? "assistant",
+        content: raw,
+        traceId: msg.trace_id,
+      },
+    ];
   }
   return [];
 }
@@ -245,19 +308,60 @@ function flattenMixed(content: any[], msg: RawMessage): DisplayItem[] {
   const items: DisplayItem[] = [];
   content.forEach((item, i) => {
     if (typeof item === "string") {
-      items.push({ kind: "text", id: `${msg.id}-c${i}`, role: msg.role ?? "assistant", content: item, traceId: msg.trace_id });
-    } else if (typeof item === "object" && (item.type === "text" || (!item.type && item.text))) {
+      items.push({
+        kind: "text",
+        id: `${msg.id}-c${i}`,
+        role: msg.role ?? "assistant",
+        content: item,
+        traceId: msg.trace_id,
+      });
+    } else if (
+      typeof item === "object" &&
+      (item.type === "text" || (!item.type && item.text))
+    ) {
       // Handles: {type:"text", text:"..."}, {type:"text", content:"..."}, {text:"..."}
       const text = item.text ?? item.content ?? "";
-      if (text) items.push({ kind: "text", id: `${msg.id}-c${i}`, role: msg.role ?? "assistant", content: text, traceId: msg.trace_id });
-    } else if (typeof item === "object" && item.type === "image_url" && item.image_url?.url) {
-      items.push({ kind: "image", id: `${msg.id}-img${i}`, src: item.image_url.url, traceId: msg.trace_id });
+      if (text)
+        items.push({
+          kind: "text",
+          id: `${msg.id}-c${i}`,
+          role: msg.role ?? "assistant",
+          content: text,
+          traceId: msg.trace_id,
+        });
+    } else if (
+      typeof item === "object" &&
+      item.type === "image_url" &&
+      item.image_url?.url
+    ) {
+      items.push({
+        kind: "image",
+        id: `${msg.id}-img${i}`,
+        src: item.image_url.url,
+        traceId: msg.trace_id,
+      });
     } else if (typeof item === "object" && item.image) {
-      items.push({ kind: "image", id: `${msg.id}-img${i}`, src: item.image, traceId: msg.trace_id });
+      items.push({
+        kind: "image",
+        id: `${msg.id}-img${i}`,
+        src: item.image,
+        traceId: msg.trace_id,
+      });
     } else if (item.type === "tool_use" || item.type === "tool_call") {
-      items.push({ kind: "tool_call", id: `${msg.id}-tu${i}`, name: item.name ?? item.toolName ?? "tool", arguments: item.arguments ?? item.input ?? item.args, traceId: msg.trace_id });
+      items.push({
+        kind: "tool_call",
+        id: `${msg.id}-tu${i}`,
+        name: item.name ?? item.toolName ?? "tool",
+        arguments: item.arguments ?? item.input ?? item.args,
+        traceId: msg.trace_id,
+      });
     } else if (item.type === "tool_result") {
-      items.push({ kind: "tool_result", id: `${msg.id}-tr${i}`, result: item.content ?? item.result, traceId: msg.trace_id });
+      items.push({
+        kind: "tool_result",
+        id: `${msg.id}-tr${i}`,
+        result: item.content ?? item.result,
+        traceId: msg.trace_id,
+      });
     }
   });
   return items;

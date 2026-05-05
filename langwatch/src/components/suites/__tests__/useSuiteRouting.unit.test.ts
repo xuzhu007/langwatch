@@ -22,7 +22,7 @@ const mockRouter = {
   events: { on: vi.fn(), off: vi.fn(), emit: vi.fn() },
 };
 
-vi.mock("next/router", () => ({
+vi.mock("~/utils/compat/next-router", () => ({
   useRouter: () => mockRouter,
 }));
 
@@ -146,6 +146,17 @@ describe("useSuiteRouting()", () => {
         "/my-project/simulations/python-examples",
         { shallow: true },
       );
+    });
+  });
+
+  describe("given /simulations with a query string (no path segments)", () => {
+    it("falls back to all-runs instead of treating the query as an external set", () => {
+      mockRouter.query = { project: "my-project", pendingBatch: "scenariobatch_xxx" };
+      mockRouter.asPath = "/my-project/simulations/?pendingBatch=scenariobatch_xxx";
+
+      const { result } = renderHook(() => useSuiteRouting());
+
+      expect(result.current.selectedSuiteSlug).toBe(ALL_RUNS_ID);
     });
   });
 

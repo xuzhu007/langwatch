@@ -23,6 +23,17 @@ export interface CioPersonTraits {
   createdAt: string;
   integration_method: string;
 
+  // Attribution (first-touch URL params — captured client-side, forwarded
+  // via signUpData). Optional because callers always use
+  // `Partial<CioPersonTraits>` and set them conditionally; marking them
+  // required would lie about the runtime contract.
+  lead_source?: string;
+  utm_source?: string;
+  utm_medium?: string;
+  utm_term?: string;
+  utm_content?: string;
+  referrer?: string;
+
   // Trace milestones (customerIoTraceSync reactor)
   has_traces: boolean;
   sdk_language: string;
@@ -88,7 +99,8 @@ export type CioEventName =
   | "workflow_created"
   | "experiment_ran"
   | "first_prompt_created"
-  | "first_simulation_ran";
+  | "first_simulation_ran"
+  | "joined_via_invite";
 
 // ---------------------------------------------------------------------------
 // Batch call discriminated union

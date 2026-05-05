@@ -24,9 +24,12 @@ import { Checkbox } from "../ui/checkbox";
 import { HorizontalFormControl } from "../HorizontalFormControl";
 
 /**
- * Parameters shown in the dialog — only the ones we actually
- * render in LLMConfigPopover. Max tokens is handled separately
- * at the form level.
+ * Optional sampling parameters the popover renders for this model.
+ *
+ * `max_tokens` is intentionally absent: every chat model accepts a
+ * per-invocation token ceiling, so the popover always renders that slider
+ * regardless of what's stored here. The numeric "Max Tokens" field elsewhere
+ * in this dialog captures the model's hard ceiling.
  */
 const DIALOG_PARAMETERS: { value: SupportedParameter; label: string }[] = [
   { value: "temperature", label: "Temperature" },

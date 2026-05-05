@@ -19,6 +19,14 @@ export const SPAN_ATTR_MAPPINGS = [
   [ATTR_KEYS.GEN_AI_AGENT_ID, "gen_ai.agent.id"],
   [ATTR_KEYS.GEN_AI_PROVIDER_NAME, "gen_ai.provider.name"],
   [ATTR_KEYS.LANGWATCH_LANGGRAPH_THREAD_ID, "langgraph.thread_id"],
+  // AI Gateway markers — stamped on every gateway-emitted customer span by
+  // services/aigateway/adapters/customertracebridge/emitter.go so the
+  // downstream gatewayBudgetSync reactor can tell which VK / request fold
+  // into which budget. Without this allowlist entry the keys are dropped
+  // at accumulation time, the reactor early-returns, and CH
+  // gateway_budget_ledger_events stays empty.
+  ["langwatch.virtual_key_id", "langwatch.virtual_key_id"],
+  ["langwatch.gateway_request_id", "langwatch.gateway_request_id"],
 ] as const;
 
 export const STANDARD_RESOURCE_PREFIXES = [
@@ -76,6 +84,9 @@ export class TraceAttributeAccumulationService {
     const scenarioRunId = stringAttr(spanAttrs, "scenario.run_id");
     if (scenarioRunId) result["scenario.run_id"] = scenarioRunId;
 
+    const evaluationRunId = stringAttr(spanAttrs, "evaluation.run_id");
+    if (evaluationRunId) result["evaluation.run_id"] = evaluationRunId;
+
     const labels = spanAttrs[ATTR_KEYS.LANGWATCH_LABELS];
     if (typeof labels === "string") result["langwatch.labels"] = labels;
     else if (Array.isArray(labels))
@@ -102,10 +113,14 @@ export class TraceAttributeAccumulationService {
     state,
     span,
     outputSource,
+    inputIsFallback,
+    outputIsFallback,
   }: {
     state: TraceSummaryData;
     span: NormalizedSpan;
     outputSource: string;
+    inputIsFallback: boolean;
+    outputIsFallback: boolean;
   }): Record<string, string> {
     const spanAttrs = this.extractAttributes(span);
     const merged = { ...spanAttrs, ...state.attributes };
@@ -168,6 +183,16 @@ export class TraceAttributeAccumulationService {
     this.traceOriginService.hoistSource({ state, span, mergedAttributes: merged });
 
     merged["langwatch.reserved.output_source"] = outputSource;
+    if (inputIsFallback) {
+      merged["langwatch.reserved.input_is_fallback"] = "true";
+    } else {
+      delete merged["langwatch.reserved.input_is_fallback"];
+    }
+    if (outputIsFallback) {
+      merged["langwatch.reserved.output_is_fallback"] = "true";
+    } else {
+      delete merged["langwatch.reserved.output_is_fallback"];
+    }
 
     // PII redaction status tracking - accumulate span IDs by severity
     const piiStatus =

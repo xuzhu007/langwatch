@@ -46,6 +46,7 @@ import { usePromptConfigForm } from "~/prompts/hooks/usePromptConfigForm";
 import type { PromptConfigFormValues } from "~/prompts/types";
 import { areFormValuesEqual } from "~/prompts/utils/areFormValuesEqual";
 import { buildDefaultFormValues } from "~/prompts/utils/buildDefaultFormValues";
+import { localConfigToFormValues } from "./utils/localConfigToFormValues";
 import {
   formValuesToTriggerSaveVersionParams,
   versionedPromptToPromptConfigFormValuesWithSystemMessage,
@@ -294,19 +295,12 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
     return undefined;
   }, [promptQuery.data]);
 
-  // ============================================================================
-  // CONFIG VALUES STATE - Single Source of Truth for Form Initialization
-  // ============================================================================
-  //
-  // configValues: The baseline config that the form uses. Updated on:
-  //   1. Initialization (when drawer opens)
-  //   2. After save (with fresh server data)
-  //
-  // isFormInitialized: Tracks whether we've done the initial setup for this
-  //   drawer session. Prevents re-initialization when deps change.
-  //
+  // Seed configValues from initialLocalConfig so the form watch subscription's
+  // first synchronous fire carries the caller's edits, not defaults. Without
+  // this seed, the subscription fires on defaults before the init useEffect
+  // runs and clobbers the caller's local edits (#3155).
   const [configValues, setConfigValues] = useState<PromptConfigFormValues>(
-    buildDefaultFormValues,
+    () => localConfigToFormValues(props.initialLocalConfig),
   );
   const [isFormInitialized, setIsFormInitialized] = useState(false);
   // Ref set directly in init/reset effects so the watch subscription
@@ -408,9 +402,10 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
         });
       }
 
-    } else if (!promptId && modelMetadata) {
-      // New prompt - use defaults with model's max tokens
-      // Wait for modelMetadata to be loaded before initializing
+    } else if ((!promptId || (!promptQuery.data && !promptQuery.isLoading)) && modelMetadata) {
+      // New prompt OR prompt referenced by ID but not found in DB (e.g. after
+      // importing a workflow from another project). Use defaults with model's
+      // max tokens, merging initialLocalConfig if available.
       const defaultModel = project?.defaultModel ?? DEFAULT_MODEL;
       const defaultModelMetadata = modelMetadata[defaultModel];
       const maxTokens = getMaxTokenLimit(defaultModelMetadata);
@@ -501,6 +496,7 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
   }, [
     isOpen,
     promptQuery.data,
+    promptQuery.isLoading,
     promptId,
     props.initialLocalConfig,
     methods,

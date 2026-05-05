@@ -1,14 +1,18 @@
 import {
   OrganizationUserRole,
   PricingModel,
+  RoleBindingScopeType,
   TeamUserRole,
   type Currency,
   type Prisma,
   type PrismaClient,
 } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
+import { generate } from "@langwatch/ksuid";
+import { NotFoundError, ValidationError } from "~/server/app-layer/domain-error";
 import { GROWTH_SEAT_PLAN_TYPES } from "../../../../../ee/billing/utils/growthSeatEvent";
 import { encrypt } from "~/utils/encryption";
+import { KSUID_RESOURCES } from "~/utils/constants";
 import {
   isTeamRoleAllowedForOrganizationRole,
   type TeamRoleValue,
@@ -138,6 +142,15 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
     return org?.stripeCustomerId ?? null;
   }
 
+  async findByStripeCustomerId(
+    stripeCustomerId: string,
+  ): Promise<{ id: string } | null> {
+    return this.prisma.organization.findFirst({
+      where: { stripeCustomerId },
+      select: { id: true },
+    });
+  }
+
   async findNameById(
     organizationId: string,
   ): Promise<{ id: string; name: string } | null> {
@@ -201,11 +214,25 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
         },
       });
 
-      await tx.teamUser.create({
+      await tx.roleBinding.create({
         data: {
+          id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+          organizationId: organization.id,
           userId: input.userId,
-          teamId: team.id,
-          role: "ADMIN",
+          role: TeamUserRole.ADMIN,
+          scopeType: RoleBindingScopeType.ORGANIZATION,
+          scopeId: organization.id,
+        },
+      });
+
+      await tx.roleBinding.create({
+        data: {
+          id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+          organizationId: organization.id,
+          userId: input.userId,
+          role: TeamUserRole.ADMIN,
+          scopeType: RoleBindingScopeType.TEAM,
+          scopeId: team.id,
         },
       });
 
@@ -299,6 +326,7 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           ...(!includeDeactivated
             ? { where: { user: { deactivatedAt: null } } }
             : {}),
+          orderBy: [{ user: { name: "asc" } }, { user: { email: "asc" } }, { userId: "asc" }],
           include: {
             user: {
               include: {
@@ -405,13 +433,8 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           },
         },
       });
-      await tx.teamUser.deleteMany({
-        where: {
-          userId,
-          team: {
-            organizationId,
-          },
-        },
+      await tx.roleBinding.deleteMany({
+        where: { organizationId, userId },
       });
     });
   }
@@ -470,28 +493,59 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
         data: { role },
       });
 
+      // Keep ORGANIZATION-scoped RoleBinding in sync (skip EXTERNAL)
+      if (role !== OrganizationUserRole.EXTERNAL) {
+        await tx.roleBinding.deleteMany({
+          where: {
+            organizationId,
+            userId,
+            scopeType: RoleBindingScopeType.ORGANIZATION,
+            scopeId: organizationId,
+          },
+        });
+        await tx.roleBinding.create({
+          data: {
+            id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+            organizationId,
+            userId,
+            role: role as unknown as TeamUserRole,
+            scopeType: RoleBindingScopeType.ORGANIZATION,
+            scopeId: organizationId,
+          },
+        });
+      } else {
+        // EXTERNAL (Lite Member) users have no org-level binding
+        await tx.roleBinding.deleteMany({
+          where: {
+            organizationId,
+            userId,
+            scopeType: RoleBindingScopeType.ORGANIZATION,
+            scopeId: organizationId,
+          },
+        });
+      }
+
       const organizationTeams = await tx.team.findMany({
         where: { organizationId },
         select: { id: true },
       });
       const organizationTeamIds = organizationTeams.map((team) => team.id);
 
-      const currentMemberships = await tx.teamUser.findMany({
+      const currentMemberships = await tx.roleBinding.findMany({
         where: {
+          organizationId,
           userId,
-          teamId: { in: organizationTeamIds },
+          scopeType: RoleBindingScopeType.TEAM,
+          scopeId: { in: organizationTeamIds },
         },
         select: {
-          teamId: true,
+          scopeId: true,
           role: true,
-          assignedRoleId: true,
+          customRoleId: true,
         },
       });
       const currentMembershipByTeamId = new Map(
-        currentMemberships.map((membership) => [
-          membership.teamId,
-          membership,
-        ]),
+        currentMemberships.map((m) => [m.scopeId, m]),
       );
 
       const dedupedTeamRoleUpdates = new Map(
@@ -501,10 +555,7 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
       for (const [teamId, teamRoleUpdate] of dedupedTeamRoleUpdates.entries()) {
         const currentMembership = currentMembershipByTeamId.get(teamId);
         if (!currentMembership) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "User is not a member of this team",
-          });
+          throw new NotFoundError("team_membership_not_found", "TeamMember", userId);
         }
 
         if (
@@ -513,18 +564,12 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
             teamRole: teamRoleUpdate.role as TeamRoleValue,
           })
         ) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: LITE_MEMBER_VIEWER_ONLY_ERROR,
-          });
+          throw new ValidationError(LITE_MEMBER_VIEWER_ONLY_ERROR);
         }
 
         const updateIsCustomRole = isCustomRole(teamRoleUpdate.role);
         if (updateIsCustomRole && !teamRoleUpdate.customRoleId) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Custom role ID is required for custom role updates",
-          });
+          throw new ValidationError("Custom role ID is required for custom role updates");
         }
 
         if (updateIsCustomRole && teamRoleUpdate.customRoleId) {
@@ -533,10 +578,7 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
             select: { organizationId: true },
           });
           if (!customRole || customRole.organizationId !== organizationId) {
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "Custom role not found",
-            });
+            throw new NotFoundError("custom_role_not_found", "CustomRole", teamRoleUpdate.customRoleId ?? "unknown");
           }
         }
 
@@ -549,38 +591,34 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           nextRole !== TeamUserRole.ADMIN;
 
         if (isDemotingLastAdmin) {
-          const teamAdminCount = await tx.teamUser.count({
-            where: { teamId, role: TeamUserRole.ADMIN },
+          const teamAdminCount = await tx.roleBinding.count({
+            where: { organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, role: TeamUserRole.ADMIN, userId: { not: null } },
           });
           if (teamAdminCount <= 1) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "Cannot remove or demote the last admin from this team",
-            });
+            throw new ValidationError("Cannot remove or demote the last admin from this team");
           }
         }
 
         const roleUnchanged =
           currentMembership.role === nextRole &&
           (shouldClearCustomRole
-            ? currentMembership.assignedRoleId === null
-            : currentMembership.assignedRoleId ===
-              teamRoleUpdate.customRoleId);
+            ? currentMembership.customRoleId === null
+            : currentMembership.customRoleId === teamRoleUpdate.customRoleId);
         if (roleUnchanged) continue;
 
-        await tx.teamUser.update({
-          where: {
-            userId_teamId: {
-              userId,
-              teamId,
-            },
-          },
+        // Update TEAM-scoped RoleBinding
+        await tx.roleBinding.deleteMany({
+          where: { organizationId, userId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId },
+        });
+        await tx.roleBinding.create({
           data: {
+            id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+            organizationId,
+            userId,
             role: nextRole,
-            assignedRoleId: shouldClearCustomRole
-              ? null
-              : teamRoleUpdate.customRoleId,
+            customRoleId: shouldClearCustomRole ? null : (teamRoleUpdate.customRoleId ?? null),
+            scopeType: RoleBindingScopeType.TEAM,
+            scopeId: teamId,
           },
         });
       }
@@ -647,11 +685,8 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           });
         }
 
-        const adminCount = await tx.teamUser.count({
-          where: {
-            teamId,
-            role: TeamUserRole.ADMIN,
-          },
+        const adminCount = await tx.roleBinding.count({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, role: TeamUserRole.ADMIN, userId: { not: null } },
         });
 
         if (adminCount === 0) {
@@ -661,25 +696,19 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           });
         }
 
-        const targetUserMembership = await tx.teamUser.findUnique({
-          where: {
-            userId_teamId: {
-              userId,
-              teamId,
-            },
-          },
+        const targetUserBinding = await tx.roleBinding.findFirst({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, userId },
           select: { role: true },
         });
 
-        if (!targetUserMembership) {
+        if (!targetUserBinding) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "User is not a member of this team",
           });
         }
 
-        const isTargetUserAdmin =
-          targetUserMembership.role === TeamUserRole.ADMIN;
+        const isTargetUserAdmin = targetUserBinding.role === TeamUserRole.ADMIN;
 
         if (adminCount === 1 && isTargetUserAdmin) {
           if (userId === currentUserId) {
@@ -696,24 +725,23 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           });
         }
 
-        await tx.teamUser.update({
-          where: {
-            userId_teamId: {
-              userId,
-              teamId,
-            },
-          },
+        await tx.roleBinding.deleteMany({
+          where: { organizationId: team.organizationId, userId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId },
+        });
+        await tx.roleBinding.create({
           data: {
+            id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+            organizationId: team.organizationId,
+            userId,
             role: TeamUserRole.CUSTOM,
-            assignedRoleId: storedCustomRoleId,
+            customRoleId: storedCustomRoleId,
+            scopeType: RoleBindingScopeType.TEAM,
+            scopeId: teamId,
           },
         });
 
-        const finalAdminCount = await tx.teamUser.count({
-          where: {
-            teamId,
-            role: TeamUserRole.ADMIN,
-          },
+        const finalAdminCount = await tx.roleBinding.count({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, role: TeamUserRole.ADMIN, userId: { not: null } },
         });
 
         if (finalAdminCount === 0) {
@@ -757,14 +785,10 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
               message: LITE_MEMBER_VIEWER_ONLY_ERROR,
             });
           }
-
         }
 
-        const adminCount = await tx.teamUser.count({
-          where: {
-            teamId,
-            role: TeamUserRole.ADMIN,
-          },
+        const adminCount = await tx.roleBinding.count({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, role: TeamUserRole.ADMIN, userId: { not: null } },
         });
 
         if (adminCount === 0) {
@@ -774,27 +798,20 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           });
         }
 
-        const targetUserMembership = await tx.teamUser.findUnique({
-          where: {
-            userId_teamId: {
-              userId,
-              teamId,
-            },
-          },
+        const targetUserBinding = await tx.roleBinding.findFirst({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, userId },
           select: { role: true },
         });
 
-        if (!targetUserMembership) {
+        if (!targetUserBinding) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "User is not a member of this team",
           });
         }
 
-        const isTargetUserAdmin =
-          targetUserMembership.role === TeamUserRole.ADMIN;
-        const wouldDemoteAdmin =
-          isTargetUserAdmin && role !== TeamUserRole.ADMIN;
+        const isTargetUserAdmin = targetUserBinding.role === TeamUserRole.ADMIN;
+        const wouldDemoteAdmin = isTargetUserAdmin && role !== TeamUserRole.ADMIN;
 
         if (adminCount === 1 && wouldDemoteAdmin) {
           if (userId === currentUserId) {
@@ -811,24 +828,23 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           });
         }
 
-        await tx.teamUser.update({
-          where: {
-            userId_teamId: {
-              userId,
-              teamId,
-            },
-          },
+        await tx.roleBinding.deleteMany({
+          where: { organizationId: team.organizationId, userId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId },
+        });
+        await tx.roleBinding.create({
           data: {
-            role,
-            assignedRoleId: null,
+            id: generate(KSUID_RESOURCES.ROLE_BINDING).toString(),
+            organizationId: team.organizationId,
+            userId,
+            role: role as TeamUserRole,
+            customRoleId: null,
+            scopeType: RoleBindingScopeType.TEAM,
+            scopeId: teamId,
           },
         });
 
-        const finalAdminCount = await tx.teamUser.count({
-          where: {
-            teamId,
-            role: TeamUserRole.ADMIN,
-          },
+        const finalAdminCount = await tx.roleBinding.count({
+          where: { organizationId: team.organizationId, scopeType: RoleBindingScopeType.TEAM, scopeId: teamId, role: TeamUserRole.ADMIN, userId: { not: null } },
         });
 
         if (finalAdminCount === 0) {
@@ -908,59 +924,90 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
       andConditions.push({ createdAt: dateFilter });
     }
 
+    // Gateway-resource deep-link filter (`/settings/audit-log?targetKind=…
+    // &targetId=…`). Both columns live on `AuditLog` post-consolidation —
+    // see migration 20260425000000_consolidate_gateway_audit_into_audit_log.
+    // targetId is only honored when paired with targetKind so a stray
+    // `?targetId=` from a typo'd URL cannot match across kinds.
+    if (filters.targetKind) {
+      andConditions.push({ targetKind: filters.targetKind });
+      if (filters.targetId) {
+        andConditions.push({ targetId: filters.targetId });
+      }
+    }
+
     if (andConditions.length > 1) {
       where.AND = andConditions;
     } else {
       Object.assign(where, andConditions[0]);
     }
 
-    const totalCount = await this.prisma.auditLog.count({ where });
+    const [totalCount, rows] = await Promise.all([
+      this.prisma.auditLog.count({ where }),
+      this.prisma.auditLog.findMany({
+        where,
+        skip: pageOffset,
+        take: pageSize,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
 
-    const auditLogs = await this.prisma.auditLog.findMany({
-      where,
-      take: pageSize,
-      skip: pageOffset,
-      orderBy: { createdAt: "desc" },
-    });
-
-    const userIds = [...new Set(auditLogs.map((log) => log.userId))];
+    // userId is nullable post-consolidation (system-actor writes) — filter
+    // null out before passing to the Prisma `IN` predicate, which rejects
+    // null array members at runtime.
+    const userIds = [
+      ...new Set(
+        rows.map((r) => r.userId).filter((id): id is string => !!id),
+      ),
+    ];
     const projectIds = [
       ...new Set(
-        auditLogs
-          .map((log) => log.projectId)
-          .filter((id): id is string => !!id),
+        rows.map((r) => r.projectId).filter((id): id is string => !!id),
       ),
     ];
 
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, name: true, email: true },
-    });
-
-    const projects = await this.prisma.project.findMany({
-      where: { id: { in: projectIds } },
-      select: { id: true, name: true },
-    });
-
+    const [users, projects] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, name: true, email: true },
+      }),
+      this.prisma.project.findMany({
+        where: { id: { in: projectIds } },
+        select: { id: true, name: true },
+      }),
+    ]);
     const userMap = new Map(users.map((u) => [u.id, u]));
     const projectMap = new Map(projects.map((p) => [p.id, p]));
 
-    const enrichedAuditLogs: EnrichedAuditLog[] = auditLogs.map((log) => ({
-      id: log.id,
-      createdAt: log.createdAt,
-      userId: log.userId,
-      organizationId: log.organizationId,
-      projectId: log.projectId,
-      action: log.action,
-      payload: log.args,
-      ipAddress: log.ipAddress,
-      userAgent: log.userAgent,
-      error: log.error,
-      args: log.args,
-      user: userMap.get(log.userId) ?? null,
-      project: log.projectId ? (projectMap.get(log.projectId) ?? null) : null,
-    }));
+    const auditLogs: EnrichedAuditLog[] = rows.map((log) => {
+      // Gateway-shape rows are emitted under the `gateway.<resource>.<verb>`
+      // dotted naming convention; the `gateway.` prefix is the load-bearing
+      // discriminator (also documented for SIEM scoping via LIKE 'gateway.%').
+      // Presence of targetKind alone is not a safe signal — platform features
+      // could in principle add their own target tracking later.
+      const isGateway = log.action.startsWith("gateway.");
+      return {
+        id: log.id,
+        createdAt: log.createdAt,
+        userId: log.userId,
+        organizationId: log.organizationId,
+        projectId: log.projectId,
+        action: log.action,
+        payload: isGateway ? (log.after ?? log.before ?? null) : log.args,
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        error: log.error,
+        args: isGateway ? { before: log.before, after: log.after } : log.args,
+        user: log.userId ? (userMap.get(log.userId) ?? null) : null,
+        project: log.projectId ? (projectMap.get(log.projectId) ?? null) : null,
+        source: isGateway ? "gateway" : "platform",
+        targetKind: log.targetKind,
+        targetId: log.targetId,
+        before: log.before,
+        after: log.after,
+      };
+    });
 
-    return { auditLogs: enrichedAuditLogs, totalCount };
+    return { auditLogs, totalCount };
   }
 }

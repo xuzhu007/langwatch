@@ -48,12 +48,11 @@ export type EvaluatorWithFields = Evaluator & {
  * Standard output fields for built-in evaluators.
  * All built-in evaluators produce these fields.
  */
-const STANDARD_EVALUATOR_OUTPUT_FIELDS: EvaluatorField[] = [
+export const STANDARD_EVALUATOR_OUTPUT_FIELDS = [
   { identifier: "passed", type: "bool" },
   { identifier: "score", type: "float" },
   { identifier: "label", type: "str" },
-  { identifier: "details", type: "str" },
-];
+] as const satisfies readonly EvaluatorField[];
 
 // ============================================================================
 // Field Type Mapping
@@ -137,7 +136,7 @@ export class EvaluatorService {
     if (!workflow?.currentVersion?.dsl) {
       return {
         fields: [],
-        outputFields: STANDARD_EVALUATOR_OUTPUT_FIELDS,
+        outputFields: [...STANDARD_EVALUATOR_OUTPUT_FIELDS],
         workflowName: workflow?.name,
       };
     }
@@ -160,7 +159,7 @@ export class EvaluatorService {
             identifier: input.identifier,
             type: input.type,
           }))
-        : STANDARD_EVALUATOR_OUTPUT_FIELDS;
+        : [...STANDARD_EVALUATOR_OUTPUT_FIELDS];
 
     return {
       fields,
@@ -179,14 +178,14 @@ export class EvaluatorService {
    */
   private computeBuiltInOutputFields(evaluatorType: string): EvaluatorField[] {
     const def = AVAILABLE_EVALUATORS[evaluatorType as EvaluatorTypes];
-    if (!def) return STANDARD_EVALUATOR_OUTPUT_FIELDS;
+    if (!def) return [...STANDARD_EVALUATOR_OUTPUT_FIELDS];
 
     const fields: EvaluatorField[] = [];
     if (def.result.score) fields.push({ identifier: "score", type: "float" });
     if (def.result.passed) fields.push({ identifier: "passed", type: "bool" });
     if (def.result.label) fields.push({ identifier: "label", type: "str" });
 
-    return fields.length > 0 ? fields : STANDARD_EVALUATOR_OUTPUT_FIELDS;
+    return fields.length > 0 ? fields : [...STANDARD_EVALUATOR_OUTPUT_FIELDS];
   }
 
   /**
@@ -204,7 +203,7 @@ export class EvaluatorService {
     const fields = evaluatorType ? this.computeBuiltInFields(evaluatorType) : [];
     const outputFields = evaluatorType
       ? this.computeBuiltInOutputFields(evaluatorType)
-      : STANDARD_EVALUATOR_OUTPUT_FIELDS;
+      : [...STANDARD_EVALUATOR_OUTPUT_FIELDS];
 
     return {
       ...evaluator,
@@ -324,7 +323,11 @@ export class EvaluatorService {
       limit: 100,
     });
 
-    const userIds = [...new Set(logs.map((l) => l.userId))];
+    const userIds = [
+      ...new Set(
+        logs.map((l) => l.userId).filter((id): id is string => !!id),
+      ),
+    ];
     const users = await this.repository.findUsersByIds(userIds);
     const usersById = Object.fromEntries(users.map((u) => [u.id, u]));
 
@@ -333,7 +336,7 @@ export class EvaluatorService {
       action: log.action,
       createdAt: log.createdAt,
       args: log.args,
-      user: usersById[log.userId] ?? null,
+      user: log.userId ? (usersById[log.userId] ?? null) : null,
     }));
   }
 }

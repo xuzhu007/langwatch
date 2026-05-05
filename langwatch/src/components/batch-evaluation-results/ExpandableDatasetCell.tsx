@@ -10,8 +10,8 @@ import { useCallback, useRef, useState } from "react";
 import { LuCheck, LuCopy } from "react-icons/lu";
 
 import { Tooltip } from "~/components/ui/tooltip";
-import { isTextLikelyOverflowing } from "~/utils/textOverflowHeuristic";
 import { copyToClipboard } from "~/utils/clipboard";
+import { isTextLikelyOverflowing } from "~/utils/textOverflowHeuristic";
 
 // Max characters to display for performance
 const MAX_DISPLAY_CHARS = 10000;

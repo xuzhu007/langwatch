@@ -1,13 +1,11 @@
 import chalk from "chalk";
 import ora from "ora";
-import {
-  EvaluatorsApiService,
-  EvaluatorsApiError,
-} from "@/client-sdk/services/evaluators";
+import { EvaluatorsApiService } from "@/client-sdk/services/evaluators";
 import { checkApiKey } from "../../utils/apiKey";
 import { formatTable, formatRelativeTime } from "../../utils/formatting";
+import { failSpinner } from "../../utils/spinnerError";
 
-export const listEvaluatorsCommand = async (): Promise<void> => {
+export const listEvaluatorsCommand = async (options?: { format?: string }): Promise<void> => {
   checkApiKey();
 
   const service = new EvaluatorsApiService();
@@ -19,6 +17,11 @@ export const listEvaluatorsCommand = async (): Promise<void> => {
     spinner.succeed(
       `Found ${evaluators.length} evaluator${evaluators.length !== 1 ? "s" : ""}`,
     );
+
+    if (options?.format === "json") {
+      console.log(JSON.stringify(evaluators, null, 2));
+      return;
+    }
 
     if (evaluators.length === 0) {
       console.log();
@@ -64,16 +67,7 @@ export const listEvaluatorsCommand = async (): Promise<void> => {
       ),
     );
   } catch (error) {
-    spinner.fail();
-    if (error instanceof EvaluatorsApiError) {
-      console.error(chalk.red(`Error: ${error.message}`));
-    } else {
-      console.error(
-        chalk.red(
-          `Error fetching evaluators: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ),
-      );
-    }
+    failSpinner({ spinner, error, action: "fetch evaluators" });
     process.exit(1);
   }
 };

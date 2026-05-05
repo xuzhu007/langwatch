@@ -44,7 +44,7 @@ export class TtlCache<T> {
   }
 
   async set(key: string, value: T): Promise<void> {
-    // Always set in memory as fallback
+    // Always shadow-write to memory so fallback is warm if Redis goes down later
     this.memory.set(key, { value, expiresAt: Date.now() + this.ttlMs });
 
     const r = this.redis;
@@ -54,6 +54,36 @@ export class TtlCache<T> {
     } catch {
       // Redis unavailable, memory fallback already set
     }
+  }
+
+  /**
+   * Atomically set `key` only if it does not already exist (Redis SET NX EX).
+   * Returns `true` if this call claimed the key, `false` if it was already taken.
+   */
+  async claim(key: string, value: T): Promise<boolean> {
+    const r = this.redis;
+    if (r) {
+      try {
+        const result = await r.set(
+          `${this.prefix}${key}`,
+          JSON.stringify(value),
+          "EX",
+          this.ttlSeconds,
+          "NX",
+        );
+        if (result === "OK") {
+          this.memory.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+          return true;
+        }
+        return false;
+      } catch {
+        // Redis failed, fall through to memory
+      }
+    }
+
+    if (this.memoryGet(key) !== undefined) return false;
+    this.memory.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+    return true;
   }
 
   async delete(key: string): Promise<void> {

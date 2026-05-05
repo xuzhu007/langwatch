@@ -1,7 +1,7 @@
-import safe from "safe-regex2";
 import { TiktokenClient } from "~/server/app-layer/clients/tokenizer/tiktoken.client";
 import { createLogger } from "../../../../utils/logger/server";
 import { startSpan } from "../../../../utils/posthogErrorCapture";
+import { compileSafeRegex } from "../../../../utils/safeRegex";
 import {
   getLLMModelCosts,
   type MaybeStoredLLMModelCost,
@@ -120,19 +120,12 @@ const getSafeRegex = (pattern: string): RegExp | null => {
   const cached = regexCache.get(pattern);
   if (cached !== undefined) return cached;
 
-  try {
-    const re = new RegExp(pattern);
-    if (!safe(re)) {
-      logger.warn({ pattern }, "skipping unsafe regex in model cost matching");
-      regexCache.set(pattern, null);
-      return null;
-    }
-    regexCache.set(pattern, re);
-    return re;
-  } catch {
-    regexCache.set(pattern, null);
-    return null;
+  const re = compileSafeRegex(pattern);
+  if (!re) {
+    logger.warn({ pattern }, "skipping unsafe regex in model cost matching");
   }
+  regexCache.set(pattern, re);
+  return re;
 };
 
 /**
@@ -158,6 +151,34 @@ export function stripProviderSubtype(model: string): string {
 }
 
 /**
+ * Normalize Bedrock-style model IDs into the `<vendor>/<model>` shape
+ * the static registry uses. Bedrock identifies models as
+ *   [<region>.]<vendor>.<model>[-v<N>][:<version>]
+ * e.g. `eu.anthropic.claude-haiku-4-5-20251001-v1:0` →
+ *      `anthropic/claude-haiku-4-5-20251001`
+ * The registry regexes already match dated Claude/Nova slugs, so
+ * stripping just the Bedrock envelope is enough.
+ */
+export function normalizeBedrockModelId(model: string): string {
+  let normalized = model;
+  // 1. Strip `:<version>` suffix (`:0`, `:1`, `:latest`).
+  normalized = normalized.replace(/:[0-9a-z.]+$/i, "");
+  // 2. Strip `-v<N>` revision marker (`-v1`, `-v2`).
+  normalized = normalized.replace(/-v\d+$/i, "");
+  // 3. Strip cross-region inference prefix (`eu.`, `us.`, `apac.`,
+  //    `ap.`, `eu-west-*.`, ...). Only the leading region segment;
+  //    vendor segment keeps its own dots untouched.
+  normalized = normalized.replace(/^[a-z]{2,}(?:-[a-z0-9]+)*\.(?=[a-z]+\.)/i, "");
+  // 4. Vendor-dot → vendor-slash. First dot only — any dots in the
+  //    vendor-model half (e.g. `claude-opus-4.5`) stay.
+  const firstDot = normalized.indexOf(".");
+  if (firstDot > 0 && !normalized.slice(0, firstDot).includes("/")) {
+    normalized = normalized.slice(0, firstDot) + "/" + normalized.slice(firstDot + 1);
+  }
+  return normalized;
+}
+
+/**
  * Matches a model string against cost entries with cascading fallbacks:
  * 1. Raw model string
  * 2. Strip provider subtype (openai.responses → openai)
@@ -174,7 +195,17 @@ export const matchModelCostWithFallbacks = (
 
   const strippedSubtype = stripProviderSubtype(model);
   if (strippedSubtype !== model) {
-    return matchingLLMModelCost(strippedSubtype, costs);
+    const subtypeMatch = matchingLLMModelCost(strippedSubtype, costs);
+    if (subtypeMatch) return subtypeMatch;
+  }
+
+  // Bedrock-shaped IDs (cross-region prefix + `-v<N>:0` suffix +
+  // vendor-dot-model) don't match registry keys directly — fall back to
+  // the normalized form so `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
+  // hits the `anthropic/claude-haiku-4.5` entry's regex.
+  const normalizedBedrock = normalizeBedrockModelId(model);
+  if (normalizedBedrock !== model) {
+    return matchingLLMModelCost(normalizedBedrock, costs);
   }
 
   return undefined;

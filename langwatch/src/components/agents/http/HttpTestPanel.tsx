@@ -25,12 +25,12 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 import {
   messagesToJson,
   type TestMessage,
   TestMessagesBuilder,
 } from "./TestMessagesBuilder";
-import { copyToClipboard } from "~/utils/clipboard";
 
 const DEFAULT_THREAD_ID = "test-thread-123";
 const DEFAULT_MESSAGES: TestMessage[] = [{ role: "user", content: "Hello" }];
