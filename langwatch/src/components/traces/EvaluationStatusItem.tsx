@@ -10,7 +10,7 @@ import {
 } from "@chakra-ui/react";
 import { formatDistanceToNow } from "date-fns";
 import { MoreVertical, Pencil } from "lucide-react";
-import { useRouter } from "next/router";
+import { useRouter } from "~/utils/compat/next-router";
 import numeral from "numeral";
 import { useMemo } from "react";
 import type { EvaluatorTypes } from "~/server/evaluations/evaluators.generated";
@@ -158,6 +158,10 @@ export function EvaluationStatusItem({
   };
 
   const hasDetails = check.status === "processed" && check.details;
+  const errorMessage =
+    check.status === "error"
+      ? check.error?.message ?? check.details ?? null
+      : null;
 
   return (
     <Box width="full">
@@ -362,7 +366,7 @@ export function EvaluationStatusItem({
       )}
 
       {/* Error message */}
-      {check.status === "error" && check.error?.message && (
+      {errorMessage && (
         <Box paddingLeft="22px" marginTop={2}>
           <Box
             borderTopWidth="1px"
@@ -371,12 +375,9 @@ export function EvaluationStatusItem({
             paddingTop={2}
           >
             <Text fontSize="sm" color="red.fg">
-              <HoverableBigText
-                expandedVersion={check.error.message}
-                lineClamp={3}
-              >
+              <HoverableBigText expandedVersion={errorMessage} lineClamp={3}>
                 <Box as="span" whiteSpace="pre-wrap" wordBreak="break-word">
-                  {check.error.message}
+                  {errorMessage}
                 </Box>
               </HoverableBigText>
             </Text>

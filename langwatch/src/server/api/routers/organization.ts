@@ -1,5 +1,6 @@
 import {
   OrganizationUserRole,
+  RoleBindingScopeType,
   TeamUserRole,
 } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
@@ -19,6 +20,7 @@ import { isTeamRoleAllowedForOrganizationRole, type TeamRoleValue } from "~/util
 import { getApp } from "~/server/app-layer/app";
 import { trackServerEvent } from "~/server/posthog";
 import { fireTeamMemberInvitedNurturing } from "~/../ee/billing/nurturing/hooks/featureAdoption";
+import { fireInviteAcceptedNurturingCalls } from "~/../ee/billing/nurturing/hooks/inviteAcceptance";
 import { elasticsearchMigrate } from "../../../tasks/elasticMigrate";
 import {
   InviteService,
@@ -26,6 +28,8 @@ import {
 } from "../../invites/invite.service";
 import {
   DuplicateInviteError,
+  INVITE_ALREADY_ACCEPTED_MESSAGE,
+  INVITE_NOT_READY_MESSAGE,
   InviteNotFoundError,
   OrganizationNotFoundError,
 } from "../../invites/errors";
@@ -39,9 +43,11 @@ import { LimitExceededError } from "../../license-enforcement/errors";
 import { captureException } from "~/utils/posthogErrorCapture";
 import { skipPermissionCheck } from "../rbac";
 import { checkOrganizationPermission, checkTeamPermission } from "../rbac";
-import { signUpDataSchema } from "./onboarding";
+import { signUpDataSchema } from "~/server/schemas/sign-up-data.schema";
 import { LITE_MEMBER_VIEWER_ONLY_ERROR } from "~/server/app-layer/organizations/compute-effective-team-role-updates";
 import type { FullyLoadedOrganization } from "~/server/app-layer/organizations/repositories/organization.repository";
+import { PrismaRoleBindingRepository } from "~/server/app-layer/role-bindings/repositories/role-binding.prisma.repository";
+import { enrichTeamWithRoleBindings } from "~/server/app-layer/organizations/organization.service";
 
 
 const customTeamRoleInputSchema = z
@@ -59,6 +65,7 @@ const teamRoleInputSchema = z.union([
   builtInTeamRoleInputSchema,
   customTeamRoleInputSchema,
 ]);
+
 
 export const organizationRouter = createTRPCRouter({
   createAndAssign: protectedProcedure
@@ -127,6 +134,15 @@ export const organizationRouter = createTRPCRouter({
         demoProjectId,
       })) as FullyLoadedOrganization[];
 
+      // Fetch all team- and org-scoped RoleBindings for the user (direct or via group)
+      // so we can synthesize team membership for users who have access only through groups.
+      const orgIds = organizations.map((o) => o.id);
+      const userRoleBindings =
+        orgIds.length > 0
+          ? await new PrismaRoleBindingRepository(ctx.prisma).listForOrganizationsAndUser({ orgIds, userId })
+          : [];
+
+
       for (const organization of organizations) {
         for (const project of organization.teams.flatMap(
           (team) => team.projects,
@@ -178,7 +194,19 @@ export const organizationRouter = createTRPCRouter({
           );
         }
 
+        // A user can be an org admin via either the legacy OrganizationUser row
+        // OR via an ORGANIZATION-scoped ADMIN RoleBinding (direct or via group).
+        // Without this, users onboarded through the RoleBinding flow with no
+        // OrganizationUser row are treated as external and lose access to every
+        // team that lacks an explicit team/project binding.
+        const isOrgAdminViaBinding = userRoleBindings.some(
+          (b) =>
+            b.organizationId === organization.id &&
+            b.scopeType === RoleBindingScopeType.ORGANIZATION &&
+            b.role === TeamUserRole.ADMIN,
+        );
         const isExternal =
+          !isOrgAdminViaBinding &&
           organization.members[0]?.role !== "ADMIN" &&
           organization.members[0]?.role !== "MEMBER";
 
@@ -187,6 +215,21 @@ export const organizationRouter = createTRPCRouter({
             (member) =>
               member.userId === userId || member.userId === demoProjectUserId,
           );
+
+          // RoleBinding is authoritative for team membership and role.
+          // Always prefer a team-scoped RoleBinding over any stale TeamUser row,
+          // since dual-writes to TeamUser have been removed.
+          // Org-scoped bindings are intentionally excluded: org MEMBER/VIEWER bindings
+          // only grant organization:view — they don't give team-level access.
+          // Org admins are handled by the organizationRole === ADMIN shortcut in
+          // the frontend hasPermission and backend resolveTeamPermission.
+          //
+          // NOTE: imported as a standalone function (not a service method) because
+          // getApp().organizations is wrapped by traced() which would turn this
+          // sync call into a Promise and silently drop team.members.
+          const enriched = enrichTeamWithRoleBindings(team, userId, userRoleBindings, organization.id);
+          team.members = enriched.members;
+
           if (isDemoOrg) return true;
           return isExternal
             ? team.members.some((member) => member.userId === userId)
@@ -958,118 +1001,56 @@ export const organizationRouter = createTRPCRouter({
       if (invite.status === "ACCEPTED") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Invite was already accepted",
+          message: INVITE_ALREADY_ACCEPTED_MESSAGE,
         });
       }
 
-      if (session.user.email !== invite.email) {
+      if (invite.status !== "PENDING") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: INVITE_NOT_READY_MESSAGE,
+        });
+      }
+
+      // Case-insensitive email comparison: BetterAuth lowercases emails
+      // during signup/signin (see `findUserByEmail` in
+      // node_modules/better-auth/dist/db/internal-adapter.mjs) so
+      // `session.user.email` is always lowercase, but `invite.email`
+      // preserves the admin's original casing. A strict `!==` would
+      // reject an "Alice@Acme.com" invite for an "alice@acme.com" user.
+      // The old NextAuth flow worked accidentally because it didn't
+      // lowercase emails either — this is now a real mismatch post-migration.
+      if (
+        session.user.email.toLowerCase() !== invite.email.trim().toLowerCase()
+      ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: `The invite was sent to ${invite.email}, but you are signed in as ${session.user.email}`,
         });
       }
 
-      await prisma.$transaction(async (prisma) => {
-        // Create org membership; skip if it already exists
-        await prisma.organizationUser.createMany({
-          data: [
-            {
-              userId: session.user.id,
-              organizationId: invite.organizationId,
-              role: invite.role,
-            },
-          ],
-          skipDuplicates: true,
+      await prisma.$transaction(async (tx) => {
+        const txInviteService = InviteService.create(tx);
+        await txInviteService.applyInvite({
+          userId: session.user.id,
+          invite,
         });
+      });
 
-        // Use teamAssignments if available (new format), otherwise fall back to legacy teamIds
-        let teamMembershipData: Array<{
-          userId: string;
-          teamId: string;
-          role: TeamUserRole;
-          customRoleId?: string;
-        }> = [];
+      void getApp()
+        .notifications.sendSlackSignupEvent({
+          userName: session.user.name,
+          userEmail: session.user.email,
+          organizationName: invite.organization.name,
+        })
+        .catch(captureException);
 
-        if (invite.teamAssignments && Array.isArray(invite.teamAssignments)) {
-          // New format: use per-team roles from teamAssignments
-          const assignments = invite.teamAssignments as Array<{
-            teamId: string;
-            role: TeamUserRole;
-            customRoleId?: string;
-          }>;
-          teamMembershipData = assignments.map((assignment) => ({
-            userId: session.user.id,
-            teamId: assignment.teamId,
-            role: assignment.role,
-            customRoleId: assignment.customRoleId,
-          }));
-        } else {
-          // Legacy format: use organization role mapping
-          const dedupedTeamIds = Array.from(
-            new Set(
-              invite.teamIds
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            ),
-          );
-
-          teamMembershipData = dedupedTeamIds.map((teamId) => ({
-            userId: session.user.id,
-            teamId,
-            role: ORGANIZATION_TO_TEAM_ROLE_MAP[invite.role],
-          }));
-        }
-
-        if (teamMembershipData.length > 0) {
-          // Handle custom roles separately since createMany doesn't support assignedRoleId
-          const builtInRoles = teamMembershipData.filter(
-            (data) => data.role !== TeamUserRole.CUSTOM,
-          );
-          const customRoles = teamMembershipData.filter(
-            (data) => data.role === TeamUserRole.CUSTOM && data.customRoleId,
-          );
-
-          // Create team memberships with built-in roles
-          if (builtInRoles.length > 0) {
-            await prisma.teamUser.createMany({
-              data: builtInRoles.map(
-                ({ customRoleId: _customRoleId, ...data }) => data,
-              ),
-              skipDuplicates: true,
-            });
-          }
-
-          // Create team memberships with custom roles (requires individual creates for assignedRoleId)
-          for (const customRole of customRoles) {
-            try {
-              await prisma.teamUser.create({
-                data: {
-                  userId: customRole.userId,
-                  teamId: customRole.teamId,
-                  role: TeamUserRole.CUSTOM,
-                  assignedRoleId: customRole.customRoleId!,
-                },
-              });
-            } catch (error: unknown) {
-              // Ignore unique constraint violations (concurrent inserts)
-              if (
-                error instanceof PrismaClientKnownRequestError &&
-                error.code === "P2002"
-              ) {
-                // Swallow the error - record already exists
-                continue;
-              }
-              // Rethrow other errors
-              throw error;
-            }
-          }
-        }
-
-        await prisma.organizationInvite.update({
-          where: { id: invite.id, organizationId: invite.organizationId },
-          data: { status: "ACCEPTED" },
-        });
+      fireInviteAcceptedNurturingCalls({
+        userId: session.user.id,
+        email: session.user.email,
+        name: session.user.name,
+        organizationId: invite.organization.id,
+        organizationName: invite.organization.name,
       });
 
       const inviteService = InviteService.create(prisma);
@@ -1273,29 +1254,34 @@ export const organizationRouter = createTRPCRouter({
       });
       const organizationTeamIds = organizationTeams.map((team) => team.id);
 
-      const currentMemberships = await prisma.teamUser.findMany({
+      const currentTeamBindings = await prisma.roleBinding.findMany({
         where: {
+          organizationId: input.organizationId,
           userId: input.userId,
-          teamId: { in: organizationTeamIds },
+          scopeType: RoleBindingScopeType.TEAM,
+          scopeId: { in: organizationTeamIds },
         },
-        select: { teamId: true, role: true, assignedRoleId: true },
+        select: { scopeId: true, role: true, customRoleId: true },
       });
 
+      const currentMemberships = currentTeamBindings.map((b) => ({
+        teamId: b.scopeId,
+        role: b.role,
+      }));
+
       const userPermissions = await (async () => {
-        const teamIds = organizationTeamIds;
-        if (teamIds.length === 0) return undefined;
-        const teamUsers = await prisma.teamUser.findMany({
-          where: {
-            userId: input.userId,
-            teamId: { in: teamIds },
-            assignedRoleId: { not: null },
-          },
-          include: { assignedRole: true },
+        const customRoleIds = currentTeamBindings
+          .map((b) => b.customRoleId)
+          .filter((id): id is string => !!id);
+        if (customRoleIds.length === 0) return undefined;
+        const customRoles = await prisma.customRole.findMany({
+          where: { id: { in: customRoleIds } },
+          select: { permissions: true },
         });
         const allPermissions: string[] = [];
-        for (const tu of teamUsers) {
-          if (tu.assignedRole?.permissions) {
-            allPermissions.push(...(tu.assignedRole.permissions as string[]));
+        for (const cr of customRoles) {
+          if (cr.permissions) {
+            allPermissions.push(...(cr.permissions as string[]));
           }
         }
         return allPermissions.length > 0 ? allPermissions : undefined;
@@ -1358,9 +1344,14 @@ export const organizationRouter = createTRPCRouter({
         action: z.string().optional(),
         startDate: z.number().optional(),
         endDate: z.number().optional(),
+        // Gateway deep-link filters — forwarded to the UNION query so a
+        // VK/budget detail page can link operators straight to the
+        // pre-filtered history of that resource.
+        targetKind: z.string().optional(),
+        targetId: z.string().optional(),
       }),
     )
-    .use(checkOrganizationPermission("organization:manage"))
+    .use(checkOrganizationPermission("auditLog:view"))
     .query(async ({ ctx, input }) => {
       await assertEnterprisePlan({
         organizationId: input.organizationId,
@@ -1377,6 +1368,8 @@ export const organizationRouter = createTRPCRouter({
         action: input.action,
         startDate: input.startDate,
         endDate: input.endDate,
+        targetKind: input.targetKind,
+        targetId: input.targetId,
       });
     }),
 });

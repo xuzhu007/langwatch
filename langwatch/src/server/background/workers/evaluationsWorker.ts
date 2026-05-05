@@ -40,6 +40,8 @@ import {
   prepareEnvKeys,
   prepareLitellmParams,
 } from "../../api/routers/modelProviders.utils";
+import { resolveMaxTokensCeiling } from "../../modelProviders/resolveMaxTokensCeiling";
+import { clampMaxTokens } from "../../../utils/clampMaxTokens";
 import { prisma } from "../../db";
 import {
   DEFAULT_MAPPINGS,
@@ -67,6 +69,11 @@ import {
   tryAndConvertTo,
 } from "../../tracer/tracesMapping";
 import { formatSpansDigest } from "../../tracer/spanToReadableSpan";
+import {
+  AZURE_SAFETY_NOT_CONFIGURED_MESSAGE,
+  getAzureSafetyEnvFromProject,
+  isAzureEvaluatorType,
+} from "../../app-layer/evaluations/azure-safety-env";
 import { runEvaluationWorkflow } from "../../workflows/runWorkflow";
 import {
   EVALUATIONS_QUEUE,
@@ -525,9 +532,23 @@ export const runEvaluation = async ({
 
   const evaluator = AVAILABLE_EVALUATORS[builtInEvaluatorType];
 
-  let evaluatorEnv: Record<string, string> = Object.fromEntries(
-    (evaluator.envVars ?? []).map((envVar) => [envVar, process.env[envVar]!]),
-  );
+  // Hard cutover: Azure Content Safety evaluators never read from process.env.
+  // Require per-project azure_safety Model Provider credentials.
+  let evaluatorEnv: Record<string, string>;
+  if (isAzureEvaluatorType(builtInEvaluatorType)) {
+    const azureEnv = await getAzureSafetyEnvFromProject(projectId);
+    if (!azureEnv) {
+      return {
+        status: "skipped",
+        details: AZURE_SAFETY_NOT_CONFIGURED_MESSAGE,
+      };
+    }
+    evaluatorEnv = azureEnv;
+  } else {
+    evaluatorEnv = Object.fromEntries(
+      (evaluator.envVars ?? []).map((envVar) => [envVar, process.env[envVar]!]),
+    );
+  }
 
   const setupModelEnv = async (
     model: string,
@@ -578,9 +599,13 @@ export const runEvaluation = async ({
       "seed",
       "reasoning_effort",
     ];
+    const maxTokensCeiling = resolveMaxTokensCeiling(model, modelProvider);
     for (const param of generationParams) {
-      const value = settings?.[param];
+      let value = settings?.[param];
       if (value !== undefined && value !== null) {
+        if (param === "max_tokens" && typeof value === "number") {
+          value = clampMaxTokens(value, maxTokensCeiling);
+        }
         const envKey = embeddings
           ? `X_LITELLM_EMBEDDINGS_${param}`
           : `X_LITELLM_${param}`;

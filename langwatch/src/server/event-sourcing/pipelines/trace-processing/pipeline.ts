@@ -23,13 +23,16 @@ export interface TraceProcessingPipelineDeps {
   logRecordAppendStore: AppendStore<NormalizedLogRecord>;
   metricRecordAppendStore: AppendStore<NormalizedMetricRecord>;
   traceSummaryStore: FoldProjectionStore<TraceSummaryData>;
+  originGateReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   evaluationTriggerReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   customEvaluationSyncReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   traceUpdateBroadcastReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   projectMetadataReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   simulationMetricsSyncReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
+  experimentMetricsSyncReactor: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   spanStorageBroadcastReactor: ReactorDefinition<TraceProcessingEvent>;
   customerIoTraceSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
+  gatewayBudgetSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
 }
 
 /**
@@ -55,11 +58,13 @@ export function createTraceProcessingPipeline(deps: TraceProcessingPipelineDeps)
     .withMapProjection("metricRecordStorage", new MetricRecordStorageMapProjection({
       store: deps.metricRecordAppendStore,
     }))
+    .withReactor("traceSummary", "originGate", deps.originGateReactor)
     .withReactor("traceSummary", "evaluationTrigger", deps.evaluationTriggerReactor)
     .withReactor("traceSummary", "customEvaluationSync", deps.customEvaluationSyncReactor)
     .withReactor("traceSummary", "traceUpdateBroadcast", deps.traceUpdateBroadcastReactor)
     .withReactor("traceSummary", "projectMetadata", deps.projectMetadataReactor)
     .withReactor("traceSummary", "simulationMetricsSync", deps.simulationMetricsSyncReactor)
+    .withReactor("traceSummary", "experimentMetricsSync", deps.experimentMetricsSyncReactor)
     .withReactor("spanStorage", "spanStorageBroadcast", deps.spanStorageBroadcastReactor);
 
   if (deps.customerIoTraceSyncReactor) {
@@ -67,6 +72,14 @@ export function createTraceProcessingPipeline(deps: TraceProcessingPipelineDeps)
       "traceSummary",
       "customerIoTraceSync",
       deps.customerIoTraceSyncReactor,
+    );
+  }
+
+  if (deps.gatewayBudgetSyncReactor) {
+    builder = builder.withReactor(
+      "traceSummary",
+      "gatewayBudgetSync",
+      deps.gatewayBudgetSyncReactor,
     );
   }
 

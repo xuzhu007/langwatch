@@ -1,9 +1,9 @@
-import { generateUUID } from "~/utils/generateUUID";
+import { generateClientId } from "~/utils/generateClientId";
 
 export function createTabId() {
-  return `tab-${generateUUID()}`;
+  return `tab-${generateClientId()}`;
 }
 
 export function createWindowId() {
-  return `window-${generateUUID()}`;
+  return `window-${generateClientId()}`;
 }

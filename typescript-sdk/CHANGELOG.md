@@ -1,5 +1,116 @@
 # Changelog
 
+## [0.27.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.26.0...typescript-sdk@v0.27.0) (2026-04-30)
+
+
+### Features
+
+* **ai-gateway:** ship v1 GA — virtual keys, budgets, guardrails, Go data plane ([#3327](https://github.com/langwatch/langwatch/issues/3327)) ([bd6ce5b](https://github.com/langwatch/langwatch/commit/bd6ce5b09492d31471ce2120401dd97751348821))
+
+
+### Bug Fixes
+
+* align TS SDK setRAGContexts with backend canonical attribute key ([#3394](https://github.com/langwatch/langwatch/issues/3394)) ([e9b502f](https://github.com/langwatch/langwatch/commit/e9b502f286aec75db62933bf8e9c65dad1500b52))
+* **sdk:** bump protobufjs and liquidjs to patch high/critical CVEs ([#3608](https://github.com/langwatch/langwatch/issues/3608)) ([7d1180c](https://github.com/langwatch/langwatch/commit/7d1180c4ed9e6e8d4d6173dfbc12801315ab2fb9))
+
+
+### Miscellaneous
+
+* **deps-dev:** bump @eslint/js from 9.36.0 to 9.39.4 in /typescript-sdk ([#2098](https://github.com/langwatch/langwatch/issues/2098)) ([050bcf5](https://github.com/langwatch/langwatch/commit/050bcf5a0a6307af9976f9c7a141ca77ba67e81c))
+* **deps-dev:** bump @eslint/js in /typescript-sdk ([050bcf5](https://github.com/langwatch/langwatch/commit/050bcf5a0a6307af9976f9c7a141ca77ba67e81c))
+* **deps-dev:** bump @opentelemetry/sdk-trace-web from 2.1.0 to 2.6.0 in /typescript-sdk ([#2103](https://github.com/langwatch/langwatch/issues/2103)) ([f717283](https://github.com/langwatch/langwatch/commit/f71728360b64870461002ae0f48fed3616323932))
+* **deps-dev:** bump @opentelemetry/sdk-trace-web in /typescript-sdk ([f717283](https://github.com/langwatch/langwatch/commit/f71728360b64870461002ae0f48fed3616323932))
+* **deps-dev:** bump msw from 2.11.3 to 2.12.10 in /typescript-sdk ([#2091](https://github.com/langwatch/langwatch/issues/2091)) ([e6f387e](https://github.com/langwatch/langwatch/commit/e6f387ef643f1ea9bd7813b786573d80621bc891))
+* **deps-dev:** bump nock from 14.0.10 to 14.0.11 in /typescript-sdk ([#2102](https://github.com/langwatch/langwatch/issues/2102)) ([faa599a](https://github.com/langwatch/langwatch/commit/faa599acd2bee219a4a79a09f0f7723d6959e7c3))
+* **deps-dev:** bump nock from 14.0.11 to 14.0.13 in /typescript-sdk ([#3497](https://github.com/langwatch/langwatch/issues/3497)) ([45617f3](https://github.com/langwatch/langwatch/commit/45617f35ba6c4484739719c8c69e04a8e994f9d8))
+* **deps:** bump @opentelemetry/resources from 2.5.1 to 2.6.0 in /typescript-sdk ([#2104](https://github.com/langwatch/langwatch/issues/2104)) ([5a89f3e](https://github.com/langwatch/langwatch/commit/5a89f3eb25daec41b4fc5d5cb03b3ac36debe660))
+* **deps:** bump @opentelemetry/resources in /typescript-sdk ([5a89f3e](https://github.com/langwatch/langwatch/commit/5a89f3eb25daec41b4fc5d5cb03b3ac36debe660))
+* **deps:** bump @opentelemetry/sdk-metrics from 2.1.0 to 2.6.0 in /typescript-sdk ([#2095](https://github.com/langwatch/langwatch/issues/2095)) ([05cb1d5](https://github.com/langwatch/langwatch/commit/05cb1d5ab82db16565a4a809b8a30c5595d74cf4))
+* **deps:** bump @opentelemetry/sdk-metrics in /typescript-sdk ([05cb1d5](https://github.com/langwatch/langwatch/commit/05cb1d5ab82db16565a4a809b8a30c5595d74cf4))
+* **deps:** bump @opentelemetry/semantic-conventions from 1.39.0 to 1.40.0 in /typescript-sdk ([#2086](https://github.com/langwatch/langwatch/issues/2086)) ([f64ef11](https://github.com/langwatch/langwatch/commit/f64ef11bef640382c4f729935b9c94a2dc72ec54))
+* **deps:** bump @opentelemetry/semantic-conventions in /typescript-sdk ([f64ef11](https://github.com/langwatch/langwatch/commit/f64ef11bef640382c4f729935b9c94a2dc72ec54))
+* **deps:** bump liquidjs from 10.24.0 to 10.25.0 in /typescript-sdk ([#2100](https://github.com/langwatch/langwatch/issues/2100)) ([b63c592](https://github.com/langwatch/langwatch/commit/b63c592be2dfe23a5d15ace1980c081de4008458))
+* **deps:** bump the npm_and_yarn group across 1 directory with 2 updates ([#2361](https://github.com/langwatch/langwatch/issues/2361)) ([11336a7](https://github.com/langwatch/langwatch/commit/11336a703482f90a827b7cca1befef66d1f9becf))
+* **deps:** bump the npm_and_yarn group across 4 directories with 6 updates ([#3401](https://github.com/langwatch/langwatch/issues/3401)) ([63d21c7](https://github.com/langwatch/langwatch/commit/63d21c734d47dc629db6d3228d39976acf8b06cf))
+* **deps:** bump the npm_and_yarn group across 7 directories with 8 updates ([#3286](https://github.com/langwatch/langwatch/issues/3286)) ([6939c5c](https://github.com/langwatch/langwatch/commit/6939c5cce6112b132a82f0c3105e86aab6568f45))
+
+## [0.26.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.25.0...typescript-sdk@v0.26.0) (2026-04-22)
+
+
+### Features
+
+* **auth:** fine-grained personal access tokens ([#3212](https://github.com/langwatch/langwatch/issues/3212)) ([#3213](https://github.com/langwatch/langwatch/issues/3213)) ([bb7a6ee](https://github.com/langwatch/langwatch/commit/bb7a6ee422e6442dafaafa0848cce1869f980d16))
+
+## [0.25.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.24.0...typescript-sdk@v0.25.0) (2026-04-18)
+
+
+### Features
+
+* **sdk:** add Experiment.print_summary for CI parity with platform runs ([#3318](https://github.com/langwatch/langwatch/issues/3318)) ([942c6ec](https://github.com/langwatch/langwatch/commit/942c6ec70747cbed9ac9828034474a939a7433ab))
+* **skills:** make skills CLI-only and add `langwatch docs` / `scenario-docs` ([#3274](https://github.com/langwatch/langwatch/issues/3274)) ([b7aefef](https://github.com/langwatch/langwatch/commit/b7aefefb006560f3e8ba8f49128522f8caeb1a7b))
+
+
+### Bug Fixes
+
+* **typescript-sdk:** de-flake create-tracing-proxy integration tests ([#3097](https://github.com/langwatch/langwatch/issues/3097)) ([306fdd2](https://github.com/langwatch/langwatch/commit/306fdd2aba33f8c0f9fb1a17de7cff903eeb8f95))
+* **typescript-sdk:** de-flake create-tracing-proxy integration tests ([#3294](https://github.com/langwatch/langwatch/issues/3294)) ([306fdd2](https://github.com/langwatch/langwatch/commit/306fdd2aba33f8c0f9fb1a17de7cff903eeb8f95))
+* **typescript-sdk:** un-skip OTLP integration tests ([#3240](https://github.com/langwatch/langwatch/issues/3240)) ([#3291](https://github.com/langwatch/langwatch/issues/3291)) ([928a0df](https://github.com/langwatch/langwatch/commit/928a0df2108266508c9437b0083db1bbdaac9825))
+
+## [0.24.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.23.0...typescript-sdk@v0.24.0) (2026-04-17)
+
+
+### Features
+
+* **prompts:** expose tags on prompt list/get/versions ([#3271](https://github.com/langwatch/langwatch/issues/3271)) ([023c2d5](https://github.com/langwatch/langwatch/commit/023c2d5c4cb30296411740a5da3a8526d94a8f1c))
+
+
+### Bug Fixes
+
+* surface meaningful CLI errors + allow archived prompt handle reuse ([#3263](https://github.com/langwatch/langwatch/issues/3263)) ([ffe2e75](https://github.com/langwatch/langwatch/commit/ffe2e75422773368610cbfcec6906a7fe4ffb7ff))
+
+
+### Code Refactoring
+
+* **ci:** consolidate *-ci.yml and *-ci-unmodified.yml pairs ([#3231](https://github.com/langwatch/langwatch/issues/3231)) ([bcea648](https://github.com/langwatch/langwatch/commit/bcea64835bbb3dd00d7431f278da23d0b47de827))
+
+## [0.23.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.22.0...typescript-sdk@v0.23.0) (2026-04-16)
+
+
+### Features
+
+* add platformUrl to all API responses and CLI output ([#3242](https://github.com/langwatch/langwatch/issues/3242)) ([dffed28](https://github.com/langwatch/langwatch/commit/dffed28161f880c0682cf2e77ee906618c5dce6a))
+* expose all platform features via TypeScript and Python SDKs ([#3210](https://github.com/langwatch/langwatch/issues/3210)) ([d3148a8](https://github.com/langwatch/langwatch/commit/d3148a8839ecd9c10b725bcb00bc428795d5901d))
+
+## [0.22.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.21.0...typescript-sdk@v0.22.0) (2026-04-14)
+
+
+### Features
+
+* full CLI, API, and MCP coverage for all platform features ([#3168](https://github.com/langwatch/langwatch/issues/3168)) ([921b7b9](https://github.com/langwatch/langwatch/commit/921b7b92d3ccc038556fe2241a3a90302786631e))
+
+
+### Bug Fixes
+
+* **ci:** correct tag ID usage in prompt-tag repository and dataset error assertion ([#3133](https://github.com/langwatch/langwatch/issues/3133)) ([3615826](https://github.com/langwatch/langwatch/commit/3615826993d54fb5562560df7921356c6cea5018))
+* resolve ESLint errors in typescript-sdk CLI ([#3209](https://github.com/langwatch/langwatch/issues/3209)) ([528abb8](https://github.com/langwatch/langwatch/commit/528abb80312b74913ac56b0adc7eb4cd6c6f8c38))
+* **sdk:** extend timeout for agent span naming test ([#3162](https://github.com/langwatch/langwatch/issues/3162)) ([#3166](https://github.com/langwatch/langwatch/issues/3166)) ([8d3c467](https://github.com/langwatch/langwatch/commit/8d3c4675425086903dba5f955e8816c80abf4d2d))
+
+## [0.21.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.20.0...typescript-sdk@v0.21.0) (2026-04-13)
+
+
+### Features
+
+* add evaluator CLI commands ([#2981](https://github.com/langwatch/langwatch/issues/2981)) ([57577ac](https://github.com/langwatch/langwatch/commit/57577acac70a8f907c27c66a099cd7e10ebe7941))
+* **cli:** add prompt tag management commands ([#3099](https://github.com/langwatch/langwatch/issues/3099)) ([970ae68](https://github.com/langwatch/langwatch/commit/970ae68dcf934a00d4647db52287acd9e74a9d2a))
+* **typescript-sdk:** add custom tag support (fetch, CRUD, list) ([#2841](https://github.com/langwatch/langwatch/issues/2841)) ([f8839ab](https://github.com/langwatch/langwatch/commit/f8839abea053e1fa1e879c27db193ee641add526))
+* **typescript-sdk:** add dataset CRUD methods for SDK and CLI ([#2925](https://github.com/langwatch/langwatch/issues/2925)) ([8e65e84](https://github.com/langwatch/langwatch/commit/8e65e84b54746c54eb0fdbc4d6eafa56f2aa60d7))
+* **typescript-sdk:** add prompt label support (fetch, assign, CRUD) ([#2781](https://github.com/langwatch/langwatch/issues/2781)) ([0ce4b34](https://github.com/langwatch/langwatch/commit/0ce4b349294bb580fd09b73005252abcf2da3c45))
+
+
+### Miscellaneous
+
+* rename prompt label to tag in TypeScript SDK ([#3094](https://github.com/langwatch/langwatch/issues/3094)) ([0089842](https://github.com/langwatch/langwatch/commit/008984259a5475c272c9592792eae94d3eb4d9ba))
+
 ## [0.20.0](https://github.com/langwatch/langwatch/compare/typescript-sdk@v0.19.0...typescript-sdk@v0.20.0) (2026-03-29)
 
 

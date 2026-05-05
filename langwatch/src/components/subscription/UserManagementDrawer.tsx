@@ -8,8 +8,8 @@ import {
   Button,
   Collapsible,
   Flex,
-  HStack,
   Heading,
+  HStack,
   Input,
   Separator,
   Spinner,
@@ -19,16 +19,20 @@ import {
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer } from "~/components/ui/drawer";
-import { generateUUID } from "~/utils/generateUUID";
-import { type MemberType } from "~/server/license-enforcement/member-classification";
-import { type Currency, type BillingInterval, formatPrice } from "./billing-plans";
+import type { MemberType } from "~/server/license-enforcement/member-classification";
+import { generateClientId } from "~/utils/generateClientId";
 import {
-  type PlannedUser,
-  type SubscriptionUser,
-  type PendingInviteWithMemberType,
+  type BillingInterval,
+  type Currency,
+  formatPrice,
+} from "./billing-plans";
+import {
+  countFullMembers,
   type DrawerSaveResult,
   isValidEmail,
-  countFullMembers,
+  type PendingInviteWithMemberType,
+  type PlannedUser,
+  type SubscriptionUser,
 } from "./subscription-types";
 
 export function UserManagementDrawer({
@@ -75,9 +79,8 @@ export function UserManagementDrawer({
       countFullMembers(pendingInvitesWithMemberType) +
       countFullMembers(plannedUsers);
 
-    const autoFillCount = maxSeats != null
-      ? Math.max(0, maxSeats - occupiedFullMemberSeats)
-      : 0;
+    const autoFillCount =
+      maxSeats != null ? Math.max(0, maxSeats - occupiedFullMemberSeats) : 0;
 
     setInitialAutoFillCount(autoFillCount);
 
@@ -87,7 +90,7 @@ export function UserManagementDrawer({
         id: `auto-${Date.now()}-${i}`,
         email: "",
         memberType: "FullMember" as MemberType,
-      })
+      }),
     );
 
     setLocalPlannedUsers([...plannedUsers, ...autoFilledRows]);
@@ -103,7 +106,7 @@ export function UserManagementDrawer({
 
   const handleAddSeat = () => {
     const newPlannedUser: PlannedUser = {
-      id: `planned-${generateUUID()}`,
+      id: `planned-${generateClientId()}`,
       email: "",
       memberType: "FullMember",
     };
@@ -139,7 +142,9 @@ export function UserManagementDrawer({
     }
 
     const autoRows = localPlannedUsers.filter((u) => u.id.startsWith("auto-"));
-    const manualRows = localPlannedUsers.filter((u) => u.id.startsWith("planned-"));
+    const manualRows = localPlannedUsers.filter((u) =>
+      u.id.startsWith("planned-"),
+    );
     const autoRowsWithEmail = autoRows.filter((u) => u.email.trim() !== "");
     const deletedAutoCount = initialAutoFillCount - autoRows.length;
 
@@ -155,9 +160,11 @@ export function UserManagementDrawer({
     countFullMembers(editableUsers) +
     countFullMembers(pendingInvitesWithMemberType) +
     countFullMembers(localPlannedUsers);
-  const totalPriceCentsInDrawer = totalFullMembersInDrawer * seatPricePerPeriodCents;
+  const totalPriceCentsInDrawer =
+    totalFullMembersInDrawer * seatPricePerPeriodCents;
   const periodSuffix = billingPeriod === "annual" ? "/yr" : "/mo";
-  const priceLabel = billingPeriod === "annual" ? "Annual Price:" : "Monthly Price:";
+  const priceLabel =
+    billingPeriod === "annual" ? "Annual Price:" : "Monthly Price:";
 
   return (
     <Drawer.Root
@@ -184,39 +191,57 @@ export function UserManagementDrawer({
           ) : (
             <VStack align="start" gap={6} width="full">
               {/* Current Members section - collapsible */}
-              <Collapsible.Root width="full" >
+              <Collapsible.Root width="full">
                 <HStack justify="flex-start" width="full">
                   <Collapsible.Trigger asChild>
                     <Button
                       variant="ghost"
                       size="xs"
-                      color="gray.500"
+                      color="fg.muted"
                       fontSize="xs"
                     >
-                      Show members ({editableUsers.length + pendingInvitesWithMemberType.length})
+                      Show members (
+                      {editableUsers.length +
+                        pendingInvitesWithMemberType.length}
+                      )
                       <ChevronDown size={12} />
                     </Button>
                   </Collapsible.Trigger>
                 </HStack>
                 <Collapsible.Content>
-                  <Box as="table" width="full" style={{ borderCollapse: "collapse" }}>
+                  <Box
+                    as="table"
+                    width="full"
+                    style={{ borderCollapse: "collapse" }}
+                  >
                     <Box as="tbody">
                       {editableUsers.map((user) => (
                         <Box as="tr" key={user.id}>
                           <Box as="td" paddingY={2} verticalAlign="top">
-                            <Text fontSize="sm" fontWeight="medium" color="gray.600">
+                            <Text fontSize="sm" fontWeight="medium" color="fg">
                               {user.email}
                             </Text>
-                            <Text fontSize="xs" color="gray.500">
+                            <Text fontSize="xs" color="fg.muted">
                               Active
                             </Text>
                           </Box>
-                          <Box as="td" paddingY={2} textAlign="right" verticalAlign="middle">
+                          <Box
+                            as="td"
+                            paddingY={2}
+                            textAlign="right"
+                            verticalAlign="middle"
+                          >
                             <Badge
-                              colorPalette={user.memberType === "FullMember" ? "blue" : "yellow"}
+                              colorPalette={
+                                user.memberType === "FullMember"
+                                  ? "blue"
+                                  : "yellow"
+                              }
                               variant="outline"
                             >
-                              {user.memberType === "FullMember" ? "Full Member" : "Lite Member"}
+                              {user.memberType === "FullMember"
+                                ? "Full Member"
+                                : "Lite Member"}
                             </Badge>
                           </Box>
                         </Box>
@@ -229,19 +254,30 @@ export function UserManagementDrawer({
                           data-testid={`pending-invite-${invite.email}`}
                         >
                           <Box as="td" paddingY={2} verticalAlign="top">
-                            <Text fontSize="sm" fontWeight="medium" color="gray.600">
+                            <Text fontSize="sm" fontWeight="medium" color="fg">
                               {invite.email}
                             </Text>
-                            <Text fontSize="xs" color="gray.500">
+                            <Text fontSize="xs" color="fg.muted">
                               Invited - Waiting for acceptance
                             </Text>
                           </Box>
-                          <Box as="td" paddingY={2} textAlign="right" verticalAlign="middle">
+                          <Box
+                            as="td"
+                            paddingY={2}
+                            textAlign="right"
+                            verticalAlign="middle"
+                          >
                             <Badge
-                              colorPalette={invite.memberType === "FullMember" ? "blue" : "yellow"}
+                              colorPalette={
+                                invite.memberType === "FullMember"
+                                  ? "blue"
+                                  : "yellow"
+                              }
                               variant="outline"
                             >
-                              {invite.memberType === "FullMember" ? "Full Member" : "Lite Member"}
+                              {invite.memberType === "FullMember"
+                                ? "Full Member"
+                                : "Lite Member"}
                             </Badge>
                           </Box>
                         </Box>
@@ -254,7 +290,7 @@ export function UserManagementDrawer({
               {/* New Planned Seats section (editable) */}
               <VStack align="start" gap={3} width="full">
                 <HStack justify="space-between" width="full">
-                  <Text fontWeight="semibold" fontSize="sm" color="gray.500">
+                  <Text fontWeight="semibold" fontSize="sm" color="fg.muted">
                     Seats available
                   </Text>
                   <Button variant="outline" size="sm" onClick={handleAddSeat}>
@@ -271,7 +307,9 @@ export function UserManagementDrawer({
                       padding={3}
                       borderWidth={1}
                       borderRadius="md"
-                      borderColor={emailErrors[user.id] ? "red.300" : "gray.200"}
+                      borderColor={
+                        emailErrors[user.id] ? "red.emphasized" : "border"
+                      }
                     >
                       <Input
                         data-testid={`seat-email-${index}`}
@@ -301,7 +339,7 @@ export function UserManagementDrawer({
                       </Button>
                     </HStack>
                     {emailErrors[user.id] && (
-                      <Text fontSize="xs" color="red.500" paddingLeft={3}>
+                      <Text fontSize="xs" color="red.fg" paddingLeft={3}>
                         {emailErrors[user.id]}
                       </Text>
                     )}
@@ -320,12 +358,10 @@ export function UserManagementDrawer({
               gap={2}
               fontSize="sm"
               padding={4}
-              bg="gray.50"
+              bg="bg.subtle"
               borderRadius="md"
               width="full"
             >
-
-
               <HStack justify="space-between">
                 <Text fontWeight="bold">Total Seats:</Text>
                 <Text fontWeight="bold" data-testid="total-seats-footer-count">
@@ -336,8 +372,13 @@ export function UserManagementDrawer({
 
               <HStack justify="space-between">
                 <Text fontWeight="bold">{priceLabel}</Text>
-                <Text fontWeight="bold" color="blue.600" data-testid="monthly-price-footer">
-                  {formatPrice({ cents: totalPriceCentsInDrawer, currency })}{periodSuffix}
+                <Text
+                  fontWeight="bold"
+                  color="blue.fg"
+                  data-testid="monthly-price-footer"
+                >
+                  {formatPrice({ cents: totalPriceCentsInDrawer, currency })}
+                  {periodSuffix}
                 </Text>
               </HStack>
             </VStack>

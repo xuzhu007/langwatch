@@ -34,6 +34,7 @@ import {
   promptServiceMiddleware,
 } from "../../middleware/prompt-service";
 import { baseResponses, conflictResponses } from "../../shared/base-responses";
+import { platformUrl } from "../../shared/platform-url";
 import {
   type ApiResponsePrompt,
   apiResponsePromptWithVersionDataSchema,
@@ -95,7 +96,13 @@ app.get(
     });
 
     return c.json(
-      apiResponsePromptWithVersionDataSchema.array().parse(configs),
+      apiResponsePromptWithVersionDataSchema.array().parse(configs).map((p) => ({
+        ...p,
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      })),
     );
   },
 );
@@ -437,8 +444,72 @@ app.get(
     );
 
     return c.json(
-      apiResponsePromptWithVersionDataSchema.array().parse(versions),
+      apiResponsePromptWithVersionDataSchema.array().parse(versions).map((v) => ({
+        ...v,
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      })),
     );
+  },
+);
+
+// Restore (rollback to) a specific version
+app.post(
+  "/:id{.+?}/versions/:versionId/restore",
+  describeRoute({
+    description:
+      "Restore a prompt to a previous version. Creates a new version with the same config data as the specified version.",
+    responses: {
+      ...baseResponses,
+      200: buildStandardSuccessResponse(
+        apiResponsePromptWithVersionDataSchema,
+      ),
+      404: {
+        description: "Prompt or version not found",
+        content: {
+          "application/json": { schema: resolver(badRequestSchema) },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const service = c.get("promptService");
+    const project = c.get("project");
+    const organization = c.get("organization");
+    const { id, versionId } = c.req.param();
+
+    logger.info(
+      { projectId: project.id, promptId: id, versionId },
+      "Restoring prompt version",
+    );
+
+    try {
+      const restored = await service.restoreVersion({
+        versionId,
+        projectId: project.id,
+        organizationId: organization.id,
+      });
+
+      logger.info(
+        { projectId: project.id, promptId: id, versionId },
+        "Successfully restored prompt version",
+      );
+
+      return c.json({
+        ...apiResponsePromptWithVersionDataSchema.parse(restored),
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return c.json({ error: error.message }, 404);
+      }
+      throw error;
+    }
   },
 );
 
@@ -541,7 +612,13 @@ app.get(
         });
       }
 
-      return c.json(apiResponsePromptWithVersionDataSchema.parse(config));
+      return c.json({
+        ...apiResponsePromptWithVersionDataSchema.parse(config),
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      });
     } catch (error: unknown) {
       if (error instanceof HTTPException) {
         throw error;
@@ -608,6 +685,8 @@ app.post(
         "Successfully created prompt with initial version",
       );
 
+      let responseConfig: ApiResponsePrompt = newConfig;
+
       if (tags && tags.length > 0) {
         await Promise.all(
           tags.map((tag) =>
@@ -625,6 +704,15 @@ app.post(
           { promptId: newConfig.id, tags },
           "Assigned tags to initial version",
         );
+
+        const refetched = await service.getPromptByIdOrHandle({
+          idOrHandle: newConfig.id,
+          projectId: project.id,
+          organizationId: organization.id,
+        });
+        if (refetched) {
+          responseConfig = refetched;
+        }
       }
 
       afterPromptCreated({
@@ -632,7 +720,13 @@ app.post(
         projectId: project.id,
       });
 
-      return c.json(apiResponsePromptWithVersionDataSchema.parse(newConfig));
+      return c.json({
+        ...apiResponsePromptWithVersionDataSchema.parse(responseConfig),
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      });
     } catch (error: any) {
       logger.error({ projectId: project.id, error }, "Error creating prompt");
       if (error instanceof TagValidationError) {
@@ -755,6 +849,16 @@ app.post(
         });
       }
 
+      if (error instanceof TagValidationError) {
+        throw new HTTPException(422, {
+          message: error.message,
+        });
+      }
+
+      // Translate Prisma unique-constraint violations on handle into a
+      // readable 409 instead of bubbling up as "Internal server error".
+      handlePossibleConflictError(error);
+
       // Re-throw other errors to be handled by the error middleware
       throw error;
     }
@@ -822,6 +926,8 @@ app.put(
         });
       }
 
+      let responseConfig: ApiResponsePrompt = updatedConfig;
+
       if (tags && tags.length > 0) {
         await Promise.all(
           tags.map((tag) =>
@@ -839,6 +945,15 @@ app.put(
           { projectId, promptId: id, tags, versionId: updatedConfig.versionId },
           "Assigned tags to updated version",
         );
+
+        const refetched = await service.getPromptByIdOrHandle({
+          idOrHandle: updatedConfig.id,
+          projectId,
+          organizationId: organization.id,
+        });
+        if (refetched) {
+          responseConfig = refetched;
+        }
       }
 
       logger.info(
@@ -851,9 +966,13 @@ app.put(
         "Successfully updated prompt",
       );
 
-      return c.json(
-        apiResponsePromptWithVersionDataSchema.parse(updatedConfig),
-      );
+      return c.json({
+        ...apiResponsePromptWithVersionDataSchema.parse(responseConfig),
+        platformUrl: platformUrl({
+          projectSlug: project.slug,
+          path: `/prompts`,
+        }),
+      });
     } catch (error: any) {
       logger.error({ projectId, promptId: id, error }, "Error updating prompt");
       if (error instanceof TagValidationError) {

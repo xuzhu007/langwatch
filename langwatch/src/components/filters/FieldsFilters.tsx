@@ -94,6 +94,7 @@ export function FieldsFilters({
 	const filterKeys: FilterField[] = [
 		"traces.origin",
 		"metadata.prompt_ids",
+		"spans.type",
 		"spans.model",
 		"metadata.labels",
 		"evaluations.passed",
@@ -171,7 +172,7 @@ function FieldsFilter({
 	const [query, setQuery] = useDebounceValue("", 300);
 	const [immediateQuery, setImmediateQuery] = useState("");
 	const { open, setOpen } = useDisclosure();
-	const current = filters[filterId] ?? [];
+	const current = filters?.[filterId] ?? [];
 
 	// Keyboard navigation state
 	const [highlightedIndex, setHighlightedIndex] = useState(-1);

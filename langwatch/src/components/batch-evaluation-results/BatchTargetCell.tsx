@@ -12,10 +12,10 @@ import { EvaluatorResultChip } from "~/components/shared/EvaluatorResultChip";
 import { formatLatency } from "~/components/shared/formatters";
 import { Tooltip } from "~/components/ui/tooltip";
 import { useDrawer } from "~/hooks/useDrawer";
+import { copyToClipboard } from "~/utils/clipboard";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
 import { isTextLikelyOverflowing } from "~/utils/textOverflowHeuristic";
 import type { BatchEvaluatorResult, BatchTargetOutput } from "./types";
-import { copyToClipboard } from "~/utils/clipboard";
 
 // Max characters to display for performance
 const MAX_DISPLAY_CHARS = 10000;

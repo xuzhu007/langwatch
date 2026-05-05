@@ -70,6 +70,15 @@ vi.mock("~/utils/logger/server", () => ({
   createLogger: vi.fn(() => createMockLogger()),
 }));
 
+// Disable the org-level TtlCache so tests don't share cached org data across runs
+vi.mock("~/server/utils/ttlCache", () => ({
+  TtlCache: class {
+    async get() { return undefined; }
+    async set() { return; }
+    async delete() { return; }
+  },
+}));
+
 vi.mock("~/utils/posthogErrorCapture", () => ({
   captureException: mockCaptureException,
   withScope: vi.fn((cb: (scope: Record<string, unknown>) => void) => {

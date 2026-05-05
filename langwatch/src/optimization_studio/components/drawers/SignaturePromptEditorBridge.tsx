@@ -16,11 +16,11 @@ import {
   buildInputMappings,
 } from "../../utils/edgeMappingUtils";
 
-/** Check whether two sets of fields have identical identifiers (order-independent). */
-function identifiersMatch(a: Field[], b: { identifier: string }[]): boolean {
+/** Check whether two sets of fields have identical identifiers and types (order-independent). */
+function fieldsMatch(a: Field[], b: { identifier: string; type: string }[]): boolean {
   if (a.length !== b.length) return false;
-  const ids = new Set(a.map((f) => f.identifier));
-  return b.every((f) => ids.has(f.identifier));
+  const fieldMap = new Map(a.map((f) => [f.identifier, f.type]));
+  return b.every((f) => fieldMap.get(f.identifier) === f.type);
 }
 
 /**
@@ -35,7 +35,7 @@ function mergeFields({
   handlePrefix,
 }: {
   oldFields: Field[];
-  newFields: { identifier: string; type: string }[];
+  newFields: { identifier: string; type: string; json_schema?: unknown }[];
   connectedEdges: Edge[];
   handlePrefix: string;
 }): Field[] {
@@ -47,6 +47,9 @@ function mergeFields({
       identifier: f.identifier,
       type: f.type as Field["type"],
       ...(existing?.value != null ? { value: existing.value } : {}),
+      ...("json_schema" in f && f.json_schema != null
+        ? { json_schema: f.json_schema }
+        : {}),
     };
   });
 
@@ -188,15 +191,15 @@ export function SignaturePromptEditorBridge({
     if (signatureNode.data.localPromptConfig) {
       return signatureNode.data.localPromptConfig;
     }
-    // If the node has a promptId, the drawer fetches the prompt from DB
-    if (signatureNode.data.promptId) {
-      return undefined;
-    }
-    // No promptId and no localPromptConfig - check for inline parameters
+    // Fall back to extracting config from inline parameters.
+    // When promptId is set and the prompt exists in DB, the drawer will use
+    // the DB data and ignore this. When the prompt is NOT found (e.g. after
+    // importing a workflow from another project), this provides the fallback
+    // so the drawer can display the node's actual inline configuration
+    // instead of an empty "New Prompt" form.
     return nodeDataToLocalPromptConfig(signatureNode.data);
   }, [
     signatureNode.data.localPromptConfig,
-    signatureNode.data.promptId,
     signatureNode.data,
   ]);
 
@@ -226,7 +229,7 @@ export function SignaturePromptEditorBridge({
 
       // Only update inputs when the set of identifiers actually changed.
       // Skipping avoids triggering removeInvalidEdges on drawer open.
-      if (config.inputs && !identifiersMatch(oldInputs, config.inputs)) {
+      if (config.inputs && !fieldsMatch(oldInputs, config.inputs)) {
         const currentEdges = getWorkflow().edges;
         const incomingEdges = currentEdges.filter(
           (e) => e.target === node.id && e.targetHandle?.startsWith("inputs."),
@@ -249,7 +252,7 @@ export function SignaturePromptEditorBridge({
         if (remapped) setEdges(remapped);
       }
 
-      if (config.outputs && !identifiersMatch(oldOutputs, config.outputs)) {
+      if (config.outputs && !fieldsMatch(oldOutputs, config.outputs)) {
         const currentEdges = getWorkflow().edges;
         const outgoingEdges = currentEdges.filter(
           (e) => e.source === node.id && e.sourceHandle?.startsWith("outputs."),

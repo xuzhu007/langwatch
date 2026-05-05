@@ -1,40 +1,40 @@
-import { useRouter } from "next/router";
-import { useTheme } from "next-themes";
-import { useSession } from "next-auth/react";
 import { subDays } from "date-fns";
+import { useTheme } from "next-themes";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-import { useDrawer } from "~/hooks/useDrawer";
-import { usePublicEnv } from "~/hooks/usePublicEnv";
 import { Dialog } from "~/components/ui/dialog";
 import { toaster } from "~/components/ui/toaster";
+import { useDrawer } from "~/hooks/useDrawer";
+import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { useSession } from "~/utils/auth-client";
+import { copyToClipboard } from "~/utils/clipboard";
+import type { NextRouter } from "~/utils/compat/next-router";
+import { useRouter } from "~/utils/compat/next-router";
 import { useCommandBar } from "./CommandBarContext";
-import { useCommandSearch } from "./useCommandSearch";
-import { useRecentItems } from "./useRecentItems";
-import type { ListItem } from "./getIconInfo";
-import { COMMAND_BAR_TOP_MARGIN, COMMAND_BAR_MAX_WIDTH } from "./constants";
-import { HintsSection } from "./components/HintsSection";
+import { CommandBarFooter } from "./components/CommandBarFooter";
 import { CommandBarInput } from "./components/CommandBarInput";
 import { CommandBarResults } from "./components/CommandBarResults";
-import { CommandBarFooter } from "./components/CommandBarFooter";
+import { HintsSection } from "./components/HintsSection";
+import { COMMAND_BAR_MAX_WIDTH, COMMAND_BAR_TOP_MARGIN } from "./constants";
+import { findEasterEgg } from "./easterEggs";
+import { useEasterEggEffects } from "./effects/useEasterEggEffects";
+import type { ListItem } from "./getIconInfo";
 import {
-  useFilteredCommands,
-  useFilteredProjects,
+  useAutoFocusInput,
   useCommandBarItems,
   useCommandBarKeyboard,
+  useFilteredCommands,
+  useFilteredProjects,
   useScrollIntoView,
-  useAutoFocusInput,
 } from "./hooks";
 import {
   handleCommandSelect,
-  handleSearchResultSelect,
-  handleRecentItemSelect,
   handleProjectSelect,
+  handleRecentItemSelect,
+  handleSearchResultSelect,
 } from "./selectHandlers";
-import { findEasterEgg } from "./easterEggs";
-import { copyToClipboard } from "~/utils/clipboard";
-import { useEasterEggEffects } from "./effects/useEasterEggEffects";
-import type { NextRouter } from "next/router";
+import { useCommandSearch } from "./useCommandSearch";
+import { useRecentItems } from "./useRecentItems";
 
 /**
  * Handle page-specific commands for the traces page.
@@ -138,7 +138,16 @@ export function CommandBar() {
   const router = useRouter();
   const { data: session } = useSession();
   const { isOpen, close, query, setQuery } = useCommandBar();
-  const { project, organizations } = useOrganizationTeamProject();
+  // CommandBar is mounted globally via CommandBarProvider in _app.tsx and
+  // is rendered on every route. It only consumes `project` + `organizations`
+  // to show context — it must NOT trigger the org-onboarding bouncer or it
+  // will race with page-level mutations like the invite-accept flow (bug
+  // 33 in iter 47 of the BetterAuth migration audit). Belt-and-suspenders
+  // alongside the noOrgBouncerRoutes route exemption.
+  const { project, organizations } = useOrganizationTeamProject({
+    redirectToOnboarding: false,
+    redirectToProjectOnboarding: false,
+  });
   const { openDrawer } = useDrawer();
   const publicEnv = usePublicEnv();
   const { setTheme } = useTheme();

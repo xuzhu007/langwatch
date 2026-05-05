@@ -128,15 +128,30 @@ export interface AuditLogFilters {
   action?: string;
   startDate?: number;
   endDate?: number;
+  /**
+   * Filter by gateway-resource kind, e.g. "virtual_key" / "budget" /
+   * "provider_binding" / "cache_rule". Only matches rows where the gateway
+   * services populated `targetKind` — platform-shape rows have null here.
+   */
+  targetKind?: string;
+  /**
+   * Filter to a single target-resource id. Used by the VK/Budget detail
+   * page deep-link pattern; pairs with `targetKind` for type safety.
+   */
+  targetId?: string;
 }
 
 /**
  * Enriched audit log entry with resolved user and project data.
+ * Backed by a single `AuditLog` table that stores both gateway-shape
+ * (targetKind + before/after diff) and platform-shape (args + metadata)
+ * rows. The `source` field is computed from the presence of `targetKind`.
  */
 export interface EnrichedAuditLog {
   id: string;
   createdAt: Date;
-  userId: string;
+  /** Nullable to support system-actor writes (background jobs, migrations). */
+  userId: string | null;
   organizationId: string | null;
   projectId: string | null;
   action: string;
@@ -147,6 +162,16 @@ export interface EnrichedAuditLog {
   args: unknown;
   user: { id: string; name: string | null; email: string | null } | null;
   project: { id: string; name: string } | null;
+  /** Computed: gateway = `targetKind` populated, platform = otherwise. */
+  source: "platform" | "gateway";
+  /** Gateway resource kind — only set when source="gateway". */
+  targetKind: string | null;
+  /** Gateway resource id — only set when source="gateway". */
+  targetId: string | null;
+  /** Gateway-side diff (before state). Only set when source="gateway". */
+  before: unknown;
+  /** Gateway-side diff (after state). Only set when source="gateway". */
+  after: unknown;
 }
 
 /**
@@ -221,6 +246,9 @@ export interface OrganizationRepository {
   }): Promise<void>;
   getPricingModel(organizationId: string): Promise<string | null>;
   getStripeCustomerId(organizationId: string): Promise<string | null>;
+  findByStripeCustomerId(
+    stripeCustomerId: string,
+  ): Promise<{ id: string } | null>;
   findNameById(
     organizationId: string,
   ): Promise<{ id: string; name: string } | null>;
@@ -315,6 +343,12 @@ export class NullOrganizationRepository implements OrganizationRepository {
   }
 
   async getStripeCustomerId(_organizationId: string): Promise<string | null> {
+    return null;
+  }
+
+  async findByStripeCustomerId(
+    _stripeCustomerId: string,
+  ): Promise<{ id: string } | null> {
     return null;
   }
 

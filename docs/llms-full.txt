@@ -8568,7 +8568,7 @@ LangWatch provides a comprehensive set of custom attributes for LLM-specific obs
 | `langwatch.gen_ai.streaming` | boolean | Whether the operation involves streaming | `true`, `false` |
 | `langwatch.input` | string/object | Input data for the span | `"Hello, how are you?"` |
 | `langwatch.output` | string/object | Output data from the span | `"I'm doing well, thank you!"` |
-| `langwatch.contexts` | array | RAG contexts for retrieval-augmented generation | Array of document contexts |
+| `langwatch.rag.contexts` | array | RAG contexts for retrieval-augmented generation | Array of document contexts |
 | `langwatch.labels` | array | Labels for categorizing spans | `["chat", "greeting"]` |
 | `langwatch.params` | object | Parameter data for operations | `{ temperature: 0.7 }` |
 | `langwatch.metrics` | object | Custom metrics data | `{ response_time: 1250 }` |
@@ -8645,7 +8645,7 @@ span.set_attribute(AttributeKey.LangWatchPromptHandle, "customer-support-greetin
 | `ATTR_LANGWATCH_INPUT` | `langwatch.input` |
 | `ATTR_LANGWATCH_OUTPUT` | `langwatch.output` |
 | `ATTR_LANGWATCH_SPAN_TYPE` | `langwatch.span.type` |
-| `ATTR_LANGWATCH_RAG_CONTEXTS` | `langwatch.contexts` |
+| `ATTR_LANGWATCH_RAG_CONTEXTS` | `langwatch.rag.contexts` |
 | `ATTR_LANGWATCH_METRICS` | `langwatch.metrics` |
 | `ATTR_LANGWATCH_SDK_VERSION` | `langwatch.sdk.version` |
 | `ATTR_LANGWATCH_SDK_NAME` | `langwatch.sdk.name` |
@@ -13489,6 +13489,8 @@ There are a couple ways to add data to a dataset;
 - **From traces**: You can fill the dataset by selecting a group of messages already captured.
 - **CSV Upload**: You can fill the dataset by uploading a CSV file.
 - **Continuously populate**: You can continuously populate the dataset with data traced from production.
+- **Via MCP tools**: AI coding agents can create and manage datasets through the [MCP server](/integration/mcp). See [Programmatic Access](/datasets/programmatic-access) for details.
+- **Via SDK**: Use the Python or TypeScript SDK for programmatic dataset management. See [Programmatic Access](/datasets/programmatic-access).
 
 ### Manually
 
@@ -13542,12 +13544,12 @@ You can fetch datasets from LangWatch using the SDK for use in offline evaluatio
 ---
 title: Programmatic Access
 sidebarTitle: Programmatic Access
-description: Fetch datasets from LangWatch using the SDK for offline evaluations and automated workflows.
+description: Manage datasets from LangWatch using the SDK, MCP, or REST API for offline evaluations and automated workflows.
 ---
 
-You can fetch datasets from LangWatch using the SDK to use in your offline evaluations or other automated workflows.
+You can manage datasets from LangWatch using the SDK, MCP tools, or REST API for offline evaluations and automated workflows.
 
-## Fetching a Dataset
+## Setup
 
 
   ### Python
@@ -13555,16 +13557,8 @@ You can fetch datasets from LangWatch using the SDK to use in your offline evalu
 ```python
 import langwatch
 
-# Initialize the SDK
+# Initialize the SDK (or set LANGWATCH_API_KEY environment variable)
 langwatch.setup()
-
-# Fetch dataset by slug or ID
-dataset = langwatch.dataset.get_dataset("your-dataset-slug")
-
-# Convert to pandas DataFrame for easy manipulation
-df = dataset.to_pandas()
-
-print(df.head())
 ```
 
   ### TypeScript
@@ -13573,7 +13567,112 @@ print(df.head())
 import { LangWatch } from "langwatch";
 
 const langwatch = new LangWatch();
+```
 
+
+
+## List Datasets
+
+Retrieve all datasets for your project with pagination support.
+
+
+  ### Python
+
+```python
+# List all datasets (first page, default limit)
+result = langwatch.dataset.list_datasets()
+
+for ds in result.data:
+    print(f"{ds.name} ({ds.slug}) - {len(ds.columnTypes)} columns")
+
+print(f"Page {result.pagination.page} of {result.pagination.totalPages}")
+
+# List with explicit pagination
+result = langwatch.dataset.list_datasets(page=2, limit=10)
+```
+
+  ### TypeScript
+
+```typescript
+// List all datasets (first page, default limit)
+const result = await langwatch.datasets.list();
+
+for (const ds of result.data) {
+  console.log(`${ds.name} (${ds.slug}) - ${ds.columnTypes.length} columns`);
+}
+
+console.log(`Page ${result.pagination.page} of ${result.pagination.totalPages}`);
+
+// List with explicit pagination
+const page2 = await langwatch.datasets.list({ page: 2, limit: 10 });
+```
+
+
+
+## Create a Dataset
+
+Create a new dataset with an optional column schema.
+
+
+  ### Python
+
+```python
+# Create with name and column types
+info = langwatch.dataset.create_dataset(
+    "User Feedback",
+    columns=[
+        {"name": "input", "type": "string"},
+        {"name": "output", "type": "string"},
+    ],
+)
+print(f"Created: {info.name} (slug: {info.slug})")
+
+# Create with just a name (columns can be added later)
+info = langwatch.dataset.create_dataset("Simple Dataset")
+```
+
+  ### TypeScript
+
+```typescript
+// Create with name and column types
+const info = await langwatch.datasets.create({
+  name: "User Feedback",
+  columnTypes: [
+    { name: "input", type: "string" },
+    { name: "output", type: "string" },
+  ],
+});
+console.log(`Created: ${info.name} (slug: ${info.slug})`);
+
+// Create with just a name
+const simple = await langwatch.datasets.create({ name: "Simple Dataset" });
+```
+
+
+
+## Get a Dataset
+
+Fetch a dataset by slug or ID, including all its entries.
+
+
+  ### Python
+
+```python
+# Fetch dataset by slug or ID
+dataset = langwatch.dataset.get_dataset("your-dataset-slug")
+
+# Access entries
+for entry in dataset.entries:
+    print(entry.id, entry.entry)
+
+# Convert to pandas DataFrame for easy manipulation
+df = dataset.to_pandas()
+print(df.head())
+```
+
+  ### TypeScript
+
+```typescript
 // Fetch dataset by slug or ID
 const dataset = await langwatch.datasets.get("your-dataset-slug");
 
@@ -13582,6 +13681,243 @@ for (const entry of dataset.entries) {
   console.log(entry.entry);
 }
 ```
+
+
+
+## Update a Dataset
+
+Update a dataset's name or column types.
+
+
+  ### Python
+
+```python
+# Update the name
+updated = langwatch.dataset.update_dataset("my-dataset", name="New Name")
+print(f"New slug: {updated.slug}")
+
+# Update column types
+updated = langwatch.dataset.update_dataset(
+    "my-dataset",
+    columns=[{"name": "question", "type": "string"}, {"name": "answer", "type": "string"}],
+)
+```
+
+  ### TypeScript
+
+```typescript
+// Update the name
+const updated = await langwatch.datasets.update("my-dataset", {
+  name: "New Name",
+});
+console.log(`New slug: ${updated.slug}`);
+
+// Update column types
+const withCols = await langwatch.datasets.update("my-dataset", {
+  columnTypes: [
+    { name: "question", type: "string" },
+    { name: "answer", type: "string" },
+  ],
+});
+```
+
+
+
+## Delete a Dataset
+
+Archive a dataset by slug or ID.
+
+
+  ### Python
+
+```python
+langwatch.dataset.delete_dataset("my-dataset")
+```
+
+  ### TypeScript
+
+```typescript
+await langwatch.datasets.delete("my-dataset");
+```
+
+
+
+## List Records
+
+Retrieve records from a dataset with pagination.
+
+
+  ### Python
+
+```python
+# List records (first page, default limit)
+result = langwatch.dataset.list_records("my-dataset")
+
+for record in result.data:
+    print(record.id, record.entry)
+
+print(f"Total: {result.pagination.total}")
+
+# List with explicit pagination
+result = langwatch.dataset.list_records("my-dataset", page=2, limit=20)
+```
+
+  ### TypeScript
+
+```typescript
+// List records (first page, default limit)
+const result = await langwatch.datasets.listRecords("my-dataset");
+
+for (const record of result.data) {
+  console.log(record.id, record.entry);
+}
+
+console.log(`Total: ${result.pagination.total}`);
+
+// List with explicit pagination
+const page2 = await langwatch.datasets.listRecords("my-dataset", {
+  page: 2,
+  limit: 20,
+});
+```
+
+
+
+## Create Records
+
+Batch-add records to an existing dataset.
+
+
+  ### Python
+
+```python
+records = langwatch.dataset.create_records(
+    "my-dataset",
+    entries=[
+        {"input": "What is LangWatch?", "output": "An LLM observability platform."},
+        {"input": "How do I get started?", "output": "Install the SDK and call setup()."},
+    ],
+)
+for r in records:
+    print(f"Created record: {r.id}")
+```
+
+  ### TypeScript
+
+```typescript
+const records = await langwatch.datasets.createRecords("my-dataset", [
+  { input: "What is LangWatch?", output: "An LLM observability platform." },
+  { input: "How do I get started?", output: "Install the SDK and call setup()." },
+]);
+for (const r of records.data) {
+  console.log(`Created record: ${r.id}`);
+}
+```
+
+
+
+## Update a Record
+
+Update (or upsert) a single record by ID.
+
+
+  ### Python
+
+```python
+record = langwatch.dataset.update_record(
+    "my-dataset",
+    "rec-1",
+    entry={"input": "updated question", "output": "updated answer"},
+)
+print(f"Updated: {record.id} -> {record.entry}")
+```
+
+  ### TypeScript
+
+```typescript
+const record = await langwatch.datasets.updateRecord("my-dataset", "rec-1", {
+  input: "updated question", output: "updated answer",
+});
+console.log(`Updated: ${record.id}`);
+```
+
+
+
+## Delete Records
+
+Batch-delete records by their IDs.
+
+
+  ### Python
+
+```python
+deleted_count = langwatch.dataset.delete_records(
+    "my-dataset",
+    record_ids=["rec-1", "rec-2"],
+)
+print(f"Deleted {deleted_count} records")
+```
+
+  ### TypeScript
+
+```typescript
+const result = await langwatch.datasets.deleteRecords("my-dataset", ["rec-1", "rec-2"]);
+console.log(`Deleted ${result.deletedCount} records`);
+```
+
+
+
+## Upload a File
+
+Upload a CSV, JSON, or JSONL file to a dataset. If the dataset does not exist, it is created automatically.
+
+
+  ### Python
+
+```python
+# Upload to existing or create new (default: append)
+result = langwatch.dataset.upload("my-dataset", file_path="data.csv")
+print(f"Created {result.recordsCreated} records")
+
+# Replace all records (delete existing, then upload)
+result = langwatch.dataset.upload("my-dataset", file_path="data.csv", if_exists="replace")
+
+# Error if dataset already exists (create-only)
+result = langwatch.dataset.upload("my-dataset", file_path="data.csv", if_exists="error")
+```
+
+The `if_exists` parameter controls how conflicts are handled:
+
+| Value | Behavior |
+|-------|----------|
+| `"append"` (default) | Append rows to the existing dataset, or create it if it doesn't exist |
+| `"replace"` | Delete all existing records first, then upload. Creates the dataset if it doesn't exist |
+| `"error"` | Raise an error if the dataset already exists. Creates it otherwise |
+
+
+  ### TypeScript
+
+```typescript
+// Upload to existing or create new (default: append)
+const file = new File([csvContent], "data.csv", { type: "text/csv" });
+const result = await langwatch.datasets.upload("my-dataset", file);
+console.log(`Created ${result.recordsCreated} records`);
+
+// Replace all records (delete existing, then upload)
+await langwatch.datasets.upload("my-dataset", file, { ifExists: "replace" });
+
+// Error if dataset already exists (create-only)
+await langwatch.datasets.upload("my-dataset", file, { ifExists: "error" });
+```
+
+The `ifExists` parameter controls how conflicts are handled:
+
+| Value | Behavior |
+|-------|----------|
+| `"append"` (default) | Append rows to the existing dataset, or create it if it doesn't exist |
+| `"replace"` | Delete all existing records first, then upload. Creates the dataset if it doesn't exist |
+| `"error"` | Throw an error if the dataset already exists. Creates it otherwise |
+
 
 
 
@@ -13671,6 +14007,23 @@ for (const entry of dataset.entries) {
   console.log(entry.entry.expected_output);  // Typed as string
 }
 ```
+
+## MCP Tools (AI Coding Agents)
+
+If you're using an AI coding agent (Claude Code, Cursor, etc.) with the [LangWatch MCP server](/integration/mcp), dataset tools are available directly:
+
+| Tool | Description |
+|------|-------------|
+| `platform_list_datasets` | List all datasets with record counts |
+| `platform_get_dataset` | Get dataset metadata, columns, and record preview |
+| `platform_create_dataset` | Create a new dataset with optional column definitions |
+| `platform_update_dataset` | Update dataset name or column types |
+| `platform_delete_dataset` | Archive a dataset |
+| `platform_create_dataset_records` | Add records in batch (max 1000) |
+| `platform_update_dataset_record` | Update a single record |
+| `platform_delete_dataset_records` | Delete records by IDs |
+
+The `platform_list_datasets` and `platform_get_dataset` tools support a `format` parameter — use `"json"` for raw data or `"digest"` (default) for AI-readable markdown.
 
 ## Finding Your Dataset Slug
 
@@ -14639,6 +14992,14 @@ curl -H "X-Auth-Token: $LANGWATCH_API_KEY" \
   "https://app.langwatch.ai/api/prompts/pizza-prompt:production"
 ```
 
+### MCP Tools
+
+Use `platform_get_prompt` with the `tag` parameter to fetch a specific tagged version:
+
+```
+platform_get_prompt({ idOrHandle: "pizza-prompt", tag: "production" })
+```
+
 ## Shorthand Syntax
 
 LangWatch supports a shorthand syntax for specifying tags in prompt identifiers:
@@ -14687,6 +15048,137 @@ Use `platform_create_prompt_tag` to create a custom tag, then `platform_assign_p
 <Note>
   Custom tag names must not be purely numeric and cannot be "latest". The `latest` tag is protected and cannot be renamed or deleted. `production` and `staging` are default seeded tags that can be renamed or deleted like any custom tag.
 </Note>
+
+## Tag Management via SDKs
+
+Both SDKs provide a `.tags` namespace for managing tags programmatically.
+
+### TypeScript SDK
+
+```typescript
+import { LangWatch } from "langwatch";
+
+const langwatch = new LangWatch();
+
+// List all tags
+const tags = await langwatch.prompts.tags.list();
+
+// Create a new tag
+await langwatch.prompts.tags.create({ name: "canary" });
+
+// Assign a tag to a specific version
+await langwatch.prompts.tags.assign("pizza-prompt", {
+  tag: "canary",
+  versionId: "version-abc123",
+});
+
+// Delete a tag
+await langwatch.prompts.tags.delete("canary");
+```
+
+<Warning>
+  The TypeScript SDK does not currently support `tags.rename()`. Use the REST API or Python SDK for renaming tags.
+</Warning>
+
+### Python SDK
+
+```python
+import langwatch
+
+# List all tags
+tags = langwatch.prompts.tags.list()
+
+# Create a new tag
+langwatch.prompts.tags.create("canary")
+
+# Assign a tag to a specific version
+langwatch.prompts.tags.assign("pizza-prompt", tag="canary", version_id="version-abc123")
+
+# Rename a tag
+langwatch.prompts.tags.rename("canary", new_name="canary-v2")
+
+# Delete a tag
+langwatch.prompts.tags.delete("canary")
+```
+
+## Assigning Tags at Create and Update Time
+
+You can assign tags when creating or updating prompts, so the version is tagged in a single operation.
+
+### TypeScript SDK
+
+```typescript
+// Create a prompt with initial tags
+await langwatch.prompts.create({
+  handle: "my-prompt",
+  messages: [{ role: "system", content: "You are a helpful assistant." }],
+  model: "gpt-5-mini",
+  tags: ["staging"],
+});
+
+// Update a prompt and reassign tags
+await langwatch.prompts.update("my-prompt", {
+  tags: ["production"],
+  commitMessage: "promote to production",
+});
+```
+
+### Python SDK
+
+```python
+# Create a prompt with initial tags
+langwatch.prompts.create(
+    handle="my-prompt",
+    messages=[{"role": "system", "content": "You are a helpful assistant."}],
+    tags=["staging"],
+)
+
+# Update a prompt and reassign tags
+langwatch.prompts.update(
+    "my-prompt",
+    scope="PROJECT",
+    tags=["production"],
+    commit_message="promote to production",
+)
+```
+
+### MCP Tools
+
+Tags can also be assigned during prompt creation and updates via MCP:
+
+```
+// Create with tags
+platform_create_prompt({
+  name: "My Prompt",
+  handle: "my-prompt",
+  messages: [...],
+  model: "gpt-5-mini",
+  tags: ["staging"]
+})
+
+// Update with tags
+platform_update_prompt({
+  idOrHandle: "my-prompt",
+  commitMessage: "promote to production",
+  tags: ["production"]
+})
+```
+
+## REST API Tag Endpoints
+
+Tag CRUD endpoints are **organization-scoped** (use an org-level API key). The assign endpoint is **project-scoped**.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/prompts/tags` | List all tags for the organization |
+| `POST` | `/api/prompts/tags` | Create a new tag (`{ "name": "canary" }`) |
+| `PUT` | `/api/prompts/tags/:tag` | Rename a tag (`{ "name": "new-name" }`) |
+| `DELETE` | `/api/prompts/tags/:tag` | Delete a tag (cascades removal from all versions) |
+| `PUT` | `/api/prompts/:id/tags/:tag` | Assign a tag to a version (`{ "versionId": "..." }`) |
+
+## CLI
+
+CLI tag management is planned — see [issue #3090](https://github.com/langwatch/langwatch/issues/3090). Once available, you will be able to list, create, rename, delete, and assign tags from the command line.
 
 ## Common Workflows
 
@@ -17018,7 +17510,7 @@ for idx, row in experiment.loop(dataset.iterrows()):
         },
     )
 
-# Print summary and exit on failure
+# Print summary and exit with code 1 on failure
 experiment.print_summary()
 ```
 
@@ -17055,7 +17547,7 @@ await experiment.run(
   { concurrency: 4 }
 );
 
-// Print summary and exit on failure
+// Print summary and exit with code 1 on failure
 experiment.printSummary();
 ```
 
@@ -17128,6 +17620,7 @@ for idx, row in experiment.loop(dataset.iterrows()):
 
     experiment.submit(compare, idx, row)
 
+# Print summary and exit with code 1 on failure
 experiment.print_summary()
 ```
 
@@ -18256,6 +18749,27 @@ for index, row in evaluation.loop(df.iterrows(), threads=4):
 <Note>
   By default, `threads=4`. Adjust based on your API rate limits and system resources.
 </Note>
+
+### Async-native mode
+
+The default `loop()` / `submit()` path above already parallelises — each submitted task runs in a worker thread, so sync and async tasks both speed up with no extra work on your side. That's the right choice for most users.
+
+Reach for `aloop()` / `asubmit()` only when your code is fully async-first and your task relies on async state whose identity is tied to one event loop. The threading path spins up a fresh event loop per worker, so those objects raise `"Future attached to a different loop"` on first use. `aloop` / `asubmit` keep every submitted task on the caller's event loop, so that state stays valid across concurrent items.
+
+```python
+evaluation = langwatch.experiment.init("async-eval-example")
+
+async def task(index, row):
+    result = await my_async_agent(row["question"])
+    evaluation.log("response_quality", index=index, score=0.92)
+
+index = 0
+async for row in evaluation.aloop(dataset, concurrency=4):
+    evaluation.asubmit(task, index, row)
+    index += 1
+```
+
+Sync callables passed to `asubmit` are automatically offloaded to a worker thread so they don't block the event loop for concurrent async siblings.
 
   ### TypeScript
 
@@ -23551,7 +24065,7 @@ clickhouse:
 ```
 
 <Note>
-The TTL must be divisible by 7 (ClickHouse partitions data weekly). The default of 49 days means data stays on fast local storage for ~7 weeks before moving to S3.
+We recommend setting the TTL to a multiple of 7 (e.g., 7, 14, 28, 49) to align with ClickHouse's weekly partition boundaries for more efficient data management. The default of 49 days means data stays on fast local storage for ~7 weeks before moving to S3.
 </Note>
 
 ### Cost Savings
@@ -23748,7 +24262,7 @@ When running on AWS with IRSA (IAM Roles for Service Accounts), you don't need t
 | `SENTRY_DSN` | Sentry DSN for error tracking | — |
 | `METRICS_API_KEY` | API key for metrics collection | — |
 
-## Helm Chart Mapping {#helm-chart-mapping}
+## Helm Chart Mapping
 
 When using the Helm chart, configuration is set in `values.yaml` rather than environment variables directly. Here's how key values map:
 
@@ -24142,7 +24656,7 @@ spec:
 ### ClickHouse cold storage (S3)
 
 - Enable with `clickhouse.cold.enabled: true`
-- Default TTL: 49 days (data older than this moves to S3)
+- Default TTL: 49 days (data older than this moves to S3). We recommend multiples of 7 to align with ClickHouse's weekly partition boundaries
 - S3 cost is typically 10-20x cheaper than SSD storage
 
 ### PostgreSQL
@@ -24538,16 +25052,12 @@ title: Docker Compose
 description: "Get LangWatch running locally in minutes with Docker Compose"
 ---
 
-<Warning>
-The Docker Compose setup is being updated for LangWatch v3 with ClickHouse. The current compose file uses OpenSearch (v2). For production and v3, use the [Kubernetes Helm chart](/self-hosting/deployment/kubernetes-helm).
-</Warning>
-
 Docker Compose is the quickest way to try LangWatch locally. It runs the full stack in containers on your machine.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with Docker Compose v2
-- 4 CPU cores, 16 GB RAM, 50 GB disk
+- 4 CPU cores, 8 GB RAM, 20 GB disk
 
 ## Quick Start
 
@@ -24576,11 +25086,12 @@ Docker Compose starts the following services:
 | Service | Image | Port | Description |
 |---------|-------|------|-------------|
 | `app` | `langwatch/langwatch:latest` | 5560 | Main application |
+| `workers` | `langwatch/langwatch:latest` | — | Background job processing |
 | `langwatch_nlp` | `langwatch/langwatch_nlp:latest` | 5561 | NLP processing, workflows |
 | `langevals` | `langwatch/langevals:latest` | 5562 | Evaluators, guardrails |
 | `postgres` | `postgres:16` | 5432 | Control plane database |
-| `redis` | `redis:alpine` | 6379 | Job queue, caching |
-| `opensearch` | `langwatch/opensearch-lite:latest` | 9200 | Trace storage |
+| `redis` | `redis:alpine` | — | Job queue, caching |
+| `clickhouse` | `langwatch/clickhouse-serverless:0.2.0` | 8123 | Trace and analytics storage |
 
 ## Configuration
 
@@ -24662,13 +25173,29 @@ services:
     depends_on: []  # Remove postgres and redis dependencies
 ```
 
+### Connect to external ClickHouse
+
+Replace the `clickhouse` service with a connection string to your existing instance:
+
+```yaml
+services:
+  app:
+    environment:
+      CLICKHOUSE_URL: http://user:password@your-clickhouse:8123/langwatch
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Remove clickhouse from depends_on
+```
+
 ## Limitations
 
 Docker Compose is suitable for evaluation and small teams but lacks:
 
 - **High availability** — single instance of each service
 - **Horizontal scaling** — cannot scale workers independently
-- **ClickHouse** — uses OpenSearch for trace storage (v3 Helm chart uses ClickHouse)
 - **Automated backups** — no built-in backup scheduling
 - **TLS** — no built-in HTTPS (use a reverse proxy like nginx or Caddy)
 
@@ -25079,7 +25606,7 @@ clickhouse:
     useEnvironmentCredentials: true
   cold:
     enabled: true
-    defaultTtlDays: 49
+    defaultTtlDays: 49  # Recommend multiples of 7 to align with weekly partition boundaries
   backup:
     enabled: true
 
@@ -25198,6 +25725,25 @@ clickhouse:
 ```
 
 You only need to set these two values — the subchart computes optimal settings for query limits, merge threads, insert batching, and S3 download parallelism.
+
+### AI Gateway sub-chart (optional)
+
+The umbrella chart bundles the AI Gateway as an opt-in sub-chart that runs alongside the core LangWatch app. Enabling it gives you virtual keys, hierarchical budgets, multi-provider routing via Bifrost, guardrails, and prompt caching — all governed by the same control plane.
+
+Minimum viable opt-in:
+
+```yaml
+gateway:
+  enabled: true
+```
+
+That ships sane defaults (2 replicas, ClusterIP service, no ingress). For per-environment tuning (replicas, autoscaling, ingress hostname + TLS, image registry mirror, secrets injection) see [AI Gateway → Self-hosting → Helm](/ai-gateway/self-hosting/helm).
+
+Three things to know before flipping it on:
+
+1. **Shared secrets must exist before install.** The gateway and the LangWatch app both mount `LW_GATEWAY_INTERNAL_SECRET` + `LW_GATEWAY_JWT_SECRET` (and the app additionally reads `LW_VIRTUAL_KEY_PEPPER`) — same byte-for-byte values. Pre-create the `gateway-runtime-secrets` Kubernetes Secret (the chart's `secrets.existingSecretName` default) holding all three keys before `helm install`, otherwise the gateway pod loops on `secret not found` until the install timeout. Override the name via `secrets.existingSecretName` if your platform conventions differ. See [AI Gateway → Self-hosting → Config → Secrets](/ai-gateway/self-hosting/config#secrets) for the recipe.
+2. **Public ingress needs DNS + TLS.** The gateway is what your LLM clients hit, so it usually wants its own hostname (e.g. `gateway.your-corp.com`) — separate cert, separate ingress rule. See [AI Gateway → Self-hosting → DNS & TLS](/ai-gateway/self-hosting/dns-and-tls).
+3. **Worker pods must be running.** Budget enforcement reads from a ClickHouse rollup that the trace-processing reactor folds into. If you deploy with `workers.enabled=false`, budgets stop accumulating spend and breach enforcement silently degrades. The default `workers.enabled=true` is correct for production.
 
 ## Upgrade
 
@@ -25751,6 +26297,634 @@ For Cloud Enterprise or Hybrid, [contact the LangWatch team](https://langwatch.a
 
 ---
 
+# FILE: ./self-hosting/ops/dashboard.mdx
+
+---
+title: Ops Dashboard
+description: "Real-time pipeline health monitoring with throughput, latency, and error tracking"
+---
+
+The Ops Dashboard is the landing page of the Operations Console (`/ops`). It provides a real-time view of the event-sourcing pipeline — ingestion rates, processing throughput, latency percentiles, queue health, and top errors — all in a single screen.
+
+<Frame>
+<img src="/images/ops/dashboard.png" alt="Ops Dashboard" />
+</Frame>
+
+## Metrics Overview
+
+The top of the dashboard displays six key metrics, each showing the current rate and a secondary stat (peak, total, or count):
+
+| Metric | What it measures | Secondary stat |
+|---|---|---|
+| **Staged/s** | Ingestion rate — commands entering the queue | Peak rate |
+| **Completed/s** | Processing throughput — commands fully processed | Total completed |
+| **Failed/s** | Failure rate — commands that errored | Total failed |
+| **Blocked** | Groups stuck due to errors | Number of error groups |
+| **DLQ** | Items in the Dead Letter Queue | Redis memory usage |
+| **P50 / P99** | End-to-end processing latency | Peak latency |
+
+<Tip>
+Metrics marked in red indicate an active problem — non-zero failure rates or blocked groups. Orange indicates a warning state, such as items in the DLQ.
+</Tip>
+
+## Active Operations
+
+When a [projection replay](/self-hosting/ops/projection-replay) is running or pipelines are paused, a banner appears below the metrics showing:
+
+- **Replay status** with the current projection name and a link to the detailed progress view
+- **Paused pipelines** listed as orange badges
+
+## Throughput Chart
+
+A time-series chart tracks throughput over time, showing staged, completed, and failed rates. Use this to identify processing backlogs (staged >> completed) or failure spikes.
+
+## Pipeline Tree
+
+The pipeline tree shows the hierarchical structure of all processing pipelines. Each node represents a pipeline stage.
+
+Operators with `ops:manage` permission can **pause** and **unpause** individual pipeline stages directly from the tree. Pausing a stage prevents new jobs from being consumed while allowing in-flight jobs to complete.
+
+## Top Errors
+
+The bottom of the dashboard lists the top error patterns across all queues, showing:
+
+- **Count** — how many jobs hit this error
+- **Error message** — normalized and deduplicated
+- **Pipeline** — which pipeline stage produced the error
+
+This gives a quick signal on whether errors are concentrated in a single pipeline or scattered across the system.
+
+## Real-Time Updates
+
+The dashboard uses **Server-Sent Events (SSE)** for real-time metric streaming. A connection status indicator in the header shows:
+
+- **Connected** (green) — live SSE connection active
+- **Polling** (yellow) — SSE unavailable, falling back to 5-second polling
+- **Disconnected** (red) — no connection
+
+Both modes deliver the same data; SSE simply provides lower-latency updates.
+
+## Replay History
+
+A compact section at the bottom shows the latest projection replay run with its status, duration, and description. Click it to navigate to the full [replay detail view](/self-hosting/ops/projection-replay).
+
+---
+
+# FILE: ./self-hosting/ops/dejaview.mdx
+
+---
+title: Deja View
+description: "Time-travel debugger for event-sourced aggregates"
+---
+
+**Deja View** (`/ops/dejaview`) is a time-travel debugger for LangWatch's event-sourcing system. It lets you search for any aggregate, inspect its full event history, and compute any projection's state at any point in that history — all from a single interface.
+
+<Frame>
+<img src="/images/ops/dejaview-detail.png" alt="Deja View showing event timeline and projection state" />
+</Frame>
+
+## When to Use Deja View
+
+- **Debugging projection state** — "Why does this trace show the wrong evaluation result?" Look at the events and compute the projection to see where state diverged.
+- **Investigating processing failures** — Find the aggregate, check what events were stored, and identify whether the issue is in the events or the projection.
+- **Auditing** — Review the complete history of any aggregate: every event that happened, in order.
+- **Verifying a replay** — After running a [projection replay](/self-hosting/ops/projection-replay), check that the rebuilt state looks correct.
+
+## Searching for Aggregates
+
+The search bar at the top accepts:
+- **Aggregate ID** (required) — the primary key of the aggregate you're looking for
+- **Tenant ID** (optional) — filter to a specific project/tenant
+
+Results appear in a table showing matching aggregates. Click a row to load its event stream.
+
+<Frame>
+<img src="/images/ops/dejaview.png" alt="Deja View search interface" />
+</Frame>
+
+## Event Timeline
+
+Once an aggregate is selected, the bottom of the screen shows a **horizontal event timeline** — a color-coded sequence of numbered event boxes.
+
+- Each box represents one event, numbered sequentially
+- Colors are assigned by event type, with a legend at the top
+- The current event is highlighted with a border
+- Click any event to jump to it, or use keyboard shortcuts to navigate
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|---|---|
+| `h` or `←` | Previous event |
+| `l` or `→` | Next event |
+| `e` | Toggle event detail panel |
+
+## Event Payload
+
+The center panel shows the current event's payload. Toggle between:
+
+- **Raw view** — the complete event data structure
+- **Diff view** — shows what changed compared to the previous event
+
+Press `e` or click the toggle to open a detailed JSON viewer in the right panel for deeply nested event payloads.
+
+## Projection State
+
+The left panel lists all available **projections** and **reactors** for the aggregate type. Select a projection to compute its state at the current event position.
+
+This is the core of the time-travel capability: you can step through events and watch how a projection's state evolves with each event.
+
+For example:
+1. Select a projection (e.g., "TraceAnalytics")
+2. Navigate to event #5 — see the projection state after events 1-5
+3. Step forward to event #6 — see how the state changed
+4. Compare with the current state to identify where things went wrong
+
+## Deep Linking
+
+Deja View encodes its full state in the URL fragment, making every view shareable:
+
+```
+/ops/dejaview#query=trace_abc&tenant=project_xyz&event=5&proj=TraceAnalytics
+```
+
+Copy the URL from your browser to share the exact view — aggregate, event position, and selected projection — with a colleague. No additional setup required.
+
+## Common Workflows
+
+### "Why is this trace's evaluation wrong?"
+
+1. Search for the trace's aggregate ID
+2. Select the evaluation projection
+3. Step through events to find where the evaluation result was computed
+4. Check the event payload — is the input data correct?
+5. Check the projection state — does the fold logic produce the expected result?
+
+### "Did the replay fix this aggregate?"
+
+1. After running a [projection replay](/self-hosting/ops/projection-replay), search for the aggregate
+2. Select the replayed projection
+3. Navigate to the latest event
+4. Verify the projection state matches expectations
+
+### "What happened to this aggregate at 2pm yesterday?"
+
+1. Search for the aggregate ID
+2. Use the event timeline to find events around that timestamp
+3. Step through them to see the sequence of state changes
+
+---
+
+# FILE: ./self-hosting/ops/foundry.mdx
+
+---
+title: The Foundry
+description: "Interactive trace playground for building and sending synthetic traces"
+---
+
+**The Foundry** (`/ops/foundry`) is an interactive trace builder and sender. It lets you construct complete trace hierarchies — LLM calls, tool invocations, RAG retrievals, agent steps — and send them to any LangWatch project. Use it to test ingestion pipelines, reproduce issues, or generate sample data.
+
+<Frame>
+<img src="/images/ops/foundry.png" alt="The Foundry trace builder" />
+</Frame>
+
+## Layout
+
+The Foundry is split into two panels:
+
+**Left sidebar:**
+- [Target project](#target-project) selector
+- Trace settings (service name, user ID, metadata)
+- [Span tree](#span-tree) — hierarchical view of all spans
+- [Execution controls](#sending-traces) — send button, batch settings, execution log
+
+**Main area** with four tabs:
+- [Editor](#span-editor) — form-based span attribute editing
+- [Waterfall](#waterfall-view) — timeline visualization
+- [Graph](#graph-view) — DAG of span relationships
+- [JSON](#json-view) — raw trace configuration
+
+## Target Project
+
+The project selector at the top of the sidebar determines where traces are sent. It lists all projects you have access to, grouped by organization. Selecting a project automatically uses its API key for execution.
+
+## Span Tree
+
+The span tree shows all spans in the trace as a nested hierarchy. Each span displays its type icon, name, and type badge.
+
+**Supported span types:**
+- **LLM** — language model calls with messages, model, temperature
+- **Agent** — autonomous agent steps
+- **Tool** — tool/function invocations
+- **RAG** — retrieval-augmented generation with document contexts
+- **Chain** — multi-step processing chains
+- **Prompt** — prompt template rendering
+- **Guardrail** — safety/validation checks
+- **Generic** — any other operation
+
+**Actions:**
+- Click a span to select it for editing
+- Hover to reveal quick actions: reorder (up/down), duplicate, delete
+- Use the **"Add Span"** button to add child spans under any parent
+
+## Span Editor
+
+When a span is selected, the Editor tab shows a form with:
+
+- **Name** and **Type** — identity of the span
+- **Duration** and **Offset** (ms) — timing relative to the parent span
+- **Status** — OK, Error, or Unset
+- **Exception** — error message and stack trace (appears when status is Error)
+- **Input / Output** — data flowing through the span (text or JSON)
+- **Type-specific fields** — e.g., model and temperature for LLM spans, documents for RAG spans
+- **Custom Attributes** — arbitrary key-value pairs
+
+<Frame>
+<img src="/images/ops/foundry-editor.png" alt="Span editor form" />
+</Frame>
+
+## Waterfall View
+
+A horizontal timeline showing when each span executed relative to the trace start. Bar width represents duration, position represents offset, and indentation shows parent-child hierarchy. Color coding matches span type.
+
+<Frame>
+<img src="/images/ops/foundry-waterfall.png" alt="Waterfall timeline visualization" />
+</Frame>
+
+## Graph View
+
+A directed acyclic graph (DAG) showing span relationships as nodes and edges. Nodes display the span name, type, and duration. The graph auto-layouts to minimize overlap, with pan and zoom controls.
+
+## JSON View
+
+A Monaco code editor showing the full trace configuration as JSON. You can edit the JSON directly — changes are validated in real-time and reflected in the other views.
+
+Buttons for **Format**, **Copy**, and **Reset** are available in the header.
+
+## Sending Traces
+
+The execution controls at the bottom of the sidebar let you send the configured trace:
+
+- **Run N times** — batch count (1–100)
+- **Stagger (ms)** — delay between batch items to avoid overwhelming the system
+- **Send Traces** — executes the batch
+
+The **execution log** below the button shows the status of each send:
+- Pending, success (with copyable trace ID), or error
+- Click a successful entry to copy its trace ID for lookup in the main LangWatch UI
+
+## Presets
+
+Use the **preset picker** in the header to save and load trace templates. Presets store the full span tree and trace settings, letting you quickly switch between common test scenarios.
+
+## Common Workflows
+
+### Testing trace ingestion after a config change
+
+1. Select the target project
+2. Load a preset or build a simple trace (one LLM span)
+3. Click **Send Traces**
+4. Check the execution log for success
+5. Verify the trace appears in the LangWatch Messages view
+
+### Reproducing a customer issue
+
+1. Build a trace that matches the customer's span structure
+2. Set appropriate input/output values and error states
+3. Send to a test project
+4. Use [Deja View](/self-hosting/ops/dejaview) to verify the event stream matches
+
+### Load testing ingestion
+
+1. Build a representative trace
+2. Set **Run N times** to 100 with a stagger of 50ms
+3. Send and monitor the [Ops Dashboard](/self-hosting/ops/dashboard) for throughput and error rates
+
+---
+
+# FILE: ./self-hosting/ops/overview.mdx
+
+---
+title: Operations Console
+description: "Monitor, manage, and debug your LangWatch event-sourcing pipeline from a single pane of glass"
+---
+
+The **Ops Console** (`/ops`) is a platform-wide operations interface built for teams running LangWatch on their own infrastructure. It gives operators real-time visibility into the event-sourcing pipeline — queue health, processing throughput, error clusters — and the tools to act on problems without touching the database or restarting pods.
+
+<Frame>
+<img src="/images/ops/dashboard.png" alt="Ops Dashboard overview" />
+</Frame>
+
+## When to Use Ops
+
+| Scenario | Where to go |
+|---|---|
+| Traces aren't appearing in the UI | [Dashboard](/self-hosting/ops/dashboard) — check Staged/s and Failed/s rates |
+| Processing is stuck | [Queue Management](/self-hosting/ops/queue-management) — inspect blocked groups and error clusters |
+| A deployment broke a projection | [Projection Replay](/self-hosting/ops/projection-replay) — replay affected projections from a known-good date |
+| Need to debug a specific trace or aggregate | [Deja View](/self-hosting/ops/dejaview) — time-travel through the event stream |
+| Want to test trace ingestion against a project | [The Foundry](/self-hosting/ops/foundry) — build and send synthetic traces |
+| Failed jobs need reprocessing | [Queue Management](/self-hosting/ops/queue-management) — redrive from the DLQ |
+
+## Feature Overview
+
+<CardGroup cols={2}>
+  <Card title="Dashboard" icon="gauge" href="/self-hosting/ops/dashboard">
+    Real-time throughput, latency, error rates, and pipeline health at a glance. Powered by Server-Sent Events with automatic polling fallback.
+  </Card>
+  <Card title="Queue Management" icon="layer-group" href="/self-hosting/ops/queue-management">
+    Error groups, blocked queues, dead letter queue redriving, draining, and pipeline pause/unpause controls.
+  </Card>
+  <Card title="Projection Replay" icon="rotate" href="/self-hosting/ops/projection-replay">
+    Rebuild projection state by replaying events from ClickHouse. Supports bulk replay across tenants, single-aggregate debugging, and dry runs.
+  </Card>
+  <Card title="Deja View" icon="clock-rotate-left" href="/self-hosting/ops/dejaview">
+    Time-travel debugger for event-sourced aggregates. Inspect the full event history and compute any projection's state at any point in time.
+  </Card>
+  <Card title="The Foundry" icon="hammer" href="/self-hosting/ops/foundry">
+    Interactive trace playground for building, visualizing, and sending synthetic traces to any project. Useful for testing ingestion pipelines and reproducing issues.
+  </Card>
+</CardGroup>
+
+## Access Control
+
+The Ops Console uses two dedicated permissions, separate from project-level RBAC:
+
+| Permission | Grants |
+|---|---|
+| `ops:view` | Read-only access to all dashboards, metrics, and search |
+| `ops:manage` | Write access — unblock groups, drain queues, pause pipelines, start replays, redrive DLQ |
+
+These are platform-wide permissions, not scoped to a specific project. Users without `ops:view` are redirected away from `/ops` routes.
+
+See [Access Control (RBAC)](/platform/rbac) for details on assigning permissions.
+
+## Architecture Context
+
+The Ops Console sits on top of LangWatch's event-sourcing pipeline:
+
+```mermaid
+graph LR
+    Ingest["Trace Ingestion"] -->|"commands"| Redis["Redis Queues"]
+    Redis -->|"consume"| Workers["Workers"]
+    Workers -->|"events"| CH["ClickHouse"]
+    Workers -->|"projections"| CH
+    Ops["Ops Console"] -.->|"reads"| Redis
+    Ops -.->|"reads"| CH
+    Ops -.->|"actions"| Redis
+```
+
+- **Commands** enter Redis queues from the ingestion API
+- **Workers** consume commands, emit events, and update projections in ClickHouse
+- The **Ops Console** reads queue state from Redis and event history from ClickHouse, and can issue control actions (unblock, drain, pause, replay) back to the queues
+
+---
+
+# FILE: ./self-hosting/ops/projection-replay.mdx
+
+---
+title: Projection Replay
+description: "Rebuild projection state by replaying events from ClickHouse"
+---
+
+**Projection Replay** (`/ops/projections`) lets operators rebuild derived state by reprocessing events from ClickHouse through one or more projections. This is the primary tool for recovering from projection bugs, backfilling new projections, or rebuilding state after a data migration.
+
+<Frame>
+<img src="/images/ops/projection-replay.png" alt="Projection Replay wizard" />
+</Frame>
+
+## How Replay Works
+
+LangWatch uses event sourcing: every state change is stored as an immutable event in ClickHouse. Projections are functions that fold events into derived state (e.g., analytics aggregations, trace summaries). When a projection has a bug or needs to be rebuilt, replay reprocesses the raw events.
+
+A full replay follows four phases:
+
+```mermaid
+graph LR
+    Pause["1. Pause"] --> Drain["2. Drain"] --> Replay["3. Replay"] --> Unpause["4. Unpause"]
+```
+
+1. **Pause** — Freeze the selected projections so new events don't interfere
+2. **Drain** — Wait for in-flight jobs to complete
+3. **Replay** — Reread events from ClickHouse and reprocess them through the projections
+4. **Unpause** — Resume normal processing
+
+## Bulk Replay Wizard
+
+The main interface is a three-step wizard:
+
+### Step 1: Select Tenants
+
+Choose which tenants (projects) to replay:
+- Select individual tenants from a searchable multi-select
+- Or check **"All tenants"** to replay across the entire platform
+
+### Step 2: Choose Date Range
+
+Set the **"Replay events since"** date — only events after this date are reprocessed. Quick-select buttons are available for common ranges (1, 2, 3, or 6 months).
+
+Once tenants and date are selected, the system automatically **discovers aggregates** — querying ClickHouse to find how many aggregates match each projection.
+
+### Step 3: Select Projections
+
+A table shows all available projections with:
+- **Projection name** and **pipeline**
+- **Aggregate count** — how many aggregates have data in the selected range
+- Projections with no matching data are disabled
+
+Select individual projections or use **"Select all with data"** to check everything.
+
+### Review & Start
+
+Before starting, a summary shows:
+- Total aggregates, projections, and tenants selected
+- A description field for audit logging
+
+Two action options:
+- **Start Full Replay** — runs the four-phase replay process
+- **Dry Run** — processes 5 sample aggregates in memory without writing, to verify the projection logic is correct
+
+## Monitoring Progress
+
+When a replay starts, a **progress drawer** slides open showing real-time metrics:
+
+- **Current phase** (pause, drain, replay, unpause)
+- **Current projection** being processed
+- **Aggregates processed** — progress bar with count and percentage
+- **Events processed** — total events replayed
+- **Throughput** — events per second
+- **Elapsed time** — wall clock since start
+- **Projection badges** — highlighting the currently active projection
+
+## Replay History
+
+Below the wizard, a **history table** shows all past replay runs with:
+
+| Column | Description |
+|---|---|
+| **Status** | Running, completed, failed, or cancelled |
+| **Description** | User-provided description |
+| **Projections** | Number of projections replayed |
+| **Duration** | Total wall-clock time |
+| **Aggregates** | Total aggregates processed |
+| **Events** | Total events replayed |
+| **When** | Start timestamp |
+
+Click any row to navigate to its detailed status page (`/ops/projections/{runId}`).
+
+## Single Aggregate Replay
+
+For debugging, an **Advanced** section (collapsed by default) allows replaying a specific aggregate:
+
+1. Enter the **Aggregate ID** (e.g., `trace_abc123`)
+2. Enter the **Tenant ID**
+3. Select which projections to replay
+4. Click **"Replay Single"**
+
+This is useful when a single aggregate's projection state is incorrect and you want to rebuild it without replaying the entire tenant.
+
+## Common Workflows
+
+### Backfilling a new projection
+
+1. Deploy the new projection code
+2. Open Projection Replay → select "All tenants"
+3. Set the date range to cover all relevant history
+4. Select only the new projection
+5. Start a **Dry Run** first to verify correctness
+6. If the dry run looks good, **Start Full Replay**
+
+### Fixing a projection bug
+
+1. Deploy the fix
+2. Select the affected projection(s)
+3. Set the date to when the bug was introduced (or earlier to be safe)
+4. Select affected tenants (or all)
+5. Start replay — the fixed projection code reprocesses all events
+
+### Debugging a single trace
+
+1. Expand the **Advanced: Single Aggregate Replay** section
+2. Enter the aggregate ID and tenant ID
+3. Select the projection you're investigating
+4. Replay — then check [Deja View](/self-hosting/ops/dejaview) to inspect the result
+
+---
+
+# FILE: ./self-hosting/ops/queue-management.mdx
+
+---
+title: Queue Management
+description: "Manage error groups, blocked queues, dead letter queue redriving, and draining"
+---
+
+Queue Management is handled through three sections of the [Ops Dashboard](/self-hosting/ops/dashboard): **Blocked Groups**, **Dead Letter Queue (DLQ)**, and the **Groups** table. Together, they provide the tools to diagnose stuck processing, recover failed jobs, or discard unrecoverable work.
+
+## Error Groups & Blocked Queues
+
+When a job fails repeatedly, its group becomes **blocked** — no new jobs in that group are processed until the error is resolved. The Blocked section clusters these failures by normalized error message, so you can see patterns at a glance.
+
+Each error cluster shows:
+- **Count** — how many groups are affected
+- **Error message** — normalized sample
+- **Pipeline** — which pipeline stage produced the error
+- **Sample group IDs** — for quick identification
+
+### Actions on Blocked Groups
+
+<Note>
+All write actions require the `ops:manage` permission.
+</Note>
+
+| Action | Effect |
+|---|---|
+| **Unblock All** | Retries all blocked groups in the queue immediately |
+| **Canary Unblock** | Retries a small random sample (default 5, configurable up to 100) to test whether the underlying issue is resolved before unblocking everything |
+| **Move to DLQ** | Moves all blocked groups to the Dead Letter Queue for later inspection or reprocessing |
+| **Drain** | Permanently discards all jobs in an error cluster — use when jobs are unrecoverable |
+
+<Warning>
+**Drain is irreversible.** Drained jobs cannot be recovered. Always prefer moving to DLQ first if there's any chance the jobs can be reprocessed later.
+</Warning>
+
+## Dead Letter Queue (DLQ)
+
+The DLQ holds groups that were explicitly moved there — either automatically after exceeding retry limits or manually via the "Move to DLQ" action. Items in the DLQ are not processed until an operator takes action.
+
+Each DLQ entry shows:
+- **Queue name** — which queue the group came from
+- **Group ID** and **Pipeline** — for identification
+- **Error message** — the error that caused the failure
+- **Job count** — how many jobs are in the group
+
+### Redriving from the DLQ
+
+| Action | Effect |
+|---|---|
+| **Replay All** | Moves all DLQ groups in a queue back to the main queue for reprocessing from the beginning |
+| **Replay** (single) | Moves a single group back to the main queue |
+| **Canary Redrive** | Test-replays a small random sample (default 5, configurable up to 100) before committing to a full redrive |
+
+<Tip>
+**Use canary redrives after deploying a fix.** If the fix works for the canary batch, replay the rest. If it doesn't, the canary groups return to the DLQ and you haven't made the problem worse.
+</Tip>
+
+## Groups Table
+
+The Groups table provides a detailed per-group view of all processing groups across queues.
+
+Each row shows:
+- **Group ID** — the logical partition key
+- **Pipeline** — which pipeline stage this group belongs to
+- **Pending** — number of jobs waiting to be processed
+- **Retries** — retry count (orange if > 0)
+- **Oldest job age** — with a warning indicator if overdue
+- **Status** — `OK`, `Active`, `Blocked`, or `Stale`
+
+### Filtering
+
+Filter groups by status to focus on problems:
+- **All** — every group
+- **Blocked** — groups stuck due to errors
+- **Stale** — blocked groups that have been waiting too long
+- **Active** — groups currently being processed
+- **OK** — healthy groups
+
+A search box lets you filter by Group ID, Pipeline name, or error message.
+
+### Group Detail
+
+Click any row to open the **Group Detail** dialog, which shows:
+- Full status and pipeline information
+- Error message and stack trace
+- Active job ID (if currently processing)
+- Paginated list of all jobs in the group with their scores and raw data
+
+## Common Workflows
+
+### Recovering from a bad deployment
+
+1. Check the **Blocked** section — a spike in blocked groups after a deploy usually means the new code is crashing
+2. Roll back the deployment
+3. Use **Canary Unblock** to test that the rollback fixes the issue
+4. If the canary succeeds, **Unblock All** to resume processing
+
+### Clearing stale data after a schema change
+
+1. Identify affected groups in the **Groups** table using status filters
+2. If the data can be reprocessed: **Move to DLQ**, fix the schema, then **Replay All**
+3. If the data is obsolete: **Drain** the affected error cluster
+
+### Testing a fix before full redrive
+
+1. Deploy the fix
+2. Go to the DLQ section
+3. Use **Canary Redrive** with a count of 5-10
+4. Monitor the dashboard for new failures
+5. If clean, **Replay All** to redrive the remaining items
+
+---
+
 # FILE: ./self-hosting/overview.mdx
 
 ---
@@ -25784,6 +26958,9 @@ See [Kubernetes (Helm)](/self-hosting/deployment/kubernetes-helm) for full setup
 ```mermaid
 graph LR
     SDK["Your LLM App"] -->|"OTel / REST"| App["LangWatch App"]
+    Client["LLM Client / IDE"] -->|"virtual key"| Gateway["AI Gateway<br/>(optional)"]
+    Gateway -->|"resolve VK<br/>+ budget check<br/>+ OTel"| App
+    Gateway -->|"completions"| Providers["LLM Providers<br/>(OpenAI / Anthropic / Bedrock / …)"]
     App -->|"enqueue"| Redis["Redis"]
     Redis -->|"consume"| Workers["LangWatch Workers"]
     Workers -->|"events &<br/>projections"| CH["ClickHouse"]
@@ -25794,7 +26971,7 @@ graph LR
     CH -->|"cold storage"| S3["S3"]
 ```
 
-See [Architecture & Infrastructure](/self-hosting/infrastructure/architecture) for a detailed breakdown of networking, scaling, and storage tiers.
+See [Architecture & Infrastructure](/self-hosting/infrastructure/architecture) for a detailed breakdown of networking, scaling, and storage tiers, and [AI Gateway → Self-hosting](/ai-gateway/self-hosting/helm) for the gateway sub-chart setup if you want to terminate LLM traffic on your own perimeter.
 
 ## Deployment Models
 
@@ -25874,7 +27051,8 @@ Choose the deployment method that fits your environment.
 - **Native ClickHouse backup/restore** simplifies disaster recovery without third-party tooling.
 - **Auto-tuned ClickHouse** via the `clickhouse-serverless` subchart adapts resource allocation to your workload.
 - **Composable Helm chart overlays** let you customize deployments without forking the chart.
-- **Deep OpenTelemetry integration** — ingest traces via OTLP, export platform metrics and logs via OTel for infrastructure monitoring
+- **Deep OpenTelemetry integration** — ingest traces via OTLP, export platform metrics and logs via OTel for infrastructure monitoring.
+- **AI Gateway sub-chart** (optional) — terminate LLM traffic on your own perimeter with virtual keys, hierarchical budgets, multi-provider routing, guardrails, and prompt caching. Same Helm install, opt in via `gateway.enabled=true`. See [AI Gateway → Self-hosting](/ai-gateway/self-hosting/helm).
 
 ## Enterprise
 
@@ -26378,6 +27556,397 @@ kubectl -n langwatch get pods -o jsonpath='{.items[*].spec.containers[*].image}'
 
 ---
 
+# FILE: ./self-hosting/upgrade-v3.mdx
+
+---
+title: Migrate to v3
+description: "Step-by-step guide to upgrade LangWatch from v1.x or v2.x to v3.0"
+---
+
+LangWatch v3 replaces Elasticsearch/OpenSearch with **ClickHouse** as the primary data store. This guide walks you through the full migration — the process is the same whether you're coming from v1.x or v2.x.
+
+<Tip>
+This is a **zero-downtime migration**. Elasticsearch and ClickHouse run side-by-side during the transition. New data flows to ClickHouse immediately, and you migrate historical data at your own pace.
+</Tip>
+
+## What Changed
+
+- **Data store**: Trace, span, and evaluation data is now stored in ClickHouse instead of Elasticsearch/OpenSearch
+- **Architecture**: New event-sourcing system for data processing
+- **Helm charts**: New composable overlay structure with `clickhouse-serverless` subchart
+- **Environment**: `ELASTICSEARCH_*` variables replaced by `CLICKHOUSE_URL`
+
+## Migration Steps Overview
+
+1. Back up your databases
+2. Deploy ClickHouse alongside your existing Elasticsearch
+3. Upgrade LangWatch to v3
+4. Migrate historical data from Elasticsearch to ClickHouse
+5. Remove Elasticsearch
+
+## Prerequisites
+
+- **Back up your databases** — see [Backups](/self-hosting/configuration/backups)
+- **Check release notes** at [github.com/langwatch/langwatch/releases](https://github.com/langwatch/langwatch/releases)
+- **Test in staging** before upgrading production
+- Verify your Elasticsearch cluster is healthy (all shards green)
+- Ensure you have enough disk space on the ClickHouse host for the migrated data
+
+## Step 1: Deploy ClickHouse
+
+Add ClickHouse to your existing infrastructure. Your Elasticsearch instance stays running — both will operate in parallel during migration.
+
+### Docker Compose
+
+Add the ClickHouse service to your `compose.yml`:
+
+```yaml
+services:
+  clickhouse:
+    image: langwatch/clickhouse-serverless:0.2.0
+    environment:
+      CLICKHOUSE_PASSWORD: langwatch
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  clickhouse-data:
+```
+
+### Kubernetes (Helm)
+
+The v3 Helm chart includes the `clickhouse-serverless` subchart automatically. No additional setup is needed — ClickHouse will be deployed when you upgrade the chart in Step 2.
+
+## Step 2: Upgrade LangWatch to v3
+
+### Docker Compose
+
+Update your environment variables and pull the v3 images:
+
+Add `CLICKHOUSE_URL` to your app and workers environment in `compose.yml`:
+
+```yaml
+services:
+  app:
+    environment:
+      CLICKHOUSE_URL: http://default:langwatch@clickhouse:8123/langwatch
+  workers:
+    environment:
+      CLICKHOUSE_URL: http://default:langwatch@clickhouse:8123/langwatch
+```
+
+Then pull and restart:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+### Helm Chart
+
+```bash
+helm repo update
+
+helm upgrade langwatch langwatch/langwatch \
+  --namespace langwatch \
+  --version 3.0.0 \
+  -f values-production.yaml \
+  --wait --timeout 10m
+```
+
+<Note>
+The Helm chart configures `CLICKHOUSE_URL` automatically from the ClickHouse values — no manual env var needed for either managed or external ClickHouse.
+</Note>
+
+### What Happens on Startup
+
+- **PostgreSQL**: Prisma migrations run automatically, including removing the old Elasticsearch feature flags
+- **ClickHouse**: Schema migrations create all required tables (`event_log`, `stored_spans`, `trace_summaries`, etc.)
+- **New data** starts flowing to ClickHouse immediately
+- **Historical data** in Elasticsearch remains readable until you migrate it
+
+<Note>
+Keep your `ELASTICSEARCH_NODE_URL` configured during this phase. LangWatch v3 can still read from Elasticsearch for data that hasn't been migrated yet.
+</Note>
+
+## Step 3: Migrate Historical Data
+
+The `es-migration` tool reads documents from Elasticsearch and writes them to ClickHouse via the event-sourcing system. It runs outside of your LangWatch deployment — no Redis or BullMQ needed.
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/langwatch/langwatch.git
+
+# Navigate to the langwatch workspace
+cd langwatch
+
+# Install dependencies from the langwatch pnpm workspace
+pnpm install
+
+# Navigate to the migration tool
+cd packages/es-migration
+```
+
+### Configure
+
+Set the required environment variables:
+
+```bash
+export ELASTICSEARCH_NODE_URL="http://localhost:9200"
+export CLICKHOUSE_URL="http://default:langwatch@localhost:8123/langwatch"
+
+# If your Elasticsearch requires authentication
+export ELASTICSEARCH_API_KEY="your-api-key"
+```
+
+<Warning>
+Point these at your actual Elasticsearch and ClickHouse instances. If they're running in Docker or Kubernetes, you may need to set up port forwarding or use the internal network addresses.
+</Warning>
+
+**Credential requirements:**
+
+- **Elasticsearch**: Use a **read-only** user or API key. The migration tool only reads from ES — a read-only credential protects your source data from accidental writes.
+- **ClickHouse**: Use a user with **write access**. The tool needs to insert into `event_log` and projection tables.
+
+### Disable ClickHouse TTLs Before Migrating
+
+<Warning>
+**This step is critical.** If you skip it, ClickHouse may immediately expire or offload historical data as it arrives during migration.
+</Warning>
+
+LangWatch uses TTL rules to manage data retention and tiered storage in ClickHouse. By default, data older than 49 days is moved to cold storage (or dropped if cold storage isn't configured). When you migrate historical data from Elasticsearch, much of it will be older than 49 days — so ClickHouse would try to expire or offload it the moment it lands.
+
+**Before starting the migration**, set the TTL to a very high value so all migrated data stays in hot storage:
+
+#### Docker Compose
+
+Add to your app and workers environment:
+
+```yaml
+services:
+  app:
+    environment:
+      TIERED_STORAGE_DEFAULT_HOT_DAYS: "9999"
+  workers:
+    environment:
+      TIERED_STORAGE_DEFAULT_HOT_DAYS: "9999"
+```
+
+Then restart:
+
+```bash
+docker compose up -d
+```
+
+#### Helm Chart
+
+```yaml
+app:
+  extraEnvs:
+    - name: TIERED_STORAGE_DEFAULT_HOT_DAYS
+      value: "9999"
+workers:
+  extraEnvs:
+    - name: TIERED_STORAGE_DEFAULT_HOT_DAYS
+      value: "9999"
+```
+
+Then upgrade:
+
+```bash
+helm upgrade langwatch langwatch/langwatch \
+  --namespace langwatch \
+  -f values-production.yaml \
+  --wait --timeout 10m
+```
+
+The TTL reconciler runs on startup and updates the ClickHouse table metadata without reorganizing existing data. Any data that needs to be moved to a different storage tier due to the new TTL policy, will happen asynchronously and be managed by ClickHouse.
+
+#### After Migration: Restore TTLs
+
+Once the migration is complete, set `TIERED_STORAGE_DEFAULT_HOT_DAYS` back to your desired retention value and restart LangWatch. ClickHouse handles the offloading gracefully in the background.
+
+<Tip>
+We recommend setting TTL values to a **multiple of 7** (e.g., 7, 14, 28, 49) to align with ClickHouse partition boundaries for more efficient data management.
+</Tip>
+
+### Migration Targets
+
+The tool migrates data in separate targets:
+
+| Target | Description |
+|--------|-------------|
+| `traces-combined` | Traces and their evaluations |
+| `simulations` | Simulation run events |
+| `batch-evaluations` | Batch experiment evaluation data |
+| `dspy-steps` | DSPy optimization steps |
+| `all` | Run all primary targets in sequence |
+
+### Testing Workflow
+
+Start small and verify before running the full migration:
+
+**1. Dry-run a single batch** — validate the mapping without writing anything:
+
+```bash
+pnpm tsx src/index.ts traces-combined --dry-run --single-batch
+```
+
+Review the output in `./dry-run-traces-combined.json` to confirm the data looks correct.
+
+**2. Live single batch** — process one batch and verify in ClickHouse:
+
+```bash
+pnpm tsx src/index.ts traces-combined --single-batch
+```
+
+**3. Limited run** — process a few thousand events to catch edge cases:
+
+```bash
+MAX_EVENTS=5000 pnpm tsx src/index.ts traces-combined
+```
+
+**4. Full migration** — migrate everything:
+
+```bash
+pnpm tsx src/index.ts all
+```
+
+<Tip>
+For large history systems, we recommend running one target at a time instead of `all`, so you can apply the tuning profiles below for each target individually.
+</Tip>
+
+### Recommended Tuning
+
+Each target has different document sizes and volumes, so tuning per-target improves throughput.
+
+**Traces and evaluations** (large volume):
+
+```bash
+export BATCH_SIZE=5000
+export SUB_BATCH_SIZE=2000
+export CH_BATCH_SIZE=5000
+export CONCURRENCY=1000
+export CURSOR_REWIND_MS=21600000
+```
+
+**DSPy steps** (smaller documents):
+
+```bash
+export BATCH_SIZE=100
+export CH_BATCH_SIZE=100
+export CONCURRENCY=10
+export CURSOR_REWIND_MS=21600000
+```
+
+### Runtime Controls
+
+- **Pause/Resume**: Press `p` during migration to pause after the current batch. Press `p` again to resume.
+- **Graceful shutdown**: `Ctrl+C` finishes the current batch then exits. Press again to force quit.
+- **ClickHouse backpressure**: The tool monitors ClickHouse merge load and pauses automatically when it's too high. It resumes when merges catch up.
+
+### Resume After Interruption
+
+The migration saves progress to a cursor file (e.g., `./cursor-traces-combined.json`). If interrupted, it resumes from the last checkpoint on restart.
+
+To start a target from scratch, delete its cursor file.
+
+### Verify the Migration
+
+After migration completes, verify the data in ClickHouse:
+
+```bash
+# Connect to ClickHouse
+clickhouse-client --host localhost --port 9000
+
+# Check trace counts
+SELECT COUNT(*) FROM langwatch.trace_summaries;
+
+# Check event log
+SELECT AggregateType, COUNT(*) FROM langwatch.event_log GROUP BY AggregateType;
+```
+
+Compare these counts against your Elasticsearch indices to confirm completeness. Note that you may wish to run a distinct check against the `ProjectionId` column on trace summaries as if there are any MergeTree Replacements that need to happen it could cause the count operation to report duplicates in the count.
+
+## Step 4: Remove Elasticsearch
+
+Once you've verified the migration:
+
+1. **Remove Elasticsearch environment variables** from your configuration:
+   - `ELASTICSEARCH_NODE_URL`
+   - `ELASTICSEARCH_API_KEY`
+
+2. **Remove the Elasticsearch service** from your `compose.yml` or Helm values
+
+3. **Restart LangWatch** to apply the changes
+
+### Docker Compose
+
+```bash
+# After removing the elasticsearch service from compose.yml
+docker compose up -d
+```
+
+### Helm
+
+```bash
+helm upgrade langwatch langwatch/langwatch \
+  --namespace langwatch \
+  -f values-production.yaml \
+  --wait --timeout 10m
+```
+
+## Environment Variable Changes
+
+| Variable | v1.x / v2.x | v3.0 |
+|----------|-------------|------|
+| `ELASTICSEARCH_NODE_URL` | Required | Remove |
+| `ELASTICSEARCH_API_KEY` | Optional | Remove |
+| `CLICKHOUSE_URL` | — | Required |
+
+All other environment variables remain the same. See [Environment Variables](/self-hosting/configuration/environment-variables) for the full reference.
+
+## Troubleshooting
+
+### Toxic documents
+
+If a single Elasticsearch document is too large and crashes an ES shard during migration, the tool detects this, skips the problematic document, and logs its ID to `./skipped-toxic-docs.log`. These documents may need manual handling.
+
+### Response too large
+
+If an Elasticsearch response exceeds the Node.js string limit (~1 GB), the tool automatically halves the batch size and retries.
+
+### Transient Elasticsearch errors
+
+For timeouts or connection issues, the tool uses exponential backoff (up to 5 retries) and reduces batch size if errors persist.
+
+### Migration seems slow
+
+- Check ClickHouse merge load in the progress output (`ch_parts` column)
+- Increase `CONCURRENCY` and `BATCH_SIZE` if your hardware can handle it
+- The tool auto-pauses when ClickHouse is under merge pressure — this is normal
+
+## Getting Help
+
+- Check the [Troubleshooting guide](/self-hosting/troubleshooting)
+- Open an issue at [github.com/langwatch/langwatch/issues](https://github.com/langwatch/langwatch/issues)
+- Contact [support](https://langwatch.ai/support)
+
+---
+
 # FILE: ./self-hosting/upgrade.mdx
 
 ---
@@ -26478,19 +28047,11 @@ docker compose up -d
 
 ## Breaking Changes
 
-### v2 to v3: ClickHouse Migration
+### v1.x / v2.x to v3: ClickHouse Migration
 
-LangWatch v3 replaces Elasticsearch/OpenSearch with ClickHouse as the primary data store. This is a significant architectural change.
+LangWatch v3 replaces Elasticsearch/OpenSearch with ClickHouse as the primary data store. This is a zero-downtime migration — Elasticsearch and ClickHouse run side-by-side while you migrate historical data.
 
-**What changes:**
-- Trace, span, and evaluation data is stored in ClickHouse instead of Elasticsearch
-- New event-sourcing architecture for data processing
-- New Helm chart structure with composable overlays
-- `clickhouse-serverless` subchart for auto-tuned ClickHouse
-
-**Migration path:**
-- New deployments: Use the v3 Helm chart directly
-- Existing v2 deployments: Contact the [LangWatch team](https://langwatch.ai/schedule-demo) for migration assistance
+See the **[full migration guide](/self-hosting/upgrade-v3)** for step-by-step instructions covering infrastructure setup, data migration, and cleanup.
 
 ### Helm Chart Pre-1.0.0 to 1.0.0+
 
@@ -27289,6 +28850,13 @@ To make a call to the Prompts API, you will need to pass through your LangWatch 
 - `DELETE /api/prompts/:id` - Delete a prompt
 - `GET /api/prompts/:id/versions` - Get all versions for a prompt
 - `POST /api/prompts/:id/versions` - Create a new version for a prompt
+- `GET /api/prompts/tags` - List all tags for the organization
+- `POST /api/prompts/tags` - Create a new tag
+- `PUT /api/prompts/tags/:tag` - Rename a tag
+- `DELETE /api/prompts/tags/:tag` - Delete a tag
+- `PUT /api/prompts/:id/tags/:tag` - Assign a tag to a prompt version
+
+> **Auth scope:** Tag CRUD endpoints (`/api/prompts/tags*`) are organization-scoped, while tag assignment (`PUT /api/prompts/:id/tags/:tag`) is project-scoped.
 
 ---
 

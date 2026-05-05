@@ -1,11 +1,9 @@
 import chalk from "chalk";
 import ora from "ora";
-import {
-  EvaluatorsApiService,
-  EvaluatorsApiError,
-} from "@/client-sdk/services/evaluators";
+import { EvaluatorsApiService } from "@/client-sdk/services/evaluators";
 import type { EvaluatorResponse } from "@/client-sdk/services/evaluators";
 import { checkApiKey } from "../../utils/apiKey";
+import { failSpinner } from "../../utils/spinnerError";
 
 const formatEvaluatorDetails = (evaluator: EvaluatorResponse): void => {
   const config = evaluator.config as
@@ -58,10 +56,14 @@ const formatEvaluatorDetails = (evaluator: EvaluatorResponse): void => {
     }
   }
 
+  if (evaluator.platformUrl) {
+    console.log(`  ${chalk.bold("View:")}  ${chalk.underline(evaluator.platformUrl)}`);
+  }
+
   console.log();
 };
 
-export const getEvaluatorCommand = async (idOrSlug: string): Promise<void> => {
+export const getEvaluatorCommand = async (idOrSlug: string, options?: { format?: string }): Promise<void> => {
   checkApiKey();
 
   const service = new EvaluatorsApiService();
@@ -70,18 +72,13 @@ export const getEvaluatorCommand = async (idOrSlug: string): Promise<void> => {
   try {
     const evaluator = await service.get(idOrSlug);
     spinner.succeed(`Found evaluator "${evaluator.name}"`);
+    if (options?.format === "json") {
+      console.log(JSON.stringify(evaluator, null, 2));
+      return;
+    }
     formatEvaluatorDetails(evaluator);
   } catch (error) {
-    spinner.fail();
-    if (error instanceof EvaluatorsApiError) {
-      console.error(chalk.red(`Error: ${error.message}`));
-    } else {
-      console.error(
-        chalk.red(
-          `Error fetching evaluator: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ),
-      );
-    }
+    failSpinner({ spinner, error, action: "fetch evaluator" });
     process.exit(1);
   }
 };
