@@ -97,6 +97,9 @@ import { NullReplayRepository } from "./ops/repositories/replay.repository";
 import { OrganizationService } from "./organizations/organization.service";
 import { PrismaOrganizationRepository } from "./organizations/repositories/organization.prisma.repository";
 import { NullOrganizationRepository } from "./organizations/repositories/organization.repository";
+import { PresenceService } from "./presence/presence.service";
+import { InMemoryPresenceRepository } from "./presence/repositories/presence.memory.repository";
+import { RedisPresenceRepository } from "./presence/repositories/presence.redis.repository";
 import { ProjectService } from "./projects/project.service";
 import { PrismaProjectRepository } from "./projects/repositories/project.prisma.repository";
 import { NullProjectRepository } from "./projects/repositories/project.repository";
@@ -105,6 +108,9 @@ import { createCompositePlanProvider } from "./subscription/composite-plan-provi
 import { PlanProviderService } from "./subscription/plan-provider";
 import type { SubscriptionService } from "./subscription/subscription.service";
 import { SuiteRunService } from "./suites/suite-run.service";
+import { NullTopicRepository } from "./topics/null-topic.repository";
+import { PrismaTopicRepository } from "./topics/topic.prisma.repository";
+import { TopicService } from "./topics/topic.service";
 import { LogRecordStorageService } from "./traces/log-record-storage.service";
 import { LogRequestCollectionService } from "./traces/log-request-collection.service";
 import { MetricRecordStorageService } from "./traces/metric-record-storage.service";
@@ -115,14 +121,20 @@ import { MetricRecordStorageClickHouseRepository } from "./traces/repositories/m
 import { NullMetricRecordStorageRepository } from "./traces/repositories/metric-record-storage.repository";
 import { SpanStorageClickHouseRepository } from "./traces/repositories/span-storage.clickhouse.repository";
 import { NullSpanStorageRepository } from "./traces/repositories/span-storage.repository";
+import { TraceListClickHouseRepository } from "./traces/repositories/trace-list.clickhouse.repository";
+import { NullTraceListRepository } from "./traces/repositories/trace-list.repository";
 import { TraceSummaryClickHouseRepository } from "./traces/repositories/trace-summary.clickhouse.repository";
 import { NullTraceSummaryRepository } from "./traces/repositories/trace-summary.repository";
 import { createSpanDedupeService } from "./traces/span-dedupe.service";
 import { SpanStorageService } from "./traces/span-storage.service";
 import { TokenizerService } from "./traces/tokenizer.service";
+import { TraceListService } from "./traces/trace-list.service";
 import { TraceRequestCollectionService } from "./traces/trace-request-collection.service";
 import { TraceSummaryService } from "./traces/trace-summary.service";
 import { traced } from "./tracing";
+import { PrismaTriggerRepository } from "./triggers/repositories/trigger.prisma.repository";
+import { NullTriggerRepository } from "./triggers/repositories/trigger.repository";
+import { TriggerService } from "./triggers/trigger.service";
 import { UsageService } from "./usage/usage.service";
 
 /**
@@ -170,6 +182,17 @@ export function initializeDefaultApp(options?: {
       });
 
   const broadcast = new BroadcastService(redis);
+  const projects = traced(
+    new ProjectService(new PrismaProjectRepository(prisma)),
+    "ProjectService",
+  );
+  const presence = new PresenceService(
+    redis
+      ? new RedisPresenceRepository(redis)
+      : new InMemoryPresenceRepository(),
+    broadcast,
+    projects,
+  );
   const spanDedup = createSpanDedupeService(redis);
 
   const traceSummary = traced(
@@ -179,6 +202,28 @@ export function initializeDefaultApp(options?: {
         : new NullTraceSummaryRepository(),
     ),
     "TraceSummaryService",
+  );
+  const evaluationRuns = traced(
+    new EvaluationRunService(
+      clickhouseEnabled
+        ? new EvaluationRunClickHouseRepository(resolveClickHouseClient)
+        : new NullEvaluationRunRepository(),
+    ),
+    "EvaluationRunService",
+  );
+  const topics = traced(
+    new TopicService(new PrismaTopicRepository(prisma)),
+    "TopicService",
+  );
+  const traceList = traced(
+    new TraceListService(
+      clickhouseEnabled
+        ? new TraceListClickHouseRepository(resolveClickHouseClient)
+        : new NullTraceListRepository(),
+      evaluationRuns,
+      topics,
+    ),
+    "TraceListService",
   );
   const spanStorage = traced(
     new SpanStorageService(
@@ -205,15 +250,6 @@ export function initializeDefaultApp(options?: {
     "MetricRecordStorageService",
   );
 
-  const evaluationRuns = traced(
-    new EvaluationRunService(
-      clickhouseEnabled
-        ? new EvaluationRunClickHouseRepository(resolveClickHouseClient)
-        : new NullEvaluationRunRepository(),
-    ),
-    "EvaluationRunService",
-  );
-
   const experiments = traced(
     ExperimentService.create(prisma),
     "ExperimentService",
@@ -225,11 +261,6 @@ export function initializeDefaultApp(options?: {
     ),
     "OrganizationService",
   );
-  const projects = traced(
-    new ProjectService(new PrismaProjectRepository(prisma)),
-    "ProjectService",
-  );
-
   const traceService = TraceService.create(prisma);
 
   const evaluationExecution = traced(
@@ -341,6 +372,7 @@ export function initializeDefaultApp(options?: {
     new MonitorService(new PrismaMonitorRepository(prisma)),
     "MonitorService",
   );
+  const triggers = new TriggerService(new PrismaTriggerRepository(prisma));
   const tokenizer = new TokenizerService(
     config.disableTokenization
       ? new NullTokenizerClient()
@@ -406,6 +438,8 @@ export function initializeDefaultApp(options?: {
     broadcast,
     projects,
     monitors,
+    triggers,
+    prisma,
     organizations,
     traces: { summary: traceSummary, spans: spanStorage },
     evaluations: { runs: evaluations.runs, execution: evaluations.execution },
@@ -449,6 +483,7 @@ export function initializeDefaultApp(options?: {
 
   const traces = {
     summary: traceSummary,
+    list: traceList,
     spans: spanStorage,
     logRecords: logRecordStorage,
     metricRecords: metricRecordStorage,
@@ -537,9 +572,11 @@ export function initializeDefaultApp(options?: {
   return initializeApp({
     config,
     broadcast,
+    presence,
     traces,
     evaluations,
     experiments,
+    triggers,
     dspySteps: { steps: dspySteps },
     simulations: { runs: simulationReads },
     suiteRuns: { runs: suiteRunService },
@@ -582,46 +619,67 @@ export function createTestApp(overrides?: Partial<AppDependencies>): App {
     "ProjectService",
   );
 
+  const testBroadcast = new BroadcastService(null);
   return new App({
     config,
-    broadcast: new BroadcastService(null),
-    traces: {
-      summary: traced(
-        new TraceSummaryService(new NullTraceSummaryRepository()),
-        "TraceSummaryService",
-      ),
-      spans: traced(
-        new SpanStorageService(new NullSpanStorageRepository()),
-        "SpanStorageService",
-      ),
-      logRecords: traced(
-        new LogRecordStorageService(new NullLogRecordStorageRepository()),
-        "LogRecordStorageService",
-      ),
-      metricRecords: traced(
-        new MetricRecordStorageService(new NullMetricRecordStorageRepository()),
-        "MetricRecordStorageService",
-      ),
-      collection: traced(
-        new TraceRequestCollectionService({
-          dedup: createSpanDedupeService(null),
-          recordSpan: noop,
-        }),
-        "TraceRequestCollectionService",
-      ),
-      logCollection: traced(
-        new LogRequestCollectionService({
-          recordLog: noop,
-        }),
-        "LogRequestCollectionService",
-      ),
-      metricCollection: traced(
-        new MetricRequestCollectionService({
-          recordMetric: noop,
-        }),
-        "MetricRequestCollectionService",
-      ),
-    },
+    broadcast: testBroadcast,
+    presence: new PresenceService(
+      new InMemoryPresenceRepository(),
+      testBroadcast,
+      nullProjects,
+    ),
+    traces: (() => {
+      const nullEvalRuns = new EvaluationRunService(
+        new NullEvaluationRunRepository(),
+      );
+      return {
+        summary: traced(
+          new TraceSummaryService(new NullTraceSummaryRepository()),
+          "TraceSummaryService",
+        ),
+        list: traced(
+          new TraceListService(
+            new NullTraceListRepository(),
+            nullEvalRuns,
+            new TopicService(new NullTopicRepository()),
+          ),
+          "TraceListService",
+        ),
+        spans: traced(
+          new SpanStorageService(new NullSpanStorageRepository()),
+          "SpanStorageService",
+        ),
+        logRecords: traced(
+          new LogRecordStorageService(new NullLogRecordStorageRepository()),
+          "LogRecordStorageService",
+        ),
+        metricRecords: traced(
+          new MetricRecordStorageService(
+            new NullMetricRecordStorageRepository(),
+          ),
+          "MetricRecordStorageService",
+        ),
+        collection: traced(
+          new TraceRequestCollectionService({
+            dedup: createSpanDedupeService(null),
+            recordSpan: noop,
+          }),
+          "TraceRequestCollectionService",
+        ),
+        logCollection: traced(
+          new LogRequestCollectionService({
+            recordLog: noop,
+          }),
+          "LogRequestCollectionService",
+        ),
+        metricCollection: traced(
+          new MetricRequestCollectionService({
+            recordMetric: noop,
+          }),
+          "MetricRequestCollectionService",
+        ),
+      };
+    })(),
     evaluations: {
       runs: traced(
         new EvaluationRunService(new NullEvaluationRunRepository()),
@@ -632,6 +690,7 @@ export function createTestApp(overrides?: Partial<AppDependencies>): App {
     },
     dspySteps: { steps: new DspyStepService(new NullDspyStepRepository()) },
     experiments: ExperimentService.create(testPrisma),
+    triggers: new TriggerService(new NullTriggerRepository()),
     simulations: { runs: SimulationRunService.create(null) },
     suiteRuns: {
       runs: SuiteRunService.create({
