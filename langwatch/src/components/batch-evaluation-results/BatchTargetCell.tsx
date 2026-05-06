@@ -11,6 +11,7 @@ import { LuCheck, LuCircleAlert, LuCopy, LuListTree } from "react-icons/lu";
 import { EvaluatorResultChip } from "~/components/shared/EvaluatorResultChip";
 import { formatLatency } from "~/components/shared/formatters";
 import { Tooltip } from "~/components/ui/tooltip";
+import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import { useDrawer } from "~/hooks/useDrawer";
 import { copyToClipboard } from "~/utils/clipboard";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
@@ -283,6 +284,7 @@ export function BatchTargetCell({
           </Button>
         </Tooltip>
       )}
+      {targetOutput.traceId && <TraceIdPeek traceId={targetOutput.traceId} />}
       {/* Copy button */}
       {rawOutput && (
         <Tooltip

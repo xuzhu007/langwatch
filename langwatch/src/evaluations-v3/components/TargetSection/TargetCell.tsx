@@ -19,6 +19,7 @@ import {
 } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
 import type { FieldMapping as UIFieldMapping } from "~/components/variables";
+import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import { setFlowCallbacks, useDrawer } from "~/hooks/useDrawer";
 import { copyToClipboard } from "~/utils/clipboard";
 import { parseLLMError } from "~/utils/formatLLMError";
@@ -537,6 +538,7 @@ export function TargetCellContent({
           </Button>
         </Tooltip>
       )}
+      {traceId && <TraceIdPeek traceId={traceId} />}
       {/* Copy button - shows when there's output */}
       {rawOutput && (
         <Tooltip
