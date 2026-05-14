@@ -57,19 +57,26 @@ func TestTranslateModelID_OpenAIPreserveDots(t *testing.T) {
 	}
 }
 
-func TestTranslateModelID_BareIDsTreatedAsAnthropic(t *testing.T) {
-	// Bare ids (no provider prefix) get the dot→dash treatment too —
-	// the TS source does this for safety.
+func TestTranslateModelID_BareAnthropicIDsTranslated(t *testing.T) {
+	// Bare ids (no provider prefix) only get the dot→dash treatment when
+	// they look like Anthropic Claude ids.
 	got := TranslateModelID("claude-3.5-sonnet")
 	if got != "claude-3-5-sonnet" {
 		t.Errorf("expected bare anthropic-shaped id translated, got %q", got)
 	}
 }
 
-func TestTranslateModelID_CustomDotToDash(t *testing.T) {
-	got := TranslateModelID("custom/my-llm-1.2")
-	if got != "custom/my-llm-1-2" {
-		t.Errorf("expected custom dot→dash, got %q", got)
+func TestTranslateModelID_BareNonAnthropicPreserved(t *testing.T) {
+	got := TranslateModelID("Qwen3.5-9B")
+	if got != "Qwen3.5-9B" {
+		t.Errorf("expected bare non-anthropic id preserved, got %q", got)
+	}
+}
+
+func TestTranslateModelID_CustomPreservesDots(t *testing.T) {
+	got := TranslateModelID("custom/Qwen3.5-9B")
+	if got != "custom/Qwen3.5-9B" {
+		t.Errorf("expected custom dots preserved, got %q", got)
 	}
 }
 

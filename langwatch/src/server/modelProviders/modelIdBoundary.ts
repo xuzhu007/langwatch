@@ -1,10 +1,10 @@
 /**
  * Model ID translation at the LiteLLM boundary.
  *
- * LiteLLM expects model IDs with dashes but llmModels.json uses dots for version numbers.
- * This module provides runtime dot-to-dash conversion at the API boundary.
+ * LiteLLM expects SOME provider model IDs with dashes, but our registry/source-of-truth
+ * can contain dots (usually version numbers).
  *
- * Example: "anthropic/claude-opus-4.5" -> "anthropic/claude-opus-4-5"
+ * Example (Anthropic): "anthropic/claude-opus-4.5" -> "anthropic/claude-opus-4-5"
  *
  * Additionally, some models require alias expansion to their full dated versions.
  * Example: "anthropic/claude-sonnet-4" -> "anthropic/claude-sonnet-4-20250514"
@@ -22,14 +22,17 @@ const MODEL_ALIASES: Record<string, string> = {
   "anthropic/claude-sonnet-4": "anthropic/claude-sonnet-4-20250514",
   "anthropic/claude-opus-4": "anthropic/claude-opus-4-20250514",
   "anthropic/claude-3.5-haiku": "anthropic/claude-3-5-haiku-20241022",
-  "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620"
+  "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620",
 };
 
 /**
  * Providers that need dot-to-dash translation for their model IDs.
- * Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
+ *
+ * IMPORTANT: Do NOT apply this to OpenAI-compatible "custom" providers.
+ * Custom model ids are opaque identifiers owned by the upstream endpoint
+ * (e.g. internal MaaS), and rewriting them breaks routing.
  */
-const PROVIDERS_NEEDING_TRANSLATION = ["anthropic", "custom"];
+const PROVIDERS_NEEDING_TRANSLATION = ["anthropic"];
 
 /**
  * Extracts the provider from a model ID string.
@@ -44,15 +47,16 @@ function getProvider(modelId: string): string {
   return modelId.slice(0, slashIndex).toLowerCase();
 }
 
+function isBareAnthropicModelId(modelId: string): boolean {
+  return /^claude-/i.test(modelId);
+}
+
 /**
  * Translates a model ID for use with LiteLLM.
  *
- * First checks for exact alias matches that need expansion to dated versions.
- * Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
- * Other providers (OpenAI, Gemini, etc.) are returned unchanged.
- *
- * @param modelId - The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")
- * @returns The translated model ID for LiteLLM (e.g., "anthropic/claude-opus-4-5")
+ * Order matters:
+ * 1) exact alias expansion (full-string match)
+ * 2) dot→dash translation for selected providers
  */
 export function translateModelIdForLitellm(modelId: string): string {
   if (!modelId) {
@@ -66,11 +70,12 @@ export function translateModelIdForLitellm(modelId: string): string {
 
   const provider = getProvider(modelId);
 
-  // Only translate providers that need it
-  // Models without a provider prefix are treated as needing translation
-  // (they could be Anthropic models referenced without the prefix)
+  // Only translate providers that need it.
+  // For legacy/unknown provider-less ids, ONLY translate anthropic-shaped ones
+  // (e.g. "claude-3.5-sonnet"). Do not rewrite arbitrary bare ids.
   const needsTranslation =
-    provider === "" || PROVIDERS_NEEDING_TRANSLATION.includes(provider);
+    PROVIDERS_NEEDING_TRANSLATION.includes(provider) ||
+    (provider === "" && isBareAnthropicModelId(modelId));
 
   if (!needsTranslation) {
     return modelId;

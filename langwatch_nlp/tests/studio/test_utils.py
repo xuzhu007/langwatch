@@ -479,10 +479,10 @@ class TestTranslateModelIdForLitellm:
         result = translate_model_id_for_litellm("anthropic/claude-opus-4.5.1")
         assert result == "anthropic/claude-opus-4-5-1"
 
-    def test_translates_custom_prefix(self):
-        """Translates custom/claude-opus-4.5 to custom/claude-opus-4-5."""
-        result = translate_model_id_for_litellm("custom/claude-opus-4.5")
-        assert result == "custom/claude-opus-4-5"
+    def test_preserves_custom_model_ids_with_dots(self):
+        """Preserves dots for custom OpenAI-compatible model ids (do not rewrite opaque MaaS ids)."""
+        result = translate_model_id_for_litellm("custom/Qwen3.5-9B")
+        assert result == "custom/Qwen3.5-9B"
 
     def test_handles_empty_string(self):
         """Handles empty string input."""
@@ -494,10 +494,20 @@ class TestTranslateModelIdForLitellm:
         result = translate_model_id_for_litellm(None)
         assert result is None
 
-    def test_handles_model_without_prefix(self):
-        """Handles model without provider prefix."""
+    def test_handles_anthropic_shaped_model_without_prefix(self):
+        """Handles anthropic-shaped model without provider prefix."""
         result = translate_model_id_for_litellm("claude-3.5-sonnet")
         assert result == "claude-3-5-sonnet"
+
+    def test_preserves_non_anthropic_bare_model_ids(self):
+        """Preserves dots for non-anthropic bare model ids."""
+        result = translate_model_id_for_litellm("Qwen3.5-9B")
+        assert result == "Qwen3.5-9B"
+
+    def test_preserves_bare_openai_model_ids(self):
+        """Preserves dots for bare OpenAI model ids."""
+        result = translate_model_id_for_litellm("gpt-3.5-turbo")
+        assert result == "gpt-3.5-turbo"
 
     def test_translates_claude_sonnet_4_alias(self):
         """Translates anthropic/claude-sonnet-4 to anthropic/claude-sonnet-4-20250514."""

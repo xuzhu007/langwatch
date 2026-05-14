@@ -296,21 +296,27 @@ MODEL_ALIASES: Dict[str, str] = {
     "anthropic/claude-sonnet-4": "anthropic/claude-sonnet-4-20250514",
     "anthropic/claude-opus-4": "anthropic/claude-opus-4-20250514",
     "anthropic/claude-3.5-haiku": "anthropic/claude-3-5-haiku-20241022",
-    "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620"
+    "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620",
 }
 
 # Providers that need dot-to-dash translation for their model IDs.
-# Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
-PROVIDERS_NEEDING_TRANSLATION = {"anthropic", "custom"}
+#
+# IMPORTANT: Do NOT apply this to OpenAI-compatible "custom" providers.
+# Custom model ids are opaque identifiers owned by the upstream endpoint,
+# and rewriting them breaks routing (e.g. internal MaaS model IDs like "Qwen3.5-9B").
+PROVIDERS_NEEDING_TRANSLATION = {"anthropic"}
+
+
+def _is_bare_anthropic_model_id(model_id: str) -> bool:
+    return model_id.lower().startswith("claude-")
 
 
 def translate_model_id_for_litellm(model_id: str | None) -> str | None:
-    """
-    Translates a model ID for use with LiteLLM.
+    """Translates a model ID for use with LiteLLM.
 
-    First checks for exact alias matches that need expansion to dated versions.
-    Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
-    Other providers (OpenAI, Gemini, etc.) are returned unchanged.
+    Order matters:
+    1) exact alias expansion (full-string match)
+    2) dot→dash translation for selected providers
 
     Args:
         model_id: The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")
@@ -327,10 +333,13 @@ def translate_model_id_for_litellm(model_id: str | None) -> str | None:
 
     provider = get_provider_from_model(model_id)
 
-    # Only translate providers that need it
-    # Models without a provider prefix are treated as needing translation
-    # (they could be Anthropic models referenced without the prefix)
-    needs_translation = provider == "" or provider in PROVIDERS_NEEDING_TRANSLATION
+    # Only translate providers that need it.
+    # For legacy/unknown provider-less ids, ONLY translate anthropic-shaped ones
+    # (e.g. "claude-3.5-sonnet"). Do not rewrite arbitrary bare ids.
+    needs_translation = (
+        provider in PROVIDERS_NEEDING_TRANSLATION
+        or (provider == "" and _is_bare_anthropic_model_id(model_id))
+    )
 
     if not needs_translation:
         return model_id
