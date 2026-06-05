@@ -41,6 +41,8 @@ import { sdkRadarRouter } from "./routers/sdkRadar";
 import { secretsRouter } from "./routers/secrets";
 import { suiteRouter } from "./routers/suites";
 import { shareRouter } from "./routers/share";
+import { pinnedTraceRouter } from "./routers/pinnedTrace";
+import { dataRetentionRouter } from "./routers/dataRetention";
 import { spansRouter } from "./routers/spans";
 import { teamRouter } from "./routers/team";
 import { topicsRouter } from "./routers/topics";
@@ -50,16 +52,30 @@ import { translateRouter } from "./routers/translate";
 import { automationRouter } from "./routers/automations";
 import { scimTokenRouter } from "./routers/scimToken";
 import { roleBindingRouter } from "./routers/roleBinding";
-import { personalAccessTokenRouter } from "./routers/personalAccessToken";
+import { apiKeyRouter } from "./routers/apiKey";
 import { groupRouter } from "./routers/group";
 import { userRouter } from "./routers/user";
 import { gatewayBudgetsRouter } from "./routers/gatewayBudgets";
 import { gatewayCacheRulesRouter } from "./routers/gatewayCacheRules";
+import { gatewayGuardrailsRouter } from "./routers/gatewayGuardrails";
 import { gatewayUsageRouter } from "./routers/gatewayUsage";
-import { gatewayProvidersRouter } from "./routers/gatewayProviders";
 import { virtualKeysRouter } from "./routers/virtualKeys";
+import { personalVirtualKeysRouter } from "./routers/personalVirtualKeys";
+import { personalWorkspaceFeaturesRouter } from "./routers/personalWorkspaceFeatures";
+import { routingPoliciesRouter } from "./routers/routingPolicies";
+import { ingestionSourcesRouter } from "@ee/governance/routers/ingestionSources";
+import { activityMonitorRouter } from "@ee/governance/routers/activityMonitor";
+import { anomalyRulesRouter } from "@ee/governance/routers/anomalyRules";
+import { aiToolsRouter } from "@ee/governance/routers/aiTools";
+import { costCentersRouter } from "@ee/governance/routers/costCenters";
+import { ingestionTemplatesRouter } from "@ee/governance/routers/ingestionTemplates";
+import { userIngestionBindingsRouter } from "@ee/governance/routers/userIngestionBindings";
+import { governanceRouter } from "@ee/governance/routers/governance";
+import { personalSessionsRouter } from "@ee/governance/routers/personalSessions";
+import { sessionPolicyRouter } from "@ee/governance/routers/sessionPolicy";
 import { workflowRouter } from "./routers/workflows";
 import { opsRouter } from "./routers/ops";
+import { storedObjectsRouter } from "./routers/stored-objects.router";
 
 const coreRouters = {
   agents: agentsRouter,
@@ -96,6 +112,8 @@ const coreRouters = {
   annotationScore: annotationScoreRouter,
   publicEnv: publicEnvRouter,
   share: shareRouter,
+  pinnedTrace: pinnedTraceRouter,
+  dataRetention: dataRetentionRouter,
   translate: translateRouter,
   workflow: workflowRouter,
   optimization: optimizationRouter,
@@ -113,13 +131,27 @@ const coreRouters = {
   licenseEnforcement: licenseEnforcementRouter,
   scimToken: scimTokenRouter,
   roleBinding: roleBindingRouter,
-  personalAccessToken: personalAccessTokenRouter,
+  apiKey: apiKeyRouter,
   group: groupRouter,
   ops: opsRouter,
+  storedObjects: storedObjectsRouter,
   virtualKeys: virtualKeysRouter,
-  gatewayProviders: gatewayProvidersRouter,
+  personalVirtualKeys: personalVirtualKeysRouter,
+  personalWorkspaceFeatures: personalWorkspaceFeaturesRouter,
+  routingPolicy: routingPoliciesRouter,
+  ingestionSources: ingestionSourcesRouter,
+  activityMonitor: activityMonitorRouter,
+  anomalyRules: anomalyRulesRouter,
+  aiTools: aiToolsRouter,
+  costCenters: costCentersRouter,
+  ingestionTemplates: ingestionTemplatesRouter,
+  userIngestionBindings: userIngestionBindingsRouter,
+  governance: governanceRouter,
+  personalSessions: personalSessionsRouter,
+  sessionPolicy: sessionPolicyRouter,
   gatewayBudgets: gatewayBudgetsRouter,
   gatewayCacheRules: gatewayCacheRulesRouter,
+  gatewayGuardrails: gatewayGuardrailsRouter,
   gatewayUsage: gatewayUsageRouter,
 };
 

@@ -156,5 +156,36 @@ describe("traceSummary span flags", () => {
         expect(result.spanCount).toBe(0);
       });
     });
+
+    describe("when it carries an event payload", () => {
+      it("leaves the fold state untouched (events are derived at read)", () => {
+        // /api/track_event creates a synthetic `langwatch.track_event` span and
+        // stuffs the user-tracked event into `span.events`. The fold no longer
+        // hoists those onto the summary (that grew the fold state O(span-count));
+        // the span is still persisted to stored_spans, so the trace-level events
+        // list is read from there on demand (the `getTraceEventsByTraceId`
+        // events-only query) at trace-detail time.
+        const state = createInitState();
+        const span = createTestSpan({
+          parentSpanId: null,
+          name: "langwatch.track_event",
+          spanId: "evt-span-1",
+          events: [
+            {
+              name: "thumbs_up_down",
+              timeUnixMs: 1700,
+              attributes: { value: "up" },
+            },
+          ],
+        });
+
+        const result = applySpanToSummary({ state, span });
+
+        // Synthetic spans don't represent real execution: timing/cost/flags
+        // are untouched and nothing is accumulated on the fold.
+        expect(result.spanCount).toBe(0);
+        expect(result).toEqual(state);
+      });
+    });
   });
 });

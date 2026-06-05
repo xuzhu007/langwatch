@@ -1,4 +1,5 @@
 import {
+  Box,
   Button,
   HStack,
   Icon,
@@ -36,19 +37,96 @@ export function TraceTableShell<T>({
     <TableEl
       width="full"
       css={{
-        borderCollapse: "collapse",
+        // `separate` + `border-spacing: 0` keeps the visual look of a
+        // single-pixel grid (no gaps between cells) while letting each
+        // TH/TD render its OWN borders — under `collapse` adjacent
+        // borders are merged and the head's vertical separators were
+        // being absorbed by the body cells below, so the head looked
+        // borderless even though we set borderRight on every TH. With
+        // `separate` each TH paints its own right edge cleanly.
+        borderCollapse: "separate",
+        borderSpacing: 0,
         tableLayout: "fixed",
         minWidth,
         position: "relative",
         zIndex: 1,
+        ...(stickyFirstColumn && {
+          // Pin every body row's leftmost cell during horizontal scroll
+          // so the row-select checkbox stays reachable. The TH side is
+          // handled in HeaderCell via `isStickyFirst`; this rule covers
+          // the corresponding body cells. The bg is scoped by the
+          // tbody's `data-row-variant` attribute (set on every
+          // StatusRowGroup) so error / warning rows still paint their
+          // tint on the sticky cell — without the variant scoping the
+          // checkbox column read as a permanently-neutral strip on
+          // erroring rows, hiding the status colour the rest of the
+          // row was carrying.
+          "& tbody > tr > td:first-child": {
+            position: "sticky",
+            left: 0,
+            zIndex: 1,
+          },
+          // Default rows: the sticky checkbox cell was painting
+          // `bg-panel` while the row body is `transparent` (showing
+          // the parent's `bg.surface`). In dark mode those two tokens
+          // resolve to two distinct shades, which gave each row three
+          // visually-distinct horizontal bands (sticky cell / main
+          // row body / IO-preview addon). Use `bg.surface` so the
+          // sticky cell paints the SAME surface that's behind the
+          // transparent row body. Still opaque, still covers any
+          // horizontally-scrolled content underneath it.
+          "& tbody[data-row-variant='default'] > tr > td:first-child, & tbody:not([data-row-variant]) > tr > td:first-child": {
+            backgroundColor: "var(--chakra-colors-bg-surface)",
+          },
+          // Default-row hover variant for the sticky cell. Mirrors the
+          // `style.hoverBg = gray.subtle` painted on the main row's Tr
+          // (see RegistryRow). Without this rule, only the row body
+          // picked up the hover tint and the sticky cell kept its
+          // resting bg — the row read as "half hovered".
+          "& tbody[data-row-variant='default']:hover > tr > td:first-child, & tbody:not([data-row-variant]):hover > tr > td:first-child": {
+            backgroundColor: "var(--chakra-colors-gray-subtle)",
+          },
+          "& tbody[data-row-variant='selected'] > tr > td:first-child": {
+            backgroundColor: "var(--chakra-colors-blue-subtle)",
+          },
+          "& tbody[data-row-variant='error'] > tr > td:first-child": {
+            // Match RegistryRow's `bg=red.fg/8` so the sticky cell reads
+            // as part of the same red surface the rest of the row paints.
+            backgroundColor: "color-mix(in srgb, var(--chakra-colors-red-fg) 8%, var(--chakra-colors-bg-panel))",
+          },
+          "& tbody[data-row-variant='warning'] > tr > td:first-child": {
+            backgroundColor: "color-mix(in srgb, var(--chakra-colors-yellow-fg) 8%, var(--chakra-colors-bg-panel))",
+          },
+          "& tbody[data-row-variant='error']:hover > tr > td:first-child": {
+            backgroundColor: "color-mix(in srgb, var(--chakra-colors-red-fg) 14%, var(--chakra-colors-bg-panel))",
+          },
+          "& tbody[data-row-variant='warning']:hover > tr > td:first-child": {
+            backgroundColor: "color-mix(in srgb, var(--chakra-colors-yellow-fg) 14%, var(--chakra-colors-bg-panel))",
+          },
+        }),
       }}
     >
-      <Thead position="sticky" top={0} zIndex={2} bg="bg.surface">
+      {/*
+        Light mode: the header row reads as a soft elevation against
+        the white table body — `bg.subtle` is lighter than the
+        previous `bg.muted`, which felt too dark per operator feedback.
+        Dark mode keeps the existing slight elevation token.
+      */}
+      <Thead
+        position="sticky"
+        top={0}
+        zIndex={2}
+        bg={{ base: "bg.subtle", _dark: "bg.surface" }}
+      >
         {table.getHeaderGroups().map((headerGroup) => (
           <Tr
             key={headerGroup.id}
-            borderBottomWidth="1px"
-            borderColor="border.muted"
+            // Under `border-collapse: separate` the TR-level border
+            // doesn't paint reliably across cells — the row-level
+            // border needs to live on each TH (handled in HeaderCell
+            // below). Keeping the prop here for legacy SSR markup but
+            // it's a no-op under the new collapse mode.
+            borderBottomWidth="0"
           >
             {headerGroup.headers.map((header, i) => (
               <HeaderCell
@@ -97,10 +175,15 @@ function HeaderCell<T>({
     <Th
       width={useFixedWidth ? `${size}px` : undefined}
       minWidth={`${header.column.columnDef.minSize}px`}
+      // Clip header text at the cell boundary so labels like
+      // "DURATION" don't visually overflow when the column is sized
+      // narrow. Inner SortableHeaderButton handles ellipsis on the
+      // label itself; this is the belt-and-suspenders clip.
+      overflow="hidden"
       textAlign={align}
       textStyle="2xs"
       fontWeight={isActiveSort ? "600" : "500"}
-      color={isActiveSort ? "fg" : "fg.subtle/70"}
+      color={isActiveSort ? "fg" : "fg.muted"}
       textTransform="uppercase"
       letterSpacing="0.06em"
       whiteSpace="nowrap"
@@ -110,13 +193,23 @@ function HeaderCell<T>({
       zIndex={isStickyFirst ? 3 : undefined}
       bg={
         isActiveSort
-          ? "blue.subtle"
+          ? { base: "bg.muted", _dark: "bg.muted" }
           : isStickyFirst
-            ? "bg.surface"
+            ? { base: "bg.subtle", _dark: "bg.surface" }
             : undefined
       }
+      // Vertical separator between TH cells + bottom border to
+      // separate the head from the body rows. Under
+      // `border-collapse: separate` both edges paint cleanly per cell
+      // (the TR-level border was being swallowed). One step lighter
+      // than `gray.300/gray.700` since `separate` mode renders the
+      // border at full strength without sharing pixels with the body
+      // cell below — the previous step looked too heavy once the
+      // collapse merging stopped.
       borderRightWidth="1px"
-      borderRightColor="border.subtle"
+      borderRightColor={{ base: "gray.200", _dark: "gray.800" }}
+      borderBottomWidth="1px"
+      borderBottomColor={{ base: "gray.200", _dark: "gray.800" }}
       // Unified padding for every header — sortable + non-sortable share the
       // same Th paddings so the column titles line up across the row. The
       // sortable button below is `width: full` and only adds its own
@@ -180,22 +273,27 @@ function SortableHeaderButton({
       _focusVisible={{ bg: "transparent" }}
       role="group"
     >
-      <HStack gap={1}>
-        {children}
+      <HStack gap={1} minWidth={0} flex={1}>
+        <Box truncate flex={1} minWidth={0} textAlign={align}>
+          {children}
+        </Box>
         {isActive ? (
-          <Icon boxSize="12px" color="blue.fg">
+          <Icon boxSize="12px" color="fg" flexShrink={0}>
             {sortDirection === "desc" ? <ChevronDown /> : <ChevronUp />}
           </Icon>
         ) : (
-          // Inactive sortable columns get a faint chevron that fades in on
-          // hover so the user knows the column *is* clickable. Hidden by
-          // default (`opacity: 0`) so it doesn't crowd numeric headers — the
-          // group hover state lifts it to 0.5 for the affordance hint.
+          // Inactive sortable columns show a faint chevron at all times so
+          // users can tell at a glance which columns are sortable without
+          // having to hover each one. Hover lifts it to make the click
+          // target obvious. Previously the chevron only appeared on hover,
+          // which made sortable and non-sortable headers visually
+          // identical and led to surprise no-ops on click.
           <Icon
             boxSize="12px"
             color="fg.muted"
-            opacity={0}
-            _groupHover={{ opacity: 0.5 }}
+            opacity={0.35}
+            flexShrink={0}
+            _groupHover={{ opacity: 0.85 }}
             transition="opacity 0.1s ease"
           >
             <ChevronDown />
@@ -216,6 +314,7 @@ export function cellPropsFor(
   },
   leftBorderColor?: Color,
   index?: number,
+  rightBorderColor?: Color,
 ): {
   textAlign: "left" | "right";
   width: string | undefined;
@@ -223,7 +322,7 @@ export function cellPropsFor(
   borderLeftWidth?: string;
   borderLeftColor?: Color;
   borderRightWidth: string;
-  borderRightColor: Color;
+  borderRightColor?: Color;
 } {
   const meta = cell.column.columnDef.meta as ColumnMeta | undefined;
   const size = cell.column.getSize();
@@ -241,8 +340,14 @@ export function cellPropsFor(
     textAlign: meta?.align ?? "left",
     width: useFixedWidth ? `${size}px` : undefined,
     minWidth: `${cell.column.columnDef.minSize ?? 0}px`,
-    borderRightWidth: "1px",
-    borderRightColor: "border.subtle",
+    // No vertical separators on body cells — the table head owns the
+    // column boundaries via its own TH borders. Operator feedback:
+    // body-row verticals added visual noise on the white surface and
+    // made error rows even busier than they needed to be. Caller can
+    // pass `rightBorderColor` to opt a specific cell back into a
+    // separator if needed.
+    borderRightWidth: rightBorderColor ? "1px" : "0",
+    borderRightColor: rightBorderColor ?? undefined,
     ...(index === 0 && leftBorderColor
       ? { borderLeftWidth: "2px", borderLeftColor: leftBorderColor }
       : {}),

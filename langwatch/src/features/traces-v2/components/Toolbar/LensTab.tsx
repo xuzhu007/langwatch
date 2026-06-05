@@ -1,4 +1,4 @@
-import { Box, Input, Tabs } from "@chakra-ui/react";
+import { Box, Button, HStack, Input, Stack, Tabs, Text } from "@chakra-ui/react";
 import type React from "react";
 import { useState } from "react";
 import {
@@ -8,6 +8,12 @@ import {
   LuTrash2,
   LuUndo2,
 } from "react-icons/lu";
+import {
+  PopoverBody,
+  PopoverContent,
+  PopoverRoot,
+  PopoverTrigger,
+} from "~/components/ui/popover";
 import { Tooltip } from "~/components/ui/tooltip";
 import {
   MenuContent,
@@ -18,6 +24,7 @@ import {
 } from "../../../../components/ui/menu";
 import type { LensConfig } from "../../stores/viewStore";
 import { useViewStore } from "../../stores/viewStore";
+import { LensNameDialog } from "./LensNameDialog";
 
 interface LensTabProps {
   lens: LensConfig;
@@ -61,12 +68,24 @@ export const LensTab: React.FC<LensTabProps> = ({
     revertLens(lens.id);
   };
 
+  // Build the screen-reader label up front so the badge count reads
+  // separated from the lens name. Without an explicit aria-label the
+  // browser concatenates the inner text ("Errors" + the badge's "5")
+  // into a single string "Errors5" — fine visually because the badge
+  // is offset with margin, broken for screen readers and any DOM-text
+  // consumer (test assertions, analytics).
+  const ariaLabel =
+    errorCount > 0
+      ? `${lens.name}, ${errorCount} error${errorCount === 1 ? "" : "s"}`
+      : undefined;
+
   const trigger = (
     <Tabs.Trigger
       value={lens.id}
       paddingX={2}
       minWidth="auto"
       gap={1}
+      aria-label={ariaLabel}
       display={hidden ? "none" : undefined}
       onDoubleClick={handleDoubleClick}
     >
@@ -86,7 +105,7 @@ export const LensTab: React.FC<LensTabProps> = ({
           </Box>
         </BuiltInTooltip>
       )}
-      {isDraft && <DraftDot />}
+      {isDraft && <DraftDot lensId={lens.id} lensName={lens.name} />}
       {errorCount > 0 && <ErrorBadge count={errorCount} />}
     </Tabs.Trigger>
   );
@@ -121,7 +140,7 @@ const BuiltInTooltip: React.FC<BuiltInTooltipProps> = ({
   if (!enabled) return <>{children}</>;
   return (
     <Tooltip
-      content="Built-in lens — duplicate to customise, right-click for options"
+      content="Built-in lens. Duplicate to customise, right-click for options."
       positioning={{ placement: "bottom" }}
     >
       {children}
@@ -129,20 +148,118 @@ const BuiltInTooltip: React.FC<BuiltInTooltipProps> = ({
   );
 };
 
-const DraftDot: React.FC = () => (
-  <Box
-    as="span"
-    width="6px"
-    height="6px"
-    borderRadius="full"
-    backgroundColor="orange.solid"
-    display="inline-block"
-    marginLeft={0.5}
-    flexShrink={0}
-  />
-);
+/**
+ * Orange dot marking a lens with unsaved local edits. Clicking the dot
+ * opens a popover explaining "changes made" and offering Discard /
+ * Save as new lens. Replaces the previous bare dot — which carried the
+ * signal but no affordance, leaving users guessing what it meant or
+ * how to resolve it.
+ */
+const DraftDot: React.FC<{ lensId: string; lensName: string }> = ({
+  lensId,
+  lensName,
+}) => {
+  const revertLens = useViewStore((s) => s.revertLens);
+  const createLens = useViewStore((s) => s.createLens);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+
+  return (
+    <>
+      <Tooltip
+        content="Unsaved changes. Click to discard or save as new lens."
+        positioning={{ placement: "bottom" }}
+      >
+        <Box display="inline-flex" marginLeft={0.5}>
+          <PopoverRoot
+            open={popoverOpen}
+            onOpenChange={(e) => setPopoverOpen(e.open)}
+            positioning={{ placement: "bottom" }}
+          >
+            <PopoverTrigger asChild>
+              <Box
+                as="button"
+                // Bumped 6px → 8px + ring. Original was easy to miss
+                // (especially against busy backgrounds), and missing it
+                // meant a stale draft filter loaded from localStorage
+                // could silently scope the table to a previous session's
+                // query without the user realising. The ring gives the
+                // dot some "halo" so it pops at a glance.
+                width="8px"
+                height="8px"
+                borderRadius="full"
+                backgroundColor="orange.solid"
+                boxShadow="0 0 0 2px var(--chakra-colors-orange-subtle)"
+                display="inline-block"
+                flexShrink={0}
+                cursor="pointer"
+                aria-label="Unsaved changes on this lens. Click for options."
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPopoverOpen((v) => !v);
+                }}
+              />
+            </PopoverTrigger>
+        <PopoverContent width="280px">
+          <PopoverBody>
+            <Stack gap={3}>
+              <Text textStyle="sm" color="fg.muted" lineHeight="1.4">
+                You've changed columns, filters or sort on{" "}
+                <Text as="span" color="fg" fontWeight="semibold">
+                  {lensName}
+                </Text>
+                . These edits live in your browser only. Save them as a
+                new lens to keep them, or discard to snap back.
+              </Text>
+              <HStack gap={2} justify="flex-end">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    revertLens(lensId);
+                    setPopoverOpen(false);
+                  }}
+                >
+                  Discard changes
+                </Button>
+                <Button
+                  size="xs"
+                  colorPalette="orange"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPopoverOpen(false);
+                    setSaveDialogOpen(true);
+                  }}
+                >
+                  Save as new lens
+                </Button>
+              </HStack>
+            </Stack>
+          </PopoverBody>
+        </PopoverContent>
+          </PopoverRoot>
+        </Box>
+      </Tooltip>
+      <LensNameDialog
+        open={saveDialogOpen}
+        onOpenChange={setSaveDialogOpen}
+        title="Save changes as new lens"
+        defaultName={`${lensName} (copy)`}
+        onSubmit={(name) => createLens(name)}
+      />
+    </>
+  );
+};
 
 const ErrorBadge: React.FC<{ count: number }> = ({ count }) => (
+  // The lens-tab error count is the only aggregate "how bad is it right now"
+  // signal on the trace explorer — every other surface (row tint, in-drawer
+  // exception accordion) is per-trace. It needs to read at a glance from
+  // across the room, so it's the only place we use a `solid` red badge
+  // instead of the subtle/muted treatment the rest of the tabs use. The
+  // count is bound to the user's currently-selected time range so it
+  // matches the window every other panel is querying.
   <Box
     as="span"
     display="inline-flex"
@@ -152,17 +269,16 @@ const ErrorBadge: React.FC<{ count: number }> = ({ count }) => (
     paddingX={1.5}
     paddingY="1px"
     borderRadius="full"
-    bg="red.subtle"
-    color="red.fg"
-    borderWidth="1px"
-    borderColor="red.muted"
-    fontSize="2xs"
-    fontWeight="semibold"
+    bg="red.solid"
+    color="red.contrast"
+    fontSize="xs"
+    fontWeight="bold"
     lineHeight="1"
-    minWidth="18px"
-    height="16px"
+    minWidth="20px"
+    height="18px"
     justifyContent="center"
     fontVariantNumeric="tabular-nums"
+    boxShadow="0 1px 2px rgba(220,38,38,0.25)"
   >
     {count > 99 ? "99+" : count}
   </Box>
@@ -197,25 +313,6 @@ const RenameInput: React.FC<{
   );
 };
 
-/**
- * Prompt the user for a new lens name and call `createLens` with the
- * trimmed result. Uses `window.prompt` for now — it sidesteps the awkward
- * "popover-from-context-menu" interaction and matches the bar of effort the
- * existing rename flow sets. Replace with a proper inline input later if
- * we want to polish it.
- */
-function promptSaveAsNewLens(
-  defaultName: string,
-  createLens: (name: string) => string,
-): void {
-  if (typeof window === "undefined") return;
-  const name = window.prompt("Save as new lens — name:", defaultName);
-  if (!name) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  createLens(trimmed);
-}
-
 const BuiltInLensMenuItems: React.FC<{
   lensId: string;
   canDelete: boolean;
@@ -227,12 +324,20 @@ const BuiltInLensMenuItems: React.FC<{
   const revertLens = useViewStore((s) => s.revertLens);
   const createLens = useViewStore((s) => s.createLens);
   const deleteLens = useViewStore((s) => s.deleteLens);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+
+  // "All" is the table's home base — if a user could dismiss it
+  // they'd lose the "show me everything" entry point with no way back
+  // short of clearing localStorage. Lock it as undeletable. Other
+  // built-ins (Conversations, Errors, …) can still be hidden via the
+  // `dismissedBuiltInIds` set so power users keep a clean strip.
+  const isUndeletable = lensId === "all-traces";
 
   return (
     <>
       <MenuItem
         value="save-as-new"
-        onClick={() => promptSaveAsNewLens(`${lensName} (copy)`, createLens)}
+        onClick={() => setSaveDialogOpen(true)}
         fontWeight={isDraft ? "semibold" : undefined}
       >
         <LuFilePlus />
@@ -249,13 +354,22 @@ const BuiltInLensMenuItems: React.FC<{
       <MenuSeparator />
       <MenuItem
         value="delete"
-        onClick={() => deleteLens(lensId)}
-        disabled={!canDelete}
+        onClick={() =>
+          !isUndeletable && canDelete && deleteLens(lensId)
+        }
+        disabled={isUndeletable || !canDelete}
         color="fg.error"
       >
         <LuTrash2 />
         Delete
       </MenuItem>
+      <LensNameDialog
+        open={saveDialogOpen}
+        onOpenChange={setSaveDialogOpen}
+        title={isDraft ? "Save changes as new lens" : "Save as new lens"}
+        defaultName={`${lensName} (copy)`}
+        onSubmit={(name) => createLens(name)}
+      />
     </>
   );
 };
@@ -272,6 +386,7 @@ const UserLensMenuItems: React.FC<{
   const createLens = useViewStore((s) => s.createLens);
   const duplicateLens = useViewStore((s) => s.duplicateLens);
   const deleteLens = useViewStore((s) => s.deleteLens);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   return (
     <>
@@ -280,7 +395,7 @@ const UserLensMenuItems: React.FC<{
           "persist my changes" with "rewrite the shared lens definition". */}
       <MenuItem
         value="save-as-new"
-        onClick={() => promptSaveAsNewLens(`${lensName} (copy)`, createLens)}
+        onClick={() => setSaveDialogOpen(true)}
         fontWeight={isDraft ? "semibold" : undefined}
       >
         <LuFilePlus />
@@ -312,6 +427,13 @@ const UserLensMenuItems: React.FC<{
         <LuTrash2 />
         Delete
       </MenuItem>
+      <LensNameDialog
+        open={saveDialogOpen}
+        onOpenChange={setSaveDialogOpen}
+        title={isDraft ? "Save changes as new lens" : "Save as new lens"}
+        defaultName={`${lensName} (copy)`}
+        onSubmit={(name) => createLens(name)}
+      />
     </>
   );
 };

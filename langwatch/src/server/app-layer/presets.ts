@@ -1,4 +1,6 @@
 import type { ClickHouseClient } from "@clickhouse/client";
+import { GovernanceKpisClickHouseRepository } from "@ee/governance/services/governanceKpis.clickhouse.repository";
+import { GovernanceOcsfEventsClickHouseRepository } from "@ee/governance/services/governanceOcsfEvents.clickhouse.repository";
 import type { PrismaClient } from "@prisma/client";
 import { env } from "~/env.mjs";
 import {
@@ -29,6 +31,13 @@ import {
 import { createStripeClient } from "../../../ee/billing/stripe/stripeClient";
 import { meters } from "../../../ee/billing/stripe/stripePriceCatalog";
 import { FREE_PLAN, UNLIMITED_PLAN } from "../../../ee/licensing/constants";
+import { StorageMeterService } from "../data-retention/metering/storageMeter.service";
+import { PinnedTraceRepository } from "../data-retention/pinning/pinnedTrace.repository";
+import { PinnedTraceService } from "../data-retention/pinning/pinnedTrace.service";
+import { DataRetentionPolicyRepository } from "../data-retention/policy/dataRetentionPolicy.repository";
+import { DataRetentionPolicyService } from "../data-retention/policy/dataRetentionPolicy.service";
+import { RetentionPolicyCache } from "../data-retention/retentionPolicyCache";
+import { RetroactiveUpdateService } from "../data-retention/retroactive/retroactiveUpdate.service";
 import { esClient, TRACE_INDEX, traceIndexId } from "../elasticsearch";
 import { EventSourcing } from "../event-sourcing";
 import type { PipelineRepositories } from "../event-sourcing/pipelineRegistry";
@@ -72,7 +81,10 @@ import {
   createAppConfigFromEnv,
   type ProcessRole,
 } from "./config";
-import type { AppDependencies } from "./dependencies";
+import type {
+  AppDependencies,
+  DataRetentionDependencies,
+} from "./dependencies";
 import { DspyStepService } from "./dspy-steps/dspy-step.service";
 import { DspyStepClickHouseRepository } from "./dspy-steps/repositories/dspy-step.clickhouse.repository";
 import { NullDspyStepRepository } from "./dspy-steps/repositories/dspy-step.repository";
@@ -103,6 +115,8 @@ import { RedisPresenceRepository } from "./presence/repositories/presence.redis.
 import { ProjectService } from "./projects/project.service";
 import { PrismaProjectRepository } from "./projects/repositories/project.prisma.repository";
 import { NullProjectRepository } from "./projects/repositories/project.repository";
+import { PrismaShareRepository } from "./share/repositories/share.prisma.repository";
+import { ShareService } from "./share/share.service";
 import { SimulationRunService } from "./simulations/simulation-run.service";
 import { createCompositePlanProvider } from "./subscription/composite-plan-provider";
 import { PlanProviderService } from "./subscription/plan-provider";
@@ -128,7 +142,10 @@ import { NullTraceSummaryRepository } from "./traces/repositories/trace-summary.
 import { createSpanDedupeService } from "./traces/span-dedupe.service";
 import { SpanStorageService } from "./traces/span-storage.service";
 import { TokenizerService } from "./traces/tokenizer.service";
-import { TraceListService } from "./traces/trace-list.service";
+import {
+  setDiscoverBroadcaster,
+  TraceListService,
+} from "./traces/trace-list.service";
 import { TraceRequestCollectionService } from "./traces/trace-request-collection.service";
 import { TraceSummaryService } from "./traces/trace-summary.service";
 import { traced } from "./tracing";
@@ -225,6 +242,26 @@ export function initializeDefaultApp(options?: {
     ),
     "TraceListService",
   );
+  // Wire the discover-cache → SSE bridge. Module-level setter keeps
+  // the TraceListService constructor lean (the null/test preset below
+  // doesn't need a broadcaster — refreshes that never get an SSE push
+  // still hydrate the cache successfully).
+  setDiscoverBroadcaster((tenantId) => {
+    // Broadcast.event payload is a string by contract — sender + SSE
+    // bridge both deserialise it on the client. Keep it tiny: timestamp
+    // is enough for the client to confirm freshness; the actual payload
+    // ships through the discover query they re-fire on receipt.
+    const payload = JSON.stringify({
+      event: "discover_updated",
+      tenantId,
+      timestamp: Date.now(),
+    });
+    void broadcast.broadcastToTenantRateLimited(
+      tenantId,
+      payload,
+      "discover_updated",
+    );
+  });
   const spanStorage = traced(
     new SpanStorageService(
       clickhouseEnabled
@@ -275,10 +312,21 @@ export function initializeDefaultApp(options?: {
     "EvaluationExecutionService",
   );
 
+  // Resolves the per-tenant retention cascade; shared by the DSPy CH repo
+  // (which stamps dspy_steps as a traces-category table) and the data-retention
+  // services wired further below.
+  const dataRetentionPolicyRepo = new DataRetentionPolicyRepository(prisma);
+  const retentionPolicyCache = new RetentionPolicyCache(
+    dataRetentionPolicyRepo,
+  );
+
   const dspySteps = traced(
     new DspyStepService(
       clickhouseEnabled
-        ? new DspyStepClickHouseRepository(resolveClickHouseClient)
+        ? new DspyStepClickHouseRepository(
+            resolveClickHouseClient,
+            retentionPolicyCache,
+          )
         : new NullDspyStepRepository(),
     ),
     "DspyStepService",
@@ -388,12 +436,52 @@ export function initializeDefaultApp(options?: {
       })
     : undefined;
 
+  const dataRetentionPolicyService = new DataRetentionPolicyService(
+    dataRetentionPolicyRepo,
+    retentionPolicyCache,
+  );
+  const pinnedTraceRepo = new PinnedTraceRepository(prisma);
+  // Construct the share repo here (not inside ShareService) so the pinning
+  // service can ask "is this trace still shared?" without depending on
+  // ShareService — that would close the cycle: ShareService already depends
+  // on PinnedTraceService for auto(un)pin.
+  const shareRepo = new PrismaShareRepository(prisma);
+  const pinnedTraceService = new PinnedTraceService(
+    pinnedTraceRepo,
+    async ({ projectId, traceId }) => {
+      const share = await shareRepo.findByResource({
+        projectId,
+        resourceType: "TRACE",
+        resourceId: traceId,
+      });
+      return share !== null;
+    },
+  );
+  const retroactiveUpdateService = new RetroactiveUpdateService(
+    clickhouseEnabled ? resolveClickHouseClient : null,
+  );
+  const storageMeterService = new StorageMeterService(
+    clickhouseEnabled ? resolveClickHouseClient : null,
+  );
+  const dataRetention: DataRetentionDependencies = {
+    policy: dataRetentionPolicyService,
+    pinning: pinnedTraceService,
+    retroactive: retroactiveUpdateService,
+    metering: storageMeterService,
+  };
+
+  const share = traced(
+    new ShareService(shareRepo, pinnedTraceService),
+    "ShareService",
+  );
+
   const es = new EventSourcing({
     clickhouse: clickhouseEnabled ? resolveClickHouseClient : void 0,
     redis,
     enabled: true,
     isSaas: config.isSaas,
     processRole: config.processRole,
+    retentionPolicyResolver: retentionPolicyCache,
   });
 
   // Construct repositories at the composition root — ClickHouse-or-Memory decisions live here.
@@ -431,6 +519,21 @@ export function initializeDefaultApp(options?: {
       }
     : undefined;
 
+  const governanceKpisSync = clickhouseEnabled
+    ? {
+        governanceKpisRepository: new GovernanceKpisClickHouseRepository(
+          resolveClickHouseClient,
+        ),
+      }
+    : undefined;
+
+  const governanceOcsfEventsSync = clickhouseEnabled
+    ? {
+        governanceOcsfEventsRepository:
+          new GovernanceOcsfEventsClickHouseRepository(resolveClickHouseClient),
+      }
+    : undefined;
+
   const registry = new PipelineRegistry({
     eventSourcing: es,
     repositories,
@@ -448,10 +551,15 @@ export function initializeDefaultApp(options?: {
     billingCheckpoints: new PrismaBillingCheckpointService(prisma),
     usageReportingService,
     gatewayBudgetSync,
+    governanceKpisSync,
+    governanceOcsfEventsSync,
   });
   const commands = registry.registerAll();
-  (globalForApp as any).__scenarioExecutionHandle =
-    commands.scenarioExecutionHandle;
+  (
+    globalForApp as typeof globalForApp & {
+      __scenarioExecutionHandle?: ScenarioExecutionReactorHandle;
+    }
+  ).__scenarioExecutionHandle = commands.scenarioExecutionHandle;
 
   const suiteRunService = SuiteRunService.create({
     resolveClickHouseClient: clickhouseEnabled ? resolveClickHouseClient : null,
@@ -591,6 +699,9 @@ export function initializeDefaultApp(options?: {
     notifications,
     nurturing,
     usageLimits,
+    retentionPolicyCache,
+    dataRetention,
+    share,
     commands,
     ops,
     _eventSourcing: es,
@@ -601,7 +712,27 @@ export function initializeDefaultApp(options?: {
 /** Tests — noop commands, null-backed services. */
 export function createTestApp(overrides?: Partial<AppDependencies>): App {
   const testPrisma = globalPrisma;
+  const testRetentionPolicyRepo = new DataRetentionPolicyRepository(testPrisma);
+  const testRetentionPolicyCache = new RetentionPolicyCache(
+    testRetentionPolicyRepo,
+  );
+  // Single PinnedTraceService instance shared between dataRetention.pinning
+  // and share, mirroring the production wiring (presets.ts above). Without
+  // this, tests that auto-pin via share would see a different repo state
+  // than tests that pin directly through dataRetention.pinning.
+  const testPinnedTraceService = new PinnedTraceService(
+    new PinnedTraceRepository(testPrisma),
+  );
   const noop = async () => undefined;
+  // Clear the module-global discover broadcaster so a test app built
+  // after `initializeDefaultApp` doesn't inherit the production
+  // broadcaster's closure (which captured the production
+  // BroadcastService and would fire SSE pushes out of tests). The
+  // null repository's no-op refresh path can still reach the
+  // broadcaster, so leaving the prod callback wired would leak
+  // cross-app callbacks. Tests that want their own broadcaster can
+  // re-register one after `createTestApp` returns.
+  setDiscoverBroadcaster(null);
   const config: AppConfig = {
     nodeEnv: "test",
     databaseUrl: "postgresql://test@localhost/test",
@@ -736,6 +867,7 @@ export function createTestApp(overrides?: Partial<AppDependencies>): App {
         addAnnotation: noop,
         removeAnnotation: noop,
         bulkSyncAnnotations: noop,
+        changeTraceName: noop,
       } satisfies AppCommands["traces"],
       evaluations: {
         executeEvaluation: noop,
@@ -778,6 +910,20 @@ export function createTestApp(overrides?: Partial<AppDependencies>): App {
         setPool: () => undefined,
       },
     },
+    retentionPolicyCache: testRetentionPolicyCache,
+    dataRetention: {
+      policy: new DataRetentionPolicyService(
+        testRetentionPolicyRepo,
+        testRetentionPolicyCache,
+      ),
+      pinning: testPinnedTraceService,
+      retroactive: new RetroactiveUpdateService(null),
+      metering: new StorageMeterService(null),
+    },
+    share: new ShareService(
+      new PrismaShareRepository(testPrisma),
+      testPinnedTraceService,
+    ),
     ...overrides,
   });
 }

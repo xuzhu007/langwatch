@@ -3,6 +3,9 @@ import type { Tokens } from "@chakra-ui/react";
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
+const MS_PER_WEEK = 7 * MS_PER_DAY;
+const MS_PER_MONTH = 30 * MS_PER_DAY;
+const MS_PER_YEAR = 365 * MS_PER_DAY;
 
 export function formatRelativeTime(timestamp: number): string {
   const diffMs = Date.now() - timestamp;
@@ -12,8 +15,141 @@ export function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diffMs / MS_PER_DAY)}d`;
 }
 
+/**
+ * Verbose natural-language relative time — "1 minute ago", "2 hours ago",
+ * "3 weeks ago". Used by the SINCE column, which trades compactness for
+ * readability (the compact `formatRelativeTime` stays the format for the
+ * narrow TIME column).
+ */
+export function formatVerboseRelative(timestamp: number): string {
+  // Clock skew can produce `timestamp > Date.now()` for traces that arrive
+  // a hair ahead of the viewer's clock. The narrow `formatRelativeTime`
+  // clamps the same way; matching that behaviour here keeps the Since
+  // column and the hover card from blinking "in the future" on traces
+  // that are really just landing live.
+  const diffMs = Math.max(0, Date.now() - timestamp);
+  if (diffMs < MS_PER_MINUTE) return "just now";
+  const pick = (
+    n: number,
+    singular: string,
+  ): string => `${n} ${singular}${n === 1 ? "" : "s"} ago`;
+  if (diffMs < MS_PER_HOUR) {
+    return pick(Math.floor(diffMs / MS_PER_MINUTE), "minute");
+  }
+  if (diffMs < MS_PER_DAY) {
+    return pick(Math.floor(diffMs / MS_PER_HOUR), "hour");
+  }
+  if (diffMs < MS_PER_WEEK) {
+    return pick(Math.floor(diffMs / MS_PER_DAY), "day");
+  }
+  if (diffMs < MS_PER_MONTH) {
+    return pick(Math.floor(diffMs / MS_PER_WEEK), "week");
+  }
+  if (diffMs < MS_PER_YEAR) {
+    return pick(Math.floor(diffMs / MS_PER_MONTH), "month");
+  }
+  return pick(Math.floor(diffMs / MS_PER_YEAR), "year");
+}
+
+/**
+ * Full ISO 8601 timestamp in UTC, e.g. `2026-06-02T13:14:15.123Z`. Used by
+ * the TIMESTAMP column for users who want to copy-paste a precise wall-
+ * clock into log queries / external tools without translating from a
+ * relative string.
+ */
+export function formatISOTimestamp(timestamp: number): string {
+  return new Date(timestamp).toISOString();
+}
+
+/**
+ * Local-time string with the viewer's IANA zone abbreviated (e.g.
+ * `2026-06-02 15:14:15 CEST`). Used inside the TimeHoverCard. Falls back
+ * gracefully on environments without `Intl` (SSR) — returns the bare
+ * locale string.
+ */
+export function formatLocalWithZone(timestamp: number): string {
+  const d = new Date(timestamp);
+  try {
+    const formatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZoneName: "short",
+    });
+    // Intl returns "06/02/2026, 15:14:15 CEST" — reformat to the ISO-ish
+    // shape we use elsewhere for consistency with formatAbsoluteTime.
+    const parts = formatter.formatToParts(d);
+    const lookup: Record<string, string> = {};
+    for (const p of parts) lookup[p.type] = p.value;
+    const ymd = `${lookup.year}-${lookup.month}-${lookup.day}`;
+    const hms = `${lookup.hour}:${lookup.minute}:${lookup.second}`;
+    return `${ymd} ${hms} ${lookup.timeZoneName ?? ""}`.trim();
+  } catch {
+    return d.toLocaleString();
+  }
+}
+
+/**
+ * Resolve the viewer's IANA time zone, e.g. `Europe/Amsterdam`. Returns
+ * `"UTC"` when `Intl` isn't available (server render path).
+ */
+export function resolveViewerTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/**
+ * Day of week in the viewer's locale, e.g. `Tuesday`. Mirrors what most
+ * dashboards put in the right-rail of a date hover.
+ */
+export function formatDayOfWeek(timestamp: number): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(
+      new Date(timestamp),
+    );
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Compact relative-time formatter with an explicit "ago" suffix for
+ * drawer-header / detail surfaces. No space between the number and
+ * unit (`10m ago`, `16d ago`) so it stays tight at small sizes, but
+ * keeps the natural-language hint that the table-cell
+ * `formatRelativeTime` drops.
+ */
+export function formatRelativeTimeAgo(timestamp: number): string {
+  const diffMs = Date.now() - timestamp;
+  if (diffMs < MS_PER_MINUTE) return "just now";
+  if (diffMs < MS_PER_HOUR) {
+    return `${Math.floor(diffMs / MS_PER_MINUTE)}m ago`;
+  }
+  if (diffMs < MS_PER_DAY) {
+    return `${Math.floor(diffMs / MS_PER_HOUR)}h ago`;
+  }
+  return `${Math.floor(diffMs / MS_PER_DAY)}d ago`;
+}
+
 export function formatAbsoluteTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleString();
+  // Render in UTC and tag the suffix so engineers reading a trace can
+  // line up timestamps against their server logs without doing the TZ
+  // math in their heads. The previous `toLocaleString()` form rendered
+  // in the viewer's local time without saying so, which was ambiguous.
+  const d = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(
+    d.getUTCDate(),
+  )} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(
+    d.getUTCSeconds(),
+  )} UTC`;
 }
 
 export function formatDuration(ms: number): string {
@@ -34,12 +170,6 @@ export function formatTokens(tokens: number): string {
   return `${tokens}`;
 }
 
-const PROVIDER_ABBREVIATIONS: Readonly<Record<string, string>> = {
-  openai: "oai",
-  anthropic: "ant",
-  google: "ggl",
-};
-
 const MODEL_ABBREVIATIONS: ReadonlyArray<readonly [from: string, to: string]> =
   [
     ["gpt-4o-mini", "4o-mini"],
@@ -56,12 +186,11 @@ export function abbreviateModel(model: string): string {
   if (slash < 0) return model;
   const provider = model.slice(0, slash);
   const name = model.slice(slash + 1);
-  const shortProvider = PROVIDER_ABBREVIATIONS[provider] ?? provider;
   let shortName = name;
   for (const [from, to] of MODEL_ABBREVIATIONS) {
     shortName = shortName.replace(from, to);
   }
-  return `${shortProvider}/${shortName}`;
+  return `${provider}/${shortName}`;
 }
 
 export function formatWallClock(startMs: number, endMs: number): string {
@@ -77,15 +206,6 @@ export function truncateId(id: string, chars = 8): string {
   if (id.length <= chars) return id;
   return id.slice(0, chars);
 }
-
-export const SPAN_TYPE_BADGE_STYLES: Readonly<
-  Record<string, { bg: string; color: string }>
-> = {
-  llm: { bg: "blue.subtle", color: "blue.emphasized" },
-  agent: { bg: "purple.subtle", color: "purple.emphasized" },
-  workflow: { bg: "teal.subtle", color: "teal.emphasized" },
-  span: { bg: "gray.subtle", color: "gray.emphasized" },
-};
 
 export const SPAN_TYPE_COLORS: Readonly<Record<string, Tokens["colors"]>> = {
   llm: "blue.solid",
@@ -103,6 +223,24 @@ export const STATUS_COLORS: Readonly<Record<string, Tokens["colors"]>> = {
   error: "red.solid",
   warning: "yellow.solid",
   ok: "green.solid",
+};
+
+/**
+ * Origin palette — kept in sync with `~/utils/originColors.ts` so the
+ * filter sidebar dots, the Origin table cell, and any chip rendering
+ * the trace's origin agree on what colour each origin gets. Picking
+ * deterministic mappings (instead of hashing the string) avoids the
+ * "evaluation just landed on orange today" surprise that prompted
+ * this change.
+ */
+export const ORIGIN_COLORS: Readonly<Record<string, Tokens["colors"]>> = {
+  application: "blue.solid",
+  evaluation: "green.solid",
+  simulation: "pink.solid",
+  workflow: "cyan.solid",
+  playground: "teal.solid",
+  gateway: "purple.solid",
+  sample: "gray.solid",
 };
 
 /**

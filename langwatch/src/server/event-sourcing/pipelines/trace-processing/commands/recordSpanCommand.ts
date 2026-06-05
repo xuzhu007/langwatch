@@ -26,6 +26,7 @@ import { OtlpSpanTokenEstimationService } from "~/server/app-layer/traces/span-t
 import { TiktokenClient } from "~/server/app-layer/clients/tokenizer/tiktoken.client";
 import { featureFlagService } from "~/server/featureFlag";
 import { TraceRequestUtils } from "../utils/traceRequest.utils";
+import { capOversizedAttributes } from "../utils/capOversizedAttributes";
 
 /**
  * Dependencies for RecordSpanCommand that can be injected for testing.
@@ -136,6 +137,23 @@ export class RecordSpanCommand implements CommandHandler<
           this.logger,
         );
 
+        // Cap oversized attribute values (multi-MB base64 images, huge params)
+        // before this span becomes a folded event. The trace-processing fold
+        // state is read-modify-written in Redis per event; multi-MB values
+        // saturate the single-threaded command loop and collapse folding
+        // throughput. Capping here keeps the fold state small for every
+        // ingestion path that dispatches recordSpan (collector REST and OTLP).
+        const cappedAttributeCount = capOversizedAttributes(
+          spanToProcess,
+          resourceToProcess,
+        );
+        if (cappedAttributeCount > 0) {
+          this.logger.warn(
+            { tenantId, traceId, spanId, cappedAttributeCount },
+            "Capped oversized span attribute value(s) before ingestion",
+          );
+        }
+
         const piiRedactionLevel =
           commandData.piiRedactionLevel ?? DEFAULT_PII_REDACTION_LEVEL;
 
@@ -233,9 +251,30 @@ export class RecordSpanCommand implements CommandHandler<
     };
   }
 
+  private static readonly RESERVED_ATTR_PASSTHROUGH = new Set<string>([
+    "langwatch.reserved.causality_depth",
+  ]);
+
   /**
-   * Strips any `langwatch.reserved.*` attributes from a span and its events/links.
-   * These attributes are reserved for system use and must not be set by users.
+   * Strips user-submitted `langwatch.reserved.*` attributes from a span
+   * and its events/links/resource. These attributes are reserved for
+   * system use and must not be settable by customer SDKs.
+   *
+   * EXCEPTIONS — system-emitted attributes that ride in on OTLP from
+   * trusted internal services (nlpgo, langevals, etc.) and MUST survive
+   * this strip because downstream reactors depend on them:
+   *
+   *   - `langwatch.reserved.causality_depth` — stamped by nlpgo's
+   *     `BaggageAttributeProcessor` on every span emitted during an
+   *     evaluator workflow run. The evaluationTrigger reactor reads
+   *     this on the inbound span_received event to block infinite
+   *     loops (post-2026-05-11 incident). Stripping it here would
+   *     silently disable the loop-prevention guard in production.
+   *
+   * If a customer SDK does manage to set one of these from outside,
+   * worst case is a one-shot eval-skip on their own trace — bounded
+   * impact, and bypassing requires knowing internal attribute names.
+   * Far preferable to silently breaking loop prevention.
    */
   private static stripReservedAttributes(
     span: OtlpSpan,
@@ -246,7 +285,10 @@ export class RecordSpanCommand implements CommandHandler<
 
     const strip = (attributes: OtlpSpan["attributes"]): OtlpSpan["attributes"] => {
       const filtered = attributes.filter((attr) => {
-        if (attr.key.startsWith(RESERVED_PREFIX)) {
+        if (
+          attr.key.startsWith(RESERVED_PREFIX) &&
+          !RecordSpanCommand.RESERVED_ATTR_PASSTHROUGH.has(attr.key)
+        ) {
           logger.warn(
             { attributeKey: attr.key },
             "Stripped user-submitted langwatch.reserved.* attribute",

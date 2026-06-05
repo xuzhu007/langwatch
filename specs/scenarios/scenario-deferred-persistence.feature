@@ -7,6 +7,11 @@ Feature: Scenario Deferred Persistence
     Given I am logged into project "my-project"
     And the scenarios list has a known count
 
+  # Per AUDIT_MANIFEST.md: 5 scenarios → 4 DUPLICATE (now bound via @scenario
+  # JSDoc against ScenarioFormDrawer.integration.test.tsx) + 1 KEEP for the
+  # second-save-update-not-create case. The KEEP scenario remains @unimplemented
+  # pending integration test coverage in PR #3458.
+
   @e2e @unimplemented
   Scenario: Editing after first save updates the existing scenario
     Given I opened the editor via "New Scenario"

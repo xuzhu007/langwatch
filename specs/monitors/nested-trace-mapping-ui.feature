@@ -4,6 +4,28 @@ Feature: Nested Trace Mapping UI
   I want to select nested trace fields with cascading badges
   So that I can precisely map evaluator inputs to trace attributes
 
+  # 5 of 13 scenarios bound to VariableMappingInput.test.tsx (Select simple
+  # field, Remove root badge clears all, Remove nested badge to re-select,
+  # Keyboard navigation, Search/filter in dropdown). Remaining 8 @unimplemented
+  # scenarios:
+  # - "Select field with one level of nesting (metadata)": DUPLICATE per manifest
+  #   of monitor-trace-mappings "Nested metadata field selection".
+  # - "Select field with two levels of nesting (spans)": DUPLICATE per manifest
+  #   of monitor-trace-mappings "Nested span field selection".
+  # - "Remove middle badge in three-level nesting": KEEP per manifest (three-level
+  #   covered at test:783, badge-back navigation at test:859; binding awaits
+  #   composite assertion).
+  # - "Thread level traces mapping with multi-select": DUPLICATE per manifest of
+  #   monitor-trace-mappings "Thread level traces mapping".
+  # - "Visual connector between badges": DELETE per manifest (pure visual styling,
+  #   no observable behavior contract).
+  # - "Dropdown closes on outside click": KEEP per manifest (VariableMappingInput.tsx:560
+  #   implements click-outside; no current test).
+  # - "Hover state on badges": DELETE per manifest (pure CSS hover assertion).
+  # - "Empty state with no sources": KEEP per manifest (empty-source fallback to
+  #   literal value is a real behavior; no existing test).
+  # Aspirational pending DELETE/UPDATE rewrites + KEEP test additions tracked in PR #3458.
+
   Background:
     Given I am in the evaluator editor configuring mappings
     And I have sample traces available

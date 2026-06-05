@@ -61,6 +61,10 @@ type WorkflowRequest struct {
 	// execute_flow / execute_evaluation, where Inputs go to the Entry
 	// node and propagate via edges.
 	NodeID string
+	// UntilNodeID scopes a flow run to the backward dependency path of
+	// the named node — the Studio "Run until here" gesture. Empty for
+	// full runs. Mirrors Python's `ExecuteFlowPayload.until_node_id`.
+	UntilNodeID string
 	// APIKey is `workflow.api_key` from the inbound payload — peeked
 	// out of WorkflowJSON at decode time so the request handler can
 	// stash it on the request context before creating its top-level
@@ -69,6 +73,12 @@ type WorkflowRequest struct {
 	// api_key in context yet and drops the span. Engine-internal spans
 	// also use it for sibling-trace correlation.
 	APIKey string
+	// WorkflowName is the user-visible name from the canvas
+	// (`workflow.name` in the inbound payload). Peeked at decode time
+	// alongside APIKey so the handler can stamp it on the OTel root
+	// span before the engine even starts. Empty when missing/malformed
+	// so the tracing layer falls back to the event-type default.
+	WorkflowName string
 	// Type is the discriminator from the inbound StudioClientEvent
 	// envelope ("execute_flow" / "execute_component" / "execute_evaluation").
 	// Determines which workflow-level state-change family the engine emits:

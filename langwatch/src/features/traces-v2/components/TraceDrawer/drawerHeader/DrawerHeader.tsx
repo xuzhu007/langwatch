@@ -2,18 +2,19 @@ import {
   Box,
   Button,
   Circle,
+  HoverCard,
   HStack,
   Icon,
+  Portal,
   Text,
   VStack,
 } from "@chakra-ui/react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   LuArrowLeft,
+  LuCopy,
   LuMaximize2,
   LuMinimize2,
-  LuPin,
-  LuPinOff,
   LuRefreshCw,
   LuX,
 } from "react-icons/lu";
@@ -24,35 +25,43 @@ import {
   MenuItem,
   MenuRoot,
 } from "~/components/ui/menu";
+import { toaster } from "~/components/ui/toaster";
 import { Tooltip } from "~/components/ui/tooltip";
 import { TracePresenceAvatars } from "~/features/presence/components/TracePresenceAvatars";
 import { useDejaViewLink } from "~/hooks/useDejaViewLink";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import type { TraceHeader } from "~/server/api/routers/tracesV2.schemas";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { useConversationContext } from "../../../hooks/useConversationContext";
 import { usePinnedAttributes } from "../../../hooks/usePinnedAttributes";
+import { useSpanTree } from "../../../hooks/useSpanTree";
 import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
 import { useTraceHeader } from "../../../hooks/useTraceHeader";
 import { useTraceRefresh } from "../../../hooks/useTraceRefresh";
 import { useTraceResources } from "../../../hooks/useTraceResources";
 import { useDrawerStore } from "../../../stores/drawerStore";
 import { useFilterStore } from "../../../stores/filterStore";
+import { useFocusSectionStore } from "../../../stores/focusSectionStore";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
+import { rankedErrorSpans } from "../../../utils/errorSpans";
 import {
   abbreviateModel,
+  formatAbsoluteTime,
   formatCost,
   formatDuration,
-  formatRelativeTime,
+  formatRelativeTimeAgo,
   formatTokens,
   SPAN_TYPE_COLORS,
   STATUS_COLORS,
 } from "../../../utils/formatters";
 import { Chip } from "../Chip";
 import { splitChipsForOverflow } from "../ChipBar";
+import { ExceptionsContent } from "../ExceptionsContent";
 import { ModeSwitch } from "../ModeSwitch";
 import { RawJsonDialog } from "../RawJsonDialog";
 import { useTraceHeaderChipDefs } from "../TraceHeaderChips";
+import { EditableTraceName } from "./EditableTraceName";
 import { MetricPill } from "./MetricPill";
 import {
   type CategorizedPin,
@@ -76,6 +85,248 @@ interface DrawerHeaderProps {
 }
 
 /**
+ * Inline trace ID chip — collapsed to the first 5 chars by default so
+ * it doesn't compete with the trace name, expands to the full ID on
+ * hover, and reveals a copy icon at the trailing edge. Power-users can
+ * still hit `Y` (overflow-menu shortcut) to copy without hovering;
+ * this is for the case where they want to read the ID without leaving
+ * the header.
+ */
+/**
+ * Trace ID chip rendered with the same Chip component the metric pills
+ * use (Duration / Spans / Cost / …) so the drawer header reads as one
+ * consistent strip rather than the trace ID floating with its own
+ * styling. 8 chars short by default — git's short-SHA convention, long
+ * enough to be uniquely scannable but still fits beside the trace name.
+ * On hover the short id swaps to the full id and a copy icon appears;
+ * clicking anywhere on the chip copies to the clipboard.
+ */
+function TraceIdChip({ traceId }: { traceId: string }) {
+  const short = traceId.slice(0, 8);
+  const handleCopy = async () => {
+    try {
+      await copyTextToClipboard(traceId);
+      toaster.create({
+        title: "Trace ID copied",
+        // Show the full id so the operator can verify what landed on
+        // their clipboard at a glance. The chip shows a short id by
+        // design (git-SHA convention) but the toast has the real
+        // estate — operator report: the previous "<8 chars>…" felt
+        // truncated for no benefit.
+        description: traceId,
+        type: "success",
+        duration: 2500,
+      });
+    } catch {
+      toaster.create({
+        title: "Couldn't copy trace ID",
+        description: "Copy the ID manually from the URL.",
+        type: "error",
+        duration: 6000,
+      });
+    }
+  };
+  const value = (
+    <Box
+      display="inline-flex"
+      alignItems="center"
+      gap={1}
+      fontFamily="mono"
+      // Hover affordances: swap short text for full id, reveal the copy
+      // icon. CSS-only so we don't need a React state per row of header.
+      css={{
+        "& [data-hover-only]": { display: "none" },
+        ".chip-root:hover & [data-hover-only]": { display: "inline-flex" },
+        ".chip-root:hover & [data-collapsed]": { display: "none" },
+        ".chip-root:hover & [data-expanded]": { display: "inline" },
+      }}
+    >
+      <Text
+        as="span"
+        data-collapsed
+        textStyle="xs"
+        color="fg"
+        fontWeight="medium"
+      >
+        {short}
+      </Text>
+      <Text
+        as="span"
+        data-expanded
+        textStyle="xs"
+        color="fg"
+        fontWeight="medium"
+        display="none"
+      >
+        {traceId}
+      </Text>
+      <Icon as={LuCopy} boxSize={3} color="fg.muted" data-hover-only />
+    </Box>
+  );
+  return (
+    <Chip
+      value={value}
+      tone="neutral"
+      onClick={() => void handleCopy()}
+      tooltip="Hover to see full ID, click to copy"
+      ariaLabel={`Copy trace ID ${traceId}`}
+    />
+  );
+}
+
+/**
+ * Trace status indicator. On error traces the chip is an interactive
+ * popover: hovering opens an inline preview of the Exceptions section
+ * (same trace-level message + same per-span pill row, sourced from
+ * the same `rankedErrorSpans` helper), and clicking the chip itself
+ * jumps the operator to the Summary tab's Exceptions accordion with
+ * a brief blue pulse so the eye lands. OK traces render the dot
+ * non-interactively (just the help tooltip).
+ */
+function StatusChip({
+  trace,
+  statusColor,
+}: {
+  trace: TraceHeader;
+  statusColor: string;
+}) {
+  const selectSpan = useDrawerStore((s) => s.selectSpan);
+  const setViewMode = useDrawerStore((s) => s.setViewMode);
+  const requestFocus = useFocusSectionStore((s) => s.request);
+  const spanTree = useSpanTree();
+  const errorSpans = useMemo(
+    () => rankedErrorSpans(spanTree.data ?? []),
+    [spanTree.data],
+  );
+
+  const isError = trace.status === "error";
+  const hasErrorContent = isError && (!!trace.error || errorSpans.length > 0);
+
+  const focusExceptions = useCallback(() => {
+    // After the trace-view redesign Summary is its own DrawerViewMode,
+    // not a SpanTabBar tab — so jumping to the trace's Exceptions
+    // section means flipping mode to "summary" and pulsing the
+    // section, not setting an `activeTab`.
+    setViewMode("summary");
+    requestFocus({ traceId: trace.traceId, section: "exceptions" });
+  }, [requestFocus, setViewMode, trace.traceId]);
+
+  // Same focus request without the mode override — used by span pills
+  // inside the popover so a follow-up `selectSpan` lands the user on the
+  // span detail. The pulse target component (SpanAccordions or
+  // TraceSummaryAccordions) observes the shared focus store regardless
+  // of where it's mounted.
+  const focusExceptionsKeepTab = useCallback(() => {
+    requestFocus({ traceId: trace.traceId, section: "exceptions" });
+  }, [requestFocus, trace.traceId]);
+
+  const jumpToSpan = useCallback(
+    (spanId: string) => {
+      // Land on the span detail tab — `selectSpan` flips activeTab to
+      // "span" internally, so we just ensure trace mode here. The
+      // accordion-side focus-glow observer on SpanAccordions will catch
+      // the follow-up `requestFocus({section: "exceptions"})` fired by
+      // ExceptionsContent and pulse the span's own Exceptions section.
+      setViewMode("trace");
+      selectSpan(spanId);
+    },
+    [selectSpan, setViewMode],
+  );
+
+  // OK / non-error rendering keeps the existing static-tooltip recipe —
+  // there's nothing to preview, no jump to make.
+  if (!isError) {
+    const tooltipContent =
+      trace.status === "ok"
+        ? "No errors recorded on any span in this trace"
+        : `Trace status: ${trace.status}`;
+    return (
+      <Tooltip content={tooltipContent} positioning={{ placement: "bottom" }}>
+        <HStack gap={1} flexShrink={0} cursor="help">
+          <Circle size="8px" bg={statusColor} flexShrink={0} />
+        </HStack>
+      </Tooltip>
+    );
+  }
+
+  const chipBody = (
+    <HStack
+      as="button"
+      gap={1}
+      flexShrink={0}
+      cursor="pointer"
+      onClick={focusExceptions}
+      aria-label="Show exception details for this trace"
+      paddingX={1}
+      paddingY={0.5}
+      borderRadius="md"
+      _hover={{ bg: "red.fg/10" }}
+      transition="background 0.15s ease"
+    >
+      <Circle size="8px" bg={statusColor} flexShrink={0} />
+      <Text
+        textStyle="xs"
+        fontWeight="medium"
+        color={statusColor}
+        textTransform="capitalize"
+      >
+        {trace.status}
+      </Text>
+    </HStack>
+  );
+
+  // No content to preview — degrade to the plain clickable chip.
+  // Click still focuses the (empty) Exceptions section so the
+  // operator at least lands on the right tab.
+  if (!hasErrorContent) return chipBody;
+
+  return (
+    <HoverCard.Root
+      openDelay={150}
+      closeDelay={120}
+      positioning={{ placement: "bottom-start", gutter: 6 }}
+    >
+      <HoverCard.Trigger asChild>{chipBody}</HoverCard.Trigger>
+      <Portal>
+        <HoverCard.Positioner>
+          <HoverCard.Content
+            minWidth="280px"
+            maxWidth="420px"
+            padding={3}
+            borderRadius="lg"
+            background="bg.panel"
+            boxShadow="lg"
+          >
+            <ExceptionsContent
+              error={trace.error}
+              errorSpans={errorSpans}
+              onSelectSpan={jumpToSpan}
+              onFocusSection={focusExceptionsKeepTab}
+              density="compact"
+            />
+            {/* Anchor row: nudges the operator that the popover is a
+                preview of the full Exceptions section, and clicking
+                the chip itself opens it. Matches the deep-link style
+                used on the eval header chips. */}
+            <HStack
+              gap={1}
+              paddingTop={2}
+              marginTop={2}
+              borderTopWidth="1px"
+              borderTopColor="border.muted"
+            >
+              <Text textStyle="2xs" color="fg.muted">
+                Click the chip to open the Exceptions section
+              </Text>
+            </HStack>
+          </HoverCard.Content>
+        </HoverCard.Positioner>
+      </Portal>
+    </HoverCard.Root>
+  );
+}
+
+/**
  * Pin attribute keys that map to a filter-store facet field. When a pinned
  * attribute is one of these, the pill shows a filter icon that scopes the
  * trace table to this attribute's value.
@@ -85,6 +336,31 @@ const FILTERABLE_PIN_FIELDS: Record<string, string> = {
   "langwatch.thread_id": "conversation",
   "langwatch.user_id": "user",
 };
+
+/**
+ * Liqe field names are bare identifiers — letters, digits, dots,
+ * underscores, dashes. Customer-defined metadata keys come from
+ * arbitrary OTLP attributes, so a malicious or careless key can contain
+ * spaces, quotes, colons, parens, etc. Injecting an unsafe key as a raw
+ * field name breaks the grammar (the query becomes unparsable, or
+ * worse, targets the wrong field). We restrict to a safe whitelist and
+ * disable the filter affordance when the key can't round-trip.
+ */
+const SAFE_METADATA_KEY_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * Build a Liqe-style fielded query for an auto-pinned metadata value.
+ * Escapes embedded quotes + backslashes in the value so things like
+ * `tenant="org \"acme\""` stay parseable. Returns null when either the
+ * key can't be safely round-tripped as a bare Liqe field, or the value
+ * collapses to empty after escape.
+ */
+function formatMetadataFilterQuery(key: string, value: string): string | null {
+  if (!SAFE_METADATA_KEY_RE.test(key)) return null;
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  if (!escaped) return null;
+  return `${key}:"${escaped}"`;
+}
 
 /**
  * Curated hoisted attribute keys we always surface when present on a trace.
@@ -181,9 +457,22 @@ export const DrawerHeader = memo(function DrawerHeader({
   const togglePinned = useDrawerStore((s) => s.togglePinned);
   const viewMode = useDrawerStore((s) => s.viewMode);
   const setViewMode = useDrawerStore((s) => s.setViewMode);
-  const setActiveTab = useDrawerStore((s) => s.setActiveTab);
   const selectSpan = useDrawerStore((s) => s.selectSpan);
   const toggleMaximized = useDrawerStore((s) => s.toggleMaximized);
+  const toggleSnapMaximize = useDrawerStore((s) => s.toggleSnapMaximize);
+  // The Maximize / Restore icon drives the same width snap that
+  // double-clicking the edge grip uses — `widthPx` is the actual size
+  // signal, while the boolean `isMaximized` is kept in sync for
+  // components that read it to swap the icon label. The SSR / no-window
+  // branch falls through to `toggleMaximized()` so the button still
+  // does *something* visible during hydration.
+  const handleMaximizeClick = () => {
+    if (typeof window === "undefined") {
+      toggleMaximized();
+      return;
+    }
+    toggleSnapMaximize(window.innerWidth);
+  };
   const setShortcutsOpen = useDrawerStore((s) => s.setShortcutsOpen);
 
   const { canGoBack, goBack, goBackTo, backStackDepth, backStack } =
@@ -207,6 +496,10 @@ export const DrawerHeader = memo(function DrawerHeader({
     trace.attributes,
     "gen_ai.usage.cache_creation.input_tokens",
   );
+  const reasoningTokens = readNumberAttribute(
+    trace.attributes,
+    "gen_ai.usage.reasoning_tokens",
+  );
 
   // If we have concrete input AND output token numbers to display, trust them
   // and suppress the "estimated" caveat — historical trace summaries can carry
@@ -224,6 +517,11 @@ export const DrawerHeader = memo(function DrawerHeader({
   );
   const { pins, removePin } = usePinnedAttributes(project?.id);
   const toggleFacet = useFilterStore((s) => s.toggleFacet);
+  // `applyQueryTextFromPin` is used by the auto-pinned metadata filter
+  // affordance below. Pulled at the parent scope so the `useMemo` for
+  // `categorizedPins` doesn't need to re-subscribe to the store on every
+  // pin shape change.
+  const applyQueryTextFromPin = useFilterStore((s) => s.applyQueryText);
   const { closeDrawer, openDrawer } = useDrawer();
   // When the trace lives in a multi-turn conversation the
   // ThreadProgressIndicator already exposes the conversation id (with copy
@@ -268,12 +566,15 @@ export const DrawerHeader = memo(function DrawerHeader({
           return {
             navigateLabel: "Open prompt",
             onNavigate: () => {
+              // Prompts is no longer a separate tab — SpanDetailPane
+              // auto-renders the PromptsPanel when the selected span has
+              // prompt data. So all we do here is select the span and
+              // the right panel adapts.
               const spanId =
                 key === "langwatch.prompt.selected"
                   ? trace.selectedPromptSpanId
                   : trace.lastUsedPromptSpanId;
               if (spanId) selectSpan(spanId);
-              setActiveTab("prompts");
             },
           };
         default:
@@ -323,6 +624,54 @@ export const DrawerHeader = memo(function DrawerHeader({
         navigateLabel: navigate?.navigateLabel,
       });
     }
+
+    // Auto-promote `metadata.*` attribute keys onto the pin strip. This is
+    // the customer-defined metadata namespace (langwatch reserved keys
+    // like `metadata.user_id`, `metadata.thread_id`, plus anything the
+    // caller attached via the SDK's metadata field). These are exactly
+    // the fields observability-first users want to see at the top of the
+    // drawer without having to dig into the Metadata accordion — they're
+    // also (by definition) safe to surface because the customer chose to
+    // emit them as semantic context rather than as raw OTel attributes.
+    //
+    // They land in the `custom` category so they share the inline cap
+    // (MAX_INLINE_PINS) with user-pinned attributes; remaining ones still
+    // spill into the "+N pinned" popover instead of blowing out the strip
+    // for a trace that happens to carry 50 metadata keys.
+    const seenMetadataKeys = new Set<string>();
+    for (const [key, rawValue] of Object.entries(trace.attributes)) {
+      if (!key.startsWith("metadata.")) continue;
+      if (userKeys.has(`attribute:${key}`)) continue;
+      if (seenMetadataKeys.has(key)) continue;
+      seenMetadataKeys.add(key);
+      const value = formatPinValue({ key, value: rawValue ?? null });
+      if (!value) continue;
+      // Label strips the `metadata.` prefix for readability — the strip
+      // is dense and the prefix is redundant inside the per-trace context.
+      const label = key.slice("metadata.".length);
+      // Auto-pinned metadata pins gain a filter affordance: clicking the
+      // filter icon scopes the trace table to traces that share this
+      // attribute key/value. We inject a Liqe-style fielded query
+      // through `applyQueryText` because there's no first-class facet
+      // for arbitrary `metadata.*` keys today — Liqe accepts unknown
+      // field names and the backend's text search treats them as
+      // attribute-key filters (same behaviour the search bar uses for
+      // hand-typed `metadata.tenant:"org-acme"` queries).
+      const filterQuery = formatMetadataFilterQuery(key, value);
+      out.push({
+        pin: { source: "attribute", key, label },
+        value,
+        auto: true,
+        category: "custom",
+        onFilter: filterQuery
+          ? () => {
+              applyQueryTextFromPin(filterQuery);
+              closeDrawer();
+            }
+          : undefined,
+      });
+    }
+
     for (const p of pins) {
       const valueSource =
         p.source === "resource"
@@ -357,15 +706,15 @@ export const DrawerHeader = memo(function DrawerHeader({
     resources.resourceAttributes,
     conversationCoveredByIndicator,
     toggleFacet,
+    applyQueryTextFromPin,
     closeDrawer,
     openDrawer,
     setViewMode,
-    setActiveTab,
     selectSpan,
   ]);
 
   const handleCopyTraceId = () => {
-    void navigator.clipboard.writeText(trace.traceId);
+    void copyTextToClipboard(trace.traceId);
   };
 
   const [rawOpen, setRawOpen] = useState(false);
@@ -446,25 +795,45 @@ export const DrawerHeader = memo(function DrawerHeader({
 
   const chipDefs = useTraceHeaderChipDefs(trace, {
     onSelectSpan: selectSpan,
-    onOpenPromptsTab: () => setActiveTab("prompts"),
+    // `onOpenPromptsTab` is a no-op after the redesign — selecting the
+    // span (via `onSelectSpan`) lands the user on SpanDetailPane and
+    // the body adapts to show the PromptsPanel automatically.
+    onOpenPromptsTab: () => {
+      // intentional no-op — see comment above
+    },
   });
-  // Source chips: cap inline at 6 — anything beyond rolls into the "+N more"
-  // popover so the strip stays scannable for traces with many capabilities.
+  // Source chips: cap inline at 10 so multi-evaluator traces don't hide
+  // their second & third verdicts in the overflow popover by default —
+  // eval status is the highest-signal data on the strip, not something
+  // to bury after a half-dozen capabilities. Anything beyond 10 still
+  // rolls into "+N more" so the row stays scannable.
   const { primary: primaryChips, overflowChip: chipsOverflow } =
-    splitChipsForOverflow(chipDefs, 6);
-  // Pins: auto-pins (identity/run/tag) always inline, custom pins capped at
-  // 3 inline with the rest in a "+N pinned" popover. Anyone can pin
-  // arbitrary attributes, so this keeps the row from running away.
+    splitChipsForOverflow(chipDefs, 10);
+  // Pins: auto-pins (identity/run/tag) always inline. Custom + metadata
+  // pins inline up to MAX_INLINE_PINS — the rest still spill into the
+  // overflow popover so a pathological 200-pin trace can't blow out the
+  // header. The strip itself already wraps to multiple rows
+  // (`flexWrap="wrap"` on the HStack below), so a cap of 12 lets typical
+  // metadata-heavy traces breathe across 2-3 wrapped rows without
+  // hiding anything the user expected to see.
+  //
+  // Previous behaviour was a cap of 3 with overflow — which the customer
+  // (Trace Explorer power user) called out specifically: pinning 5
+  // metadata fields left them looking at three pills plus a "+2 pinned"
+  // chip, with no indication of what they'd asked to see.
+  const MAX_INLINE_PINS = 12;
   const pinResult = renderPinPills(categorizedPins, removePin, {
-    maxCustomInline: 3,
+    maxCustomInline: MAX_INLINE_PINS,
   });
 
   return (
     <VStack align="stretch" gap={2} paddingX={4} paddingTop={3}>
-      {/* Row 1: Title (back button + type badge + name + status) on the
-          left, presence + actions on the right — collapsed from two rows so
-          the trace name sits at the very top instead of after a near-empty
-          peer/actions strip. */}
+      {/* Row 1: Trace ID chip + title + status on the left, actions
+          on the right. The Trace ID chip leads the row (replacing the
+          previous LLM root-span-type badge — that badge was almost
+          always "span" or "llm" and added noise instead of signal).
+          The chip itself shows only the id (no "Trace ID" label),
+          with hover-to-expand + click-to-copy. */}
       <HStack justify="space-between" align="center" gap={2.5} minWidth={0}>
         <HStack gap={2.5} minWidth={0} flex={1} flexWrap="wrap" align="center">
           {canGoBack && (
@@ -474,7 +843,7 @@ export const DrawerHeader = memo(function DrawerHeader({
                   <HStack gap={1}>
                     <Text>
                       {backStackDepth > 1
-                        ? `Back (${backStackDepth} traces) — right-click for full history`
+                        ? `Back (${backStackDepth} traces). Right-click for full history`
                         : "Back to previous trace"}
                     </Text>
                     <Kbd>B</Kbd>
@@ -511,12 +880,7 @@ export const DrawerHeader = memo(function DrawerHeader({
                         <Text textStyle="xs" color="fg.muted" minWidth="16px">
                           {stepsBack === 1 ? "←" : `${stepsBack}↑`}
                         </Text>
-                        <Text
-                          textStyle="xs"
-                          fontFamily="mono"
-                          flex={1}
-                          truncate
-                        >
+                        <Text textStyle="xs" flex={1} truncate>
                           {entry.traceId.slice(0, 16)}
                           <Text
                             as="span"
@@ -533,50 +897,13 @@ export const DrawerHeader = memo(function DrawerHeader({
               </MenuContent>
             </MenuRoot>
           )}
-          {trace.rootSpanType && (
-            <Text
-              textStyle="2xs"
-              fontWeight="semibold"
-              color={
-                (SPAN_TYPE_COLORS[trace.rootSpanType] as string) ?? "gray.solid"
-              }
-              paddingX={1.5}
-              paddingY={0.5}
-              borderRadius="sm"
-              borderWidth="1px"
-              borderColor={
-                (SPAN_TYPE_COLORS[trace.rootSpanType] as string) ?? "gray.solid"
-              }
-              letterSpacing="0.04em"
-              flexShrink={0}
-            >
-              {trace.rootSpanType.toUpperCase()}
-            </Text>
-          )}
-          <Text
-            fontWeight="semibold"
-            textStyle="md"
-            truncate
-            fontFamily="mono"
-            letterSpacing="-0.005em"
-            minWidth={0}
-            color={titleIsFallback ? "fg.muted" : undefined}
-          >
-            {titleText}
-          </Text>
-          <HStack gap={1} flexShrink={0}>
-            <Circle size="8px" bg={statusColor} flexShrink={0} />
-            {trace.status !== "ok" && (
-              <Text
-                textStyle="xs"
-                fontWeight="medium"
-                color={statusColor}
-                textTransform="capitalize"
-              >
-                {trace.status}
-              </Text>
-            )}
-          </HStack>
+          <TraceIdChip traceId={trace.traceId} />
+          <EditableTraceName
+            traceId={trace.traceId}
+            titleText={titleText}
+            titleIsFallback={titleIsFallback}
+          />
+          <StatusChip trace={trace} statusColor={statusColor} />
           {conversationContext.total > 1 && (
             <ThreadProgressIndicator
               position={conversationContext.position}
@@ -595,7 +922,15 @@ export const DrawerHeader = memo(function DrawerHeader({
           )}
         </HStack>
 
-        <HStack gap={1} flexShrink={0}>
+        {/* Negative marginRight cancels the header's paddingX so the
+            close button sits flush with the drawer edge, matching the
+            online-evaluations / add-to-dataset drawers (their
+            DrawerCloseTrigger uses absolute positioning at the edge).
+            marginTop matches what the other drawers do — their close
+            button sits ~8px from the top of the drawer chrome, the
+            VStack's paddingTop={3} (12px) puts ours too low without
+            this offset. */}
+        <HStack gap={1} flexShrink={0} marginRight={-2} marginTop={-2}>
           <Tooltip
             content={
               <HStack gap={1}>
@@ -631,29 +966,6 @@ export const DrawerHeader = memo(function DrawerHeader({
           </Tooltip>
           <Tooltip
             content={
-              pinned
-                ? "Pinned — clicks outside don't close. Click to unpin."
-                : "Unpinned — click outside to close. Click to pin."
-            }
-            positioning={{ placement: "bottom" }}
-          >
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={togglePinned}
-              aria-label={
-                pinned
-                  ? "Unpin drawer (click outside closes)"
-                  : "Pin drawer (click outside ignored)"
-              }
-              aria-pressed={pinned}
-              color={pinned ? "blue.fg" : "fg.muted"}
-            >
-              <Icon as={pinned ? LuPin : LuPinOff} boxSize={3.5} />
-            </Button>
-          </Tooltip>
-          <Tooltip
-            content={
               <HStack gap={1}>
                 <Text>{isMaximized ? "Restore" : "Maximize"}</Text>
                 <Kbd>M</Kbd>
@@ -664,7 +976,7 @@ export const DrawerHeader = memo(function DrawerHeader({
             <Button
               size="xs"
               variant="ghost"
-              onClick={toggleMaximized}
+              onClick={handleMaximizeClick}
               aria-label={isMaximized ? "Restore drawer" : "Maximize drawer"}
             >
               <Icon
@@ -681,6 +993,8 @@ export const DrawerHeader = memo(function DrawerHeader({
             dejaViewHref={dejaView.href ?? null}
             onOpenRawJson={() => setRawOpen(true)}
             onShowShortcuts={() => setShortcutsOpen(true)}
+            pinned={pinned}
+            onTogglePinned={togglePinned}
           />
           <Box
             width="1px"
@@ -698,18 +1012,27 @@ export const DrawerHeader = memo(function DrawerHeader({
             }
             positioning={{ placement: "bottom" }}
           >
+            {/* Plain ghost Button — the standard Chakra `CloseButton`
+                (IconButton wrapper) intermittently swallowed the click
+                under our Drawer.Root setup: the URL stripped fine but
+                the drawer didn't unmount, leaving the operator stuck.
+                A bare Button calling `onClose` directly is the same
+                pattern this drawer used pre-revamp and behaves
+                reliably across Chakra's Drawer focus management. */}
             <Button
               size="xs"
               variant="ghost"
               onClick={onClose}
               aria-label="Close drawer"
-              paddingX={3}
+              paddingX={1.5}
+              paddingY={1.5}
+              height="auto"
               minWidth="auto"
               color="fg.muted"
               _hover={{ bg: "bg.muted", color: "fg" }}
               _active={{ bg: "bg.emphasized" }}
             >
-              <Icon as={LuX} boxSize={5} strokeWidth={2.25} />
+              <Icon as={LuX} boxSize={4} strokeWidth={2.25} />
             </Button>
           </Tooltip>
         </HStack>
@@ -784,18 +1107,26 @@ export const DrawerHeader = memo(function DrawerHeader({
                   label="Output"
                   value={trace.outputTokens?.toLocaleString() ?? "—"}
                 />
-                {cacheReadTokens != null && (
-                  <TooltipRow
-                    label="Cache read"
-                    value={cacheReadTokens.toLocaleString()}
-                  />
-                )}
+                {/* Cached + reasoning tokens are always surfaced — both
+                    are material to cost and behaviour these days
+                    (provider cache hits flatten cost; reasoning tokens
+                    are billed but invisible in input/output). Missing
+                    values render as `—` rather than 0 so the reader can
+                    tell "we don't know" apart from "definitely zero". */}
+                <TooltipRow
+                  label="Cache read"
+                  value={cacheReadTokens?.toLocaleString() ?? "—"}
+                />
                 {cacheCreationTokens != null && (
                   <TooltipRow
                     label="Cache write"
                     value={cacheCreationTokens.toLocaleString()}
                   />
                 )}
+                <TooltipRow
+                  label="Reasoning"
+                  value={reasoningTokens?.toLocaleString() ?? "—"}
+                />
                 <Box height="1px" bg="border" marginY={1} />
                 <TooltipRow
                   label="Total"
@@ -828,8 +1159,9 @@ export const DrawerHeader = memo(function DrawerHeader({
 
         {/* Section 2: Source / tools chips (service, origin, scenario, sdk,
             prompts, annotations). Capped at 6 inline; surplus rolls into
-            the standard "+N more" popover. */}
-        {(primaryChips.length > 0 || chipsOverflow) && <PinDivider />}
+            the standard "+N more" popover. No PinDivider before this
+            section — the chip borders give enough visual grouping on
+            their own, the extra rule just read as a stray line. */}
         {primaryChips.map((c) => (
           <Chip key={c.id} {...c} />
         ))}
@@ -877,9 +1209,33 @@ export const DrawerHeader = memo(function DrawerHeader({
                 max={5}
                 size="2xs"
               />
-              <Text textStyle="xs" color="fg.subtle">
-                {formatRelativeTime(trace.timestamp)}
-              </Text>
+              <Tooltip
+                content={
+                  <VStack align="start" gap={0.5}>
+                    <Text textStyle="xs">
+                      First span recorded{" "}
+                      {formatRelativeTimeAgo(trace.timestamp)}
+                    </Text>
+                    <Text textStyle="xs" color="fg.muted">
+                      {formatAbsoluteTime(trace.timestamp)}
+                    </Text>
+                  </VStack>
+                }
+                positioning={{ placement: "bottom-end" }}
+                openDelay={400}
+                closeDelay={150}
+                interactive
+              >
+                <Text textStyle="xs" color="fg.subtle" cursor="help">
+                  {/* Compact "16d ago" — keeps the unit attached to the
+                      number for tight surfaces while still carrying the
+                      natural-language "ago" hint. The tooltip resolves
+                      the absolute UTC timestamp and is interactive so
+                      the user can hover over it and select / copy the
+                      date without it disappearing. */}
+                  {formatRelativeTimeAgo(trace.timestamp)}
+                </Text>
+              </Tooltip>
             </HStack>
           }
         />

@@ -44,7 +44,25 @@ export interface LensCapability {
 const TRACE_CAPABILITY: LensCapability = {
   columns: [
     { id: "time", label: "Time", section: "Standard", pinned: true },
-    { id: "trace", label: "Trace", section: "Standard" },
+    // Sibling time columns — TIME is the default tight relative ("3m"),
+    // SINCE is the verbose form ("3 minutes ago"), TIMESTAMP is the
+    // full ISO 8601 for log-query copy-paste. Same row hover, three
+    // formats — users pick whichever reads best for their workflow.
+    { id: "since", label: "Since (verbose)", section: "Standard" },
+    { id: "timestamp", label: "Timestamp (ISO)", section: "Standard" },
+    { id: "trace", label: "Trace (summary)", section: "Standard" },
+    // Broken-out alternates to the composite Trace summary — let users
+    // assemble the column shape they prefer (engineer-friendly summary
+    // vs. PM-friendly per-field columns) without a hidden density mode.
+    // Trace name and root span name are split because the composite
+    // falls back between them; either may be empty in real data.
+    { id: "trace-name", label: "Trace name", section: "Trace fields" },
+    { id: "root-span-name", label: "Root span name", section: "Trace fields" },
+    { id: "root-span-type", label: "Root span type", section: "Trace fields" },
+    { id: "trace-id", label: "Trace ID", section: "Trace fields" },
+    { id: "input", label: "Input", section: "Trace fields" },
+    { id: "output", label: "Output", section: "Trace fields" },
+    { id: "error-text", label: "Error", section: "Trace fields" },
     { id: "service", label: "Service", section: "Standard" },
     { id: "duration", label: "Duration", section: "Standard" },
     { id: "cost", label: "Cost", section: "Standard" },
@@ -89,17 +107,21 @@ const TRACE_CAPABILITY: LensCapability = {
 };
 
 const CONVERSATION_CAPABILITY: LensCapability = {
+  // Sections mirror the trace-grouping shape so the Columns dropdown
+  // can render the same "Standard" section header on every grouping —
+  // without this the dropdown falls back to "Other" for any column
+  // missing a section, which reads as broken next to the dialog version.
   columns: [
-    { id: "conversation", label: "Conversation", pinned: true },
-    { id: "turns", label: "Turns" },
-    { id: "started", label: "Started" },
-    { id: "lastTurn", label: "Last Turn" },
-    { id: "duration", label: "Duration" },
-    { id: "cost", label: "Cost" },
-    { id: "tokens", label: "Tokens" },
-    { id: "model", label: "Model" },
-    { id: "service", label: "Service" },
-    { id: "status", label: "Status" },
+    { id: "conversation", label: "Conversation", section: "Standard", pinned: true },
+    { id: "turns", label: "Turns", section: "Standard" },
+    { id: "started", label: "Started", section: "Standard" },
+    { id: "lastTurn", label: "Last Turn", section: "Standard" },
+    { id: "duration", label: "Duration", section: "Standard" },
+    { id: "cost", label: "Cost", section: "Standard" },
+    { id: "tokens", label: "Tokens", section: "Standard" },
+    { id: "model", label: "Model", section: "Standard" },
+    { id: "service", label: "Service", section: "Standard" },
+    { id: "status", label: "Status", section: "Standard" },
   ],
   defaultColumns: [
     "conversation",
@@ -119,12 +141,12 @@ const CONVERSATION_CAPABILITY: LensCapability = {
 function makeGroupCapability(label: string): LensCapability {
   return {
     columns: [
-      { id: "group", label, pinned: true },
-      { id: "count", label: "Traces" },
-      { id: "duration", label: "Avg duration" },
-      { id: "cost", label: "Total cost" },
-      { id: "tokens", label: "Total tokens" },
-      { id: "errors", label: "Errors" },
+      { id: "group", label, section: "Standard", pinned: true },
+      { id: "count", label: "Traces", section: "Standard" },
+      { id: "duration", label: "Avg duration", section: "Standard" },
+      { id: "cost", label: "Total cost", section: "Standard" },
+      { id: "tokens", label: "Total tokens", section: "Standard" },
+      { id: "errors", label: "Errors", section: "Standard" },
     ],
     defaultColumns: ["group", "count", "duration", "cost", "tokens", "errors"],
     addons: [{ id: "group-traces", label: "Group traces" }],

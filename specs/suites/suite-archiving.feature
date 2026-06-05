@@ -3,6 +3,14 @@ Feature: Suite Archiving
   I want to archive suites instead of permanently deleting them
   So that historical test results are preserved and accidental deletions are recoverable
 
+  # The remaining @unimplemented scenarios in this file describe sidebar
+  # context-menu UI flows + cross-project authorization paths. They need
+  # a Next.js page-level integration harness or a dedicated context-menu
+  # component test (no such test file exists today). The backend service
+  # / repository / REST archive paths ARE bound via existing
+  # `suite.repository.unit.test.ts`, `suite.service.unit.test.ts`, and
+  # `suites-api.integration.test.ts`.
+
   Background:
     Given I am logged into project "my-project"
     And the following suites exist:

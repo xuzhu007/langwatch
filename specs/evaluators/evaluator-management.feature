@@ -4,6 +4,15 @@ Feature: Evaluator management
   I want to create, edit, and manage reusable evaluators
   So that I can use them across evaluations and other platform features
 
+  # Drawer-component scenarios are bound to the existing component tests
+  # (EvaluatorListDrawer, EvaluatorCategorySelectorDrawer,
+  # EvaluatorTypeSelectorDrawer). The remaining @unimplemented scenarios
+  # describe full agents/evaluators-page CRUD flows or backing-store
+  # invariants (config JSON shape, project scoping, mappings storage)
+  # — they need a Next.js page-level harness or a service-layer test
+  # that doesn't exist for the evaluator service yet. Each is a tracked
+  # gap, not an aspirational stretch goal.
+
   # ============================================================================
   # Evaluator types
   # ============================================================================
@@ -237,6 +246,11 @@ Feature: Evaluator management
     Then I see a form generated from the evaluator's Zod schema
     And required fields are marked
     And I can enter values for all settings
+
+  @unit
+  Scenario: Custom workflow evaluator option is shown
+    Given the EvaluatorCategorySelectorDrawer is open
+    Then the option "Custom (from Workflow)" is rendered alongside the built-in evaluator categories
 
   @unimplemented
   Scenario: Custom workflow evaluator skips category/type selection

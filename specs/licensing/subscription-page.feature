@@ -126,3 +126,4 @@ Feature: Subscription Page Plan Management
     Given the Stripe API is unavailable
     When I view the subscription page
     Then the current plan block is still visible
+

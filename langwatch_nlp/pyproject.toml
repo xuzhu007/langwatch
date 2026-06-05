@@ -25,7 +25,7 @@ dependencies = [
     "pillow>=11.0.0,<13",
     "pydantic>=2.9.2,<3",
     "python-dotenv>=1.2.2,<2",
-    "python-liquid>=2.0.2",
+    "python-liquid>=2.2.0",
     "scikit-learn>=1.5.2,<2",
     "scipy>=1.14.1,<2",
     "sentry-sdk[fastapi]>=2.58.0,<3",
@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest >= 8.3.3, < 8.4",
+    "pytest>=9.0.3,<9.1",
     "pandas >= 2.2.3, < 2.3",
     "pip-licenses>=5.5.0",
     "pytest-httpx >= 0.30.0",
@@ -48,7 +48,9 @@ dev = [
 ]
 
 [tool.uv]
+exclude-newer = "7 days"
 package = false
+override-dependencies = ["python-multipart>=0.0.27"]
 
 [tool.uv.sources]
 langwatch = { path = "../python-sdk", editable = true }

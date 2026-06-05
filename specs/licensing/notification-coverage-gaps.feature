@@ -34,3 +34,4 @@ Feature: Complete notification coverage for all limit enforcement paths
     When a user sends an invite for a lite member
     Then the invite is rejected
     And a Slack notification is sent to the ops team
+

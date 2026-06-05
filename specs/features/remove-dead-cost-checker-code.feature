@@ -30,3 +30,4 @@ Feature: Remove dead cost-checking code from worker paths
     Given a UsageStatsService backed by a repository that returns cost data
     When usage stats are fetched for an organization
     Then the response includes the current month cost from getCurrentMonthCost
+

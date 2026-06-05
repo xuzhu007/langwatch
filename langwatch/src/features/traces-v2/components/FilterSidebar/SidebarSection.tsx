@@ -7,9 +7,10 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
-import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical, X } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
+import { orGroupColor } from "./orGroupPalette";
 
 interface SidebarSectionProps {
   title: string;
@@ -26,11 +27,44 @@ interface SidebarSectionProps {
   /** Drag handle props from a sortable parent — enables the grip. */
   dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
   /**
+   * Optional handler that removes this section from the sidebar (writes
+   * to the per-user `facetVisibilityStore`). When provided, the header
+   * grows a small × button that's revealed on hover so the affordance
+   * doesn't claim chrome on every row. When omitted, no hide button is
+   * rendered — used for sections without a registered key (or where
+   * the parent doesn't want to expose hiding).
+   */
+  onHide?: () => void;
+  /** Tooltip text for the hide button (defaults to "Hide section"). */
+  hideLabel?: string;
+  /**
    * Fired on shift-click of the header so the parent can collapse-all /
    * expand-all in one go. `nextOpen` is the state the clicked section
    * is moving toward.
    */
   onShiftToggle?: (nextOpen: boolean) => void;
+  /**
+   * Set when this section's facet participates in a cross-facet OR
+   * group. Renders an "OR · linked" pill in the header and a coloured
+   * left-border on the section background so users can tell at a
+   * glance that this row's value is OR-bound to other sections rather
+   * than independently AND-toggleable.
+   */
+  orGroupId?: string;
+  /**
+   * Other field names in the same OR group. Surfaced in the OR pill
+   * as "OR · model · service" so users know exactly which sections
+   * are linked without scanning the rail for matching colours.
+   */
+  orPeers?: readonly string[];
+  /**
+   * Content rendered between the header and the collapsible — always
+   * visible, even when the section is collapsed. Used by FacetSection
+   * to keep active values (and OR-group members) visible at all
+   * times so the connector line and at-a-glance read of "what's
+   * filtered" never depend on the section being expanded.
+   */
+  pinnedContent?: React.ReactNode;
   children: React.ReactNode;
 }
 
@@ -46,9 +80,20 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
   activeIndicator,
   hasActive = false,
   dragHandleProps,
+  onHide,
+  hideLabel = "Hide section",
   onShiftToggle,
+  orGroupId,
+  orPeers,
+  pinnedContent,
   children,
 }) => {
+  const orPalette = orGroupId ? orGroupColor(orGroupId) : undefined;
+  const peerLabel =
+    orPeers && orPeers.length > 0
+      ? orPeers.slice(0, 3).join(" · ") +
+        (orPeers.length > 3 ? ` +${orPeers.length - 3}` : "")
+      : null;
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = open !== undefined;
   const effectiveOpen = isControlled ? open : internalOpen;
@@ -89,6 +134,27 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
         gap={1}
         role="group"
         data-group
+        // When this section participates in a cross-facet OR group,
+        // anchor a 3px coloured rail on the left edge so the section
+        // visually links to its peers in the same group. Painting it
+        // as a pseudo-rail (insetInlineStart border) instead of a real
+        // border keeps the section's hit-rect unchanged.
+        position="relative"
+        _before={
+          orPalette
+            ? {
+                content: '""',
+                position: "absolute",
+                top: "6px",
+                bottom: "6px",
+                left: 0,
+                width: "3px",
+                borderRadius: "0 2px 2px 0",
+                bg: `${orPalette}.solid`,
+                opacity: 0.85,
+              }
+            : undefined
+        }
       >
         <HStack gap={1} width="full" align="center">
           {dragHandleProps && (
@@ -165,12 +231,46 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
                     <Text
                       textStyle="2xs"
                       color="fg.subtle"
-                      fontFamily="mono"
                       _hover={{ color: "fg" }}
                     >
                       {valueCount}
                     </Text>
                   )}
+                {orPalette && (
+                  <Box
+                    as="span"
+                    display="inline-flex"
+                    alignItems="center"
+                    gap="3px"
+                    bg={`${orPalette}.subtle`}
+                    color={`${orPalette}.fg`}
+                    borderWidth="1px"
+                    borderColor={`${orPalette}.muted`}
+                    paddingX="6px"
+                    paddingY="0"
+                    borderRadius="4px"
+                    fontSize="2xs"
+                    fontWeight="700"
+                    letterSpacing="0.04em"
+                    title={
+                      peerLabel
+                        ? `OR-linked with: ${peerLabel}`
+                        : "This facet is OR-linked"
+                    }
+                  >
+                    OR
+                    {peerLabel && (
+                      <Box
+                        as="span"
+                        fontWeight="500"
+                        textTransform="lowercase"
+                        opacity={0.85}
+                      >
+                        · {peerLabel}
+                      </Box>
+                    )}
+                  </Box>
+                )}
                 {activeIndicator}
               </HStack>
               <Icon
@@ -183,10 +283,62 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
               </Icon>
             </Button>
           </Collapsible.Trigger>
+          {onHide && (
+            // Hover-revealed × removes this section from the user's
+            // sidebar (writes `explicitlyHidden` in
+            // facetVisibilityStore). Renders as a SIBLING of the
+            // Collapsible.Trigger button instead of nested inside it
+            // — nested <button>s are invalid HTML and React flags
+            // them as hydration errors. The hover-reveal still works
+            // because the visibility cue is on the parent `[role=group]`
+            // VStack, which is `data-group`'d.
+            <Box
+              as="button"
+              aria-label={hideLabel}
+              title={hideLabel}
+              width="16px"
+              height="16px"
+              display="flex"
+              alignItems="center"
+              justifyContent="center"
+              borderRadius="sm"
+              color="fg.subtle"
+              flexShrink={0}
+              opacity={0}
+              _groupHover={{ opacity: 0.55 }}
+              // Keyboard users tab onto the hide button just like mouse
+              // users hover the group — surface the affordance the same
+              // way for both so the section-hide action isn't mouse-only.
+              _groupFocusWithin={{ opacity: 0.55 }}
+              _hover={{ opacity: 1, color: "fg", bg: "bg.muted" }}
+              _focusVisible={{
+                opacity: 1,
+                color: "fg",
+                bg: "bg.muted",
+                outline: "2px solid",
+                outlineColor: "blue.focusRing",
+                outlineOffset: "1px",
+              }}
+              transition="opacity 120ms ease, color 120ms ease"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onHide();
+              }}
+            >
+              <Icon boxSize="10px">
+                <X />
+              </Icon>
+            </Box>
+          )}
         </HStack>
 
+        {pinnedContent && (
+          <Box marginTop={1}>{pinnedContent}</Box>
+        )}
+
         <Collapsible.Content>
-          <Box marginTop={1}>{children}</Box>
+          <Box marginTop={pinnedContent ? 0 : 1}>{children}</Box>
         </Collapsible.Content>
       </VStack>
     </Collapsible.Root>

@@ -3,7 +3,6 @@ import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { useTraceUpdateListener } from "~/hooks/useTraceUpdateListener";
 import { api } from "~/utils/api";
 import { useDrawerStore } from "../stores/drawerStore";
-import { useRefreshUIStore } from "../stores/refreshUIStore";
 import { useSseStatusStore } from "../stores/sseStatusStore";
 
 // Facets (`tracesV2.discover`) are ~10x more expensive than the table list
@@ -32,7 +31,6 @@ export function useTraceFreshness() {
     (s) => s.setSseConnectionState,
   );
   const setLastEventAt = useSseStatusStore((s) => s.setLastEventAt);
-  const pulse = useRefreshUIStore((s) => s.pulse);
   const discoverInvalidateTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -47,17 +45,41 @@ export function useTraceFreshness() {
 
   const onTraceSummaryUpdated = useCallback(
     (traceIds: string[]) => {
-      // Spin the refresh icon for every update event — invalidations that
-      // resolve from cache wouldn't otherwise flip isFetching long enough
-      // for the user to notice anything happened.
-      pulse();
+      const mode = useSseStatusStore.getState().liveUpdatesMode;
 
-      // Table-level invalidation — TQ only refetches mounted queries
-      void trpcUtils.tracesV2.list.invalidate();
+      // The refresh pulse (top-of-page aurora) used to fire on every
+      // SSE trace_summary_updated event in "live" mode. For high-
+      // throughput projects that's a constant flash — users called it
+      // out as visual noise that didn't seem to correspond to anything
+      // appearing in the table. We now keep the pulse for two cases
+      // only:
+      //
+      //   1. User-initiated refresh — handled implicitly via
+      //      `useTraceListRefresh.refresh()` and lens/tab/refresh
+      //      switches that flip TanStack's `isFetching`.
+      //   2. An incoming trace that's about to land in the visible
+      //      window — handled in `useTraceNewCount` (it watches the
+      //      newCount response and pulses when count rises above zero
+      //      in live mode, just before the list refetch lands the new
+      //      rows under the user's cursor).
+      //
+      // The bare SSE event no longer fires the pulse. The (N new) pill
+      // remains the per-event surface — it stays accurate because we
+      // still invalidate `newCount` below.
+
+      // Refresh the new-count query in BOTH live and ask modes so the
+      // floating "(N new)" pill stays in sync. In `ask` we deliberately
+      // skip the list refetch so the table doesn't jump under the
+      // cursor — the operator clicks the pill to commit the merge,
+      // which calls `acknowledge()` and pulls the new rows.
       void trpcUtils.tracesV2.newCount.invalidate();
+      if (mode === "live") {
+        void trpcUtils.tracesV2.list.invalidate();
+      }
       // Discover (facets) is heavy. Coalesce into a 30s window so a steady
-      // trace stream doesn't keep it permanently refetching.
-      if (!discoverInvalidateTimer.current) {
+      // trace stream doesn't keep it permanently refetching. Skipped in
+      // `ask` mode for the same reason — wait for the user to ask.
+      if (mode === "live" && !discoverInvalidateTimer.current) {
         discoverInvalidateTimer.current = setTimeout(() => {
           discoverInvalidateTimer.current = null;
           void trpcUtils.tracesV2.discover.invalidate();
@@ -70,6 +92,9 @@ export function useTraceFreshness() {
       // Targeted drawer invalidation. Project-scoped explicitly so the
       // partial-input filter matches the project queries are keyed under,
       // not just every header/spanTree/evals query in the cache.
+      // The drawer is what the user explicitly opened, so even in `ask`
+      // mode we still keep its contents fresh — `ask` only suppresses
+      // the implicit list refetch.
       const { traceId: openTraceId } = useDrawerStore.getState();
       const projectId = project?.id;
       if (openTraceId && projectId && traceIds.includes(openTraceId)) {
@@ -87,7 +112,7 @@ export function useTraceFreshness() {
         });
       }
     },
-    [trpcUtils, requestFastPoll, pulse, project?.id],
+    [trpcUtils, requestFastPoll, project?.id],
   );
 
   const onSpanStored = useCallback(
@@ -96,21 +121,29 @@ export function useTraceFreshness() {
       const projectId = project?.id;
       if (!openTraceId || !projectId || !traceIds.includes(openTraceId)) return;
 
-      void trpcUtils.tracesV2.spanTree.invalidate({
-        projectId,
-        traceId: openTraceId,
-      });
-      void trpcUtils.tracesV2.spanDetail.invalidate({
-        projectId,
-        traceId: openTraceId,
-      });
+      // Invalidate every per-trace query that changes shape when a new
+      // span lands — keeps the cache push-fresh so the per-hook
+      // refetchInterval can stay off while SSE is connected. The key
+      // is scoped to `projectId` + `traceId` so only the open trace
+      // is invalidated, not the entire CSR cache.
+      const key = { projectId, traceId: openTraceId };
+      void trpcUtils.tracesV2.spanTree.invalidate(key);
+      void trpcUtils.tracesV2.spanDetail.invalidate(key);
+      void trpcUtils.tracesV2.spanLangwatchSignals.invalidate(key);
+      void trpcUtils.tracesV2.traceEvents.invalidate(key);
+      void trpcUtils.tracesV2.resourceInfo.invalidate(key);
     },
     [trpcUtils, project?.id],
   );
 
+  // Honour the operator's "live updates" preference — when disabled,
+  // skip subscribing and force the connection state to disconnected so
+  // the toolbar indicator reads correctly.
+  const liveUpdatesEnabled = useSseStatusStore((s) => s.liveUpdatesEnabled);
+
   const { connectionState, lastEventAt } = useTraceUpdateListener({
     projectId: project?.id ?? "",
-    enabled: !!project?.id,
+    enabled: !!project?.id && liveUpdatesEnabled,
     onTraceSummaryUpdated,
     onSpanStored,
     debounceMs: 2000,
@@ -118,8 +151,10 @@ export function useTraceFreshness() {
   });
 
   useEffect(() => {
-    setSseConnectionState(connectionState);
-  }, [connectionState, setSseConnectionState]);
+    setSseConnectionState(
+      liveUpdatesEnabled ? connectionState : "disconnected",
+    );
+  }, [connectionState, liveUpdatesEnabled, setSseConnectionState]);
 
   useEffect(() => {
     if (lastEventAt > 0) {

@@ -5,6 +5,7 @@ import type { AppendStore } from "../../projections/mapProjection.types";
 import type { ReactorDefinition } from "../../reactors/reactor.types";
 import { AddAnnotationCommand, BulkSyncAnnotationsCommand, RemoveAnnotationCommand } from "./commands/annotationCommands";
 import { AssignTopicCommand } from "./commands/assignTopicCommand";
+import { ChangeTraceNameCommand } from "./commands/changeTraceNameCommand";
 import { RecordLogCommand } from "./commands/recordLogCommand";
 import { RecordMetricCommand } from "./commands/recordMetricCommand";
 import { RecordSpanCommand } from "./commands/recordSpanCommand";
@@ -34,6 +35,8 @@ export interface TraceProcessingPipelineDeps {
   spanStorageBroadcastReactor: ReactorDefinition<TraceProcessingEvent>;
   customerIoTraceSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
   gatewayBudgetSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
+  governanceKpisSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
+  governanceOcsfEventsSyncReactor?: ReactorDefinition<TraceProcessingEvent, TraceSummaryData>;
 }
 
 /**
@@ -85,6 +88,22 @@ export function createTraceProcessingPipeline(deps: TraceProcessingPipelineDeps)
     );
   }
 
+  if (deps.governanceKpisSyncReactor) {
+    builder = builder.withReactor(
+      "traceSummary",
+      "governanceKpisSync",
+      deps.governanceKpisSyncReactor,
+    );
+  }
+
+  if (deps.governanceOcsfEventsSyncReactor) {
+    builder = builder.withReactor(
+      "traceSummary",
+      "governanceOcsfEventsSync",
+      deps.governanceOcsfEventsSyncReactor,
+    );
+  }
+
   return builder
     .withCommand("recordSpan", RecordSpanCommand)
     .withCommand("assignTopic", AssignTopicCommand)
@@ -94,5 +113,6 @@ export function createTraceProcessingPipeline(deps: TraceProcessingPipelineDeps)
     .withCommand("addAnnotation", AddAnnotationCommand)
     .withCommand("removeAnnotation", RemoveAnnotationCommand)
     .withCommand("bulkSyncAnnotations", BulkSyncAnnotationsCommand)
+    .withCommand("changeTraceName", ChangeTraceNameCommand)
     .build();
 }

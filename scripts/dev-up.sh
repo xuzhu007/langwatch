@@ -85,8 +85,27 @@ fi
 # Start services in detached mode
 # ---------------------------------------------------------------------------
 echo "Starting LangWatch (project=${COMPOSE_PROJECT_NAME}, app_port=${APP_PORT})..."
-# Use email auth for browser tests (overrides .env's NEXTAUTH_PROVIDER)
-echo "NEXTAUTH_PROVIDER=email" > langwatch/.env.dev-up
+
+# Write URL overrides into langwatch/.env.dev-up. Same shared helper as
+# scripts/dev.sh — only the URLs whose services actually start for this
+# profile are overridden (#3860 AC#6). The helper honors each service's
+# compose profile membership: langwatch_nlp runs under [nlp, scenarios,
+# full], langevals only under [nlp, full]. test/debug profiles add no
+# extra URL overrides.
+. "$(dirname "$0")/lib/write-dev-overrides.sh"
+# Map compose-profile names (dev-up's input) to write-dev-overrides preset
+# names. The profile system and the quickstart preset system are not the
+# same thing — `nlp` and `full` are profile names; `all-local-nlp` and
+# `full-local` are preset names. dev-up.sh is for per-worktree isolated
+# stacks; we always want at least the all-local baseline (CH+PG+Redis+app),
+# then layer compose profiles on top via $COMPOSE_PROFILES.
+DEV_UP_PRESET="all-local"
+case "${PROFILE:-}" in
+  nlp)                       DEV_UP_PRESET="all-local-nlp" ;;
+  full|scenarios|workers)    DEV_UP_PRESET="full-local" ;;
+esac
+write_dev_overrides "$DEV_UP_PRESET" langwatch/.env.dev-up
+
 $COMPOSE_CMD up -d
 
 # ---------------------------------------------------------------------------

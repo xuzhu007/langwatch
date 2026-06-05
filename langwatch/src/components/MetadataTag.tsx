@@ -2,9 +2,8 @@ import { HStack, Text } from "@chakra-ui/react";
 import Mustache from "mustache";
 import { useState } from "react";
 import { ExternalLink } from "react-feather";
-
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { useOrganizationTeamProject } from "../hooks/useOrganizationTeamProject";
-
 import { CopyIcon } from "./icons/Copy";
 import { Link as UiLink } from "./ui/link";
 import { Popover } from "./ui/popover";
@@ -14,8 +13,7 @@ const MAX_VALUE_LENGTH = 48;
 const useCopyToClipboard = () => {
   const [isCopied, setIsCopied] = useState(false);
   const copyToClipboard = (value: string) => {
-    void navigator.clipboard
-      .writeText(value)
+    void copyTextToClipboard(value)
       .then(() => {
         setIsCopied(true);
       })

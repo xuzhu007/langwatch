@@ -198,3 +198,4 @@ Feature: License Activation UI
     When the file is read
     Then the file content is extracted as text
     And the content is passed to the license activation mutation
+

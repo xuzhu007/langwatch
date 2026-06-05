@@ -175,3 +175,4 @@ export function usePresence({
   }, [active, projectId, sessionId]);
 
 }
+

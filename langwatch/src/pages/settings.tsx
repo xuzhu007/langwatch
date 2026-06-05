@@ -24,6 +24,8 @@ import { Controller, type SubmitHandler, useForm } from "react-hook-form";
 import { HorizontalFormControl } from "~/components/HorizontalFormControl";
 import { Tooltip } from "~/components/ui/tooltip";
 import { ProjectSelector } from "../components/DashboardLayout";
+import { CostCenterPicker } from "../components/settings/CostCenterPicker";
+import { useCostCenterColumn } from "../components/settings/useCostCenterColumn";
 import SettingsLayout from "../components/SettingsLayout";
 import {
   ProjectTechStackIcon,
@@ -50,6 +52,7 @@ type OrganizationFormData = {
   elasticsearchApiKey: string;
   s3Bucket: string;
   presenceEnabled: boolean;
+  supportContact: string;
 };
 
 function Settings() {
@@ -82,6 +85,9 @@ function SettingsForm({
     elasticsearchApiKey: organization.elasticsearchApiKey ?? "",
     s3Bucket: organization.s3Bucket ?? "",
     presenceEnabled: organization.presenceEnabled,
+    supportContact:
+      (organization as { supportContact?: string | null }).supportContact ??
+      "",
   });
   const { register, handleSubmit, getFieldState, control } = useForm({
     defaultValues,
@@ -107,6 +113,7 @@ function SettingsForm({
         elasticsearchApiKey: data.elasticsearchApiKey,
         s3Bucket: data.s3Bucket,
         presenceEnabled: data.presenceEnabled,
+        supportContact: data.supportContact.trim() || null,
       },
       {
         onSuccess: () => {
@@ -187,7 +194,7 @@ function SettingsForm({
               </HorizontalFormControl>
               <HorizontalFormControl
                 label="Project ID"
-                helper="Use this ID when authenticating with Personal Access Tokens"
+                helper="Use this ID when authenticating with API Keys"
               >
                 <Input
                   width="full"
@@ -195,6 +202,34 @@ function SettingsForm({
                   type="text"
                   value={project.id}
                 />
+              </HorizontalFormControl>
+
+              <HorizontalFormControl
+                label="Support contact"
+                helper={
+                  "Surfaced to your members in CLI 'contact your admin' messages and the in-app budget-exceeded banner. " +
+                  "Accepts an email, a URL pointing at an internal ticketing system, or any short instruction. " +
+                  "When empty we fall back to the first admin's email."
+                }
+              >
+                {hasPermission("organization:manage") ? (
+                  <Input
+                    width="full"
+                    type="text"
+                    maxLength={500}
+                    placeholder="support@your-company.com or https://your.ticketing.system"
+                    {...register("supportContact", { maxLength: 500 })}
+                  />
+                ) : (
+                  <Text>
+                    {(organization as { supportContact?: string | null })
+                      .supportContact || (
+                      <Text as="span" color="fg.subtle">
+                        Not set
+                      </Text>
+                    )}
+                  </Text>
+                )}
               </HorizontalFormControl>
 
               <HorizontalFormControl
@@ -346,6 +381,7 @@ function ProjectSettingsForm({ project }: { project: Project }) {
   const { organization, organizations } = useOrganizationTeamProject();
   const publicEnv = usePublicEnv();
   const { isFree } = useActivePlan();
+  const costCenter = useCostCenterColumn(organization?.id ?? "");
 
   const piiRedactionLevelCollection = createListCollection({
     items: [
@@ -558,6 +594,21 @@ function ProjectSettingsForm({ project }: { project: Project }) {
             />
             <Field.ErrorText>Name is required</Field.ErrorText>
           </HorizontalFormControl>
+          {costCenter.show && (
+            <HorizontalFormControl
+              label="Cost center"
+              helper="Agent spend with no human principal rolls up to this cost center"
+            >
+              <CostCenterPicker
+                organizationId={organization?.id ?? ""}
+                kind="project"
+                entityId={project.id}
+                value={costCenter.byProject.get(project.id) ?? null}
+                costCenters={costCenter.costCenters}
+                onAssigned={costCenter.refetch}
+              />
+            </HorizontalFormControl>
+          )}
           <HorizontalFormControl
             label="Tech Stack"
             helper="The project language and framework"
@@ -899,7 +950,7 @@ function ProjectSettingsForm({ project }: { project: Project }) {
         open={showTraceSharingDialog}
         onOpenChange={({ open }) => setShowTraceSharingDialog(open)}
       >
-        <Dialog.Content>
+        <Dialog.Content bg="bg">
           <Dialog.Header>
             <Dialog.Title>Disable Trace Sharing?</Dialog.Title>
           </Dialog.Header>

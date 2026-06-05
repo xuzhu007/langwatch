@@ -26,6 +26,7 @@ import {
   mapTraceSummaryToTrace,
 } from "./mappers";
 import { findPromptReferenceInAncestors } from "./findPromptReferenceInAncestors";
+import { parseLLMSpanMessages } from "./parseLLMSpanMessages";
 import { parsePromptReference } from "./parsePromptReference";
 import type {
   AggregationFiltersInput,
@@ -608,29 +609,11 @@ export class ClickHouseTraceService {
           const traceIds = groups.flat().map((t) => t.trace_id);
           let traceChecks: TracesForProjectResult["traceChecks"] = {};
           if (traceIds.length > 0 && clickHouseClient) {
-            const evalResult = await clickHouseClient.query({
-              query: `
-                SELECT *
-                FROM evaluation_runs
-                WHERE TenantId = {tenantId:String}
-                  AND TraceId IN ({traceIds:Array(String)})
-                  AND (TenantId, EvaluationId, UpdatedAt) IN (
-                    SELECT TenantId, EvaluationId, max(UpdatedAt)
-                    FROM evaluation_runs
-                    WHERE TenantId = {tenantId:String}
-                      AND TraceId IN ({traceIds:Array(String)})
-                    GROUP BY TenantId, EvaluationId
-                  )
-              `,
-              query_params: {
-                tenantId: input.projectId,
-                traceIds,
-              },
-              format: "JSONEachRow",
+            const evalRows = await this.fetchEvaluationRows({
+              clickHouseClient,
+              projectId: input.projectId,
+              traceIds,
             });
-
-            const evalRows =
-              (await evalResult.json()) as ClickHouseEvaluationRunRow[];
 
             const grouped: Record<
               string,
@@ -661,10 +644,11 @@ export class ClickHouseTraceService {
             {
               projectId: input.projectId,
               error: error instanceof Error ? error.message : error,
+              stack: error instanceof Error ? error.stack : undefined,
             },
             "Failed to fetch all traces from ClickHouse",
           );
-          throw new Error("Failed to fetch all traces for project");
+          throw error;
         }
       },
     );
@@ -963,16 +947,27 @@ export class ClickHouseTraceService {
             StatusMessage: string | null;
           }>;
 
-          const row = allRows.find((r) => r.SpanId === spanId);
-          if (!row) {
+          const requestedRow = allRows.find((r) => r.SpanId === spanId);
+          if (!requestedRow) {
             return null;
           }
 
-          // Check if this is an LLM span by looking at attributes
-          const spanType = row.SpanAttributes["langwatch.span.type"] as
-            | string
-            | undefined;
-          if (spanType !== "llm") {
+          // If the caller pointed us at a non-llm span (e.g. the user
+          // clicked "Open in Playground" from the Prompt.compile or
+          // PromptApiService.get span, or from the Prompts tab usage
+          // card), resolve to the nearest llm in the trace that the
+          // operator most likely meant: a descendant first, then a
+          // sibling that started at or after the requested span. The
+          // playground form needs an llm span's messages + llm config —
+          // anything else lands as "No prompts open".
+          const requestedType = requestedRow.SpanAttributes[
+            "langwatch.span.type"
+          ] as string | undefined;
+          const row =
+            requestedType === "llm"
+              ? requestedRow
+              : (findNearestLlm(allRows, requestedRow) ?? null);
+          if (!row) {
             return null;
           }
 
@@ -1009,7 +1004,7 @@ export class ClickHouseTraceService {
             });
 
             const ancestorRef = findPromptReferenceInAncestors({
-              targetSpanId: spanId,
+              targetSpanId: row.SpanId,
               spans: ancestorSpans,
             });
             if (ancestorRef?.promptHandle) {
@@ -1055,61 +1050,13 @@ export class ClickHouseTraceService {
     _protections: Protections,
   ): PromptStudioSpanResult {
     const attrs = row.SpanAttributes;
-    const messages: PromptStudioSpanResult["messages"] = [];
-
-    // Extract input messages from gen_ai.prompt or langwatch.input
-    // Note: langwatch.input includes system messages; gen_ai.input.messages does not
-    const inputStr =
-      (attrs["gen_ai.prompt"] as string) ??
-      (attrs["langwatch.input"] as string);
-    if (inputStr) {
-      try {
-        const parsed = JSON.parse(inputStr);
-        if (parsed.type === "chat_messages" && Array.isArray(parsed.value)) {
-          messages.push(...parsed.value);
-        } else if (Array.isArray(parsed)) {
-          // Raw array of message objects (without TypedValueJson wrapper)
-          for (const item of parsed) {
-            if (item && typeof item === "object" && typeof item.content === "string") {
-              messages.push({ role: item.role ?? "user", content: item.content });
-            }
-          }
-        } else if (typeof parsed.value === "string") {
-          messages.push({ role: "user", content: parsed.value });
-        } else if (typeof parsed === "string") {
-          messages.push({ role: "user", content: parsed });
-        }
-      } catch {
-        messages.push({ role: "user", content: inputStr });
-      }
-    }
-
-    // Extract output messages from gen_ai.completion, gen_ai.output.messages, or langwatch.output
-    const outputStr =
-      (attrs["gen_ai.completion"] as string) ??
-      (attrs["gen_ai.output.messages"] as string) ??
-      (attrs["langwatch.output"] as string);
-    if (outputStr) {
-      try {
-        const parsed = JSON.parse(outputStr);
-        if (parsed.type === "chat_messages" && Array.isArray(parsed.value)) {
-          messages.push(...parsed.value);
-        } else if (Array.isArray(parsed)) {
-          // Raw array of message objects (without TypedValueJson wrapper)
-          for (const item of parsed) {
-            if (item && typeof item === "object" && typeof item.content === "string") {
-              messages.push({ role: item.role ?? "assistant", content: item.content });
-            }
-          }
-        } else if (typeof parsed.value === "string") {
-          messages.push({ role: "assistant", content: parsed.value });
-        } else if (typeof parsed === "string") {
-          messages.push({ role: "assistant", content: parsed });
-        }
-      } catch {
-        messages.push({ role: "assistant", content: outputStr });
-      }
-    }
+    // Pure extraction of input + output messages from the span's
+    // attributes. Lives in parseLLMSpanMessages.ts so the wire-shape
+    // contract — including the single-message-object form nlpgo emits
+    // for langwatch.output — is unit-testable without standing up the
+    // full service. See that file's docstring for the shape catalog.
+    const messages: PromptStudioSpanResult["messages"] =
+      parseLLMSpanMessages(attrs);
 
     // Extract LLM config
     const model =
@@ -1361,7 +1308,7 @@ export class ClickHouseTraceService {
           ? ` AND (${searchableColumns.map((col) => `${col} LIKE {searchQuery:String}`).join(" OR ")})`
           : "";
 
-        // Keyset cursor condition — only for the data query
+        // Keyset cursor condition — inside WHERE for partition pruning
         let cursorCondition = "";
         if (cursor) {
           cursorCondition =
@@ -1385,12 +1332,15 @@ export class ClickHouseTraceService {
             : {}),
         };
 
-        // Run count + data queries in parallel.
-        // Two-phase data query: inner subquery finds the target TraceIds using
-        // only lightweight columns (so the sort fits in memory), then the outer
-        // query fetches full data for just those IDs.
-        // uniq() uses HyperLogLog (~2 % error) which is fine for pagination.
-        const [countResult, summaryResult] = await Promise.all([
+        const cursorParams = {
+          lastTimestamp: cursor?.lastTimestamp ?? 0,
+          lastTraceId: cursor?.lastTraceId ?? "",
+        };
+
+        // Step 1: Find page trace IDs + count in parallel.
+        // The ID query is lightweight (no heavy columns), and the count uses
+        // HyperLogLog (~2% error) which is fine for pagination display.
+        const [countResult, idsResult] = await Promise.all([
           clickHouseClient.query({
             query: `
               SELECT uniq(ts.TraceId) as total
@@ -1407,81 +1357,55 @@ export class ClickHouseTraceService {
           }),
           clickHouseClient.query({
             query: `
-              SELECT
-                ts.TraceId AS ts_TraceId,
-                ts.SpanCount AS ts_SpanCount,
-                ts.TotalDurationMs AS ts_TotalDurationMs,
-                ts.ComputedIOSchemaVersion AS ts_ComputedIOSchemaVersion,
-                ts.TimeToFirstTokenMs AS ts_TimeToFirstTokenMs,
-                ts.TimeToLastTokenMs AS ts_TimeToLastTokenMs,
-                ts.TokensPerSecond AS ts_TokensPerSecond,
-                ts.ContainsErrorStatus AS ts_ContainsErrorStatus,
-                ts.ContainsOKStatus AS ts_ContainsOKStatus,
-                ts.ErrorMessage AS ts_ErrorMessage,
-                ts.Models AS ts_Models,
-                ts.TotalCost AS ts_TotalCost,
-                ts.TokensEstimated AS ts_TokensEstimated,
-                ts.TotalPromptTokenCount AS ts_TotalPromptTokenCount,
-                ts.TotalCompletionTokenCount AS ts_TotalCompletionTokenCount,
-                ts.TopicId AS ts_TopicId,
-                ts.SubTopicId AS ts_SubTopicId,
-                ts.HasAnnotation AS ts_HasAnnotation,
-                ts.AnnotationIds AS ts_AnnotationIds,
-                ts.ComputedInput AS ts_ComputedInput,
-                ts.ComputedOutput AS ts_ComputedOutput,
-                ts.Attributes AS ts_Attributes,
-                ts.TraceName AS ts_TraceName,
-                toUnixTimestamp64Milli(ts.OccurredAt) AS ts_OccurredAt,
-                toUnixTimestamp64Milli(ts.CreatedAt) AS ts_CreatedAt,
-                toUnixTimestamp64Milli(ts.UpdatedAt) AS ts_UpdatedAt
-              FROM trace_summaries ts
-              WHERE ts.TenantId = {tenantId:String}
-                AND ts.TraceId IN (
-                  SELECT s.TraceId
-                  FROM (
-                    SELECT ts.TraceId AS TraceId,
-                           argMax(ts.OccurredAt, ts.UpdatedAt) AS _oa
-                    FROM trace_summaries ts
-                    WHERE ts.TenantId = {tenantId:String}
-                      AND ts.OccurredAt >= fromUnixTimestamp64Milli({startDate:UInt64})
-                      AND ts.OccurredAt <= fromUnixTimestamp64Milli({endDate:UInt64})
-                      ${extraFilters}
-                      ${traceIdFilter}
-                      ${searchFilter}
-                      ${cursorCondition}
-                    GROUP BY ts.TraceId
-                  ) s
-                  ORDER BY s._oa ${orderDirection}, s.TraceId ${orderDirection}
-                  LIMIT {pageSize:UInt32}
-                )
-                AND (ts.TenantId, ts.TraceId, ts.UpdatedAt) IN (
-                  SELECT TenantId, TraceId, max(UpdatedAt)
-                  FROM trace_summaries
-                  WHERE TenantId = {tenantId:String}
-                  GROUP BY TenantId, TraceId
-                )
-              ORDER BY ts.OccurredAt ${orderDirection}, ts.TraceId ${orderDirection}
+              SELECT s.TraceId
+              FROM (
+                SELECT ts.TraceId AS TraceId,
+                       argMax(ts.OccurredAt, ts.UpdatedAt) AS _oa
+                FROM trace_summaries ts
+                WHERE ts.TenantId = {tenantId:String}
+                  AND ts.OccurredAt >= fromUnixTimestamp64Milli({startDate:UInt64})
+                  AND ts.OccurredAt <= fromUnixTimestamp64Milli({endDate:UInt64})
+                  ${extraFilters}
+                  ${traceIdFilter}
+                  ${searchFilter}
+                  ${cursorCondition}
+                GROUP BY ts.TraceId
+              ) s
+              ORDER BY s._oa ${orderDirection}, s.TraceId ${orderDirection}
+              LIMIT {pageSize:UInt32}
             `,
             query_params: {
               ...sharedParams,
-              lastTimestamp: cursor?.lastTimestamp ?? 0,
-              lastTraceId: cursor?.lastTraceId ?? "",
+              ...cursorParams,
               pageSize,
             },
             format: "JSONEachRow",
           }),
         ]);
 
-        const [countRows, summaryRows] = await Promise.all([
+        const [countRows, idRows] = await Promise.all([
           countResult.json() as Promise<Array<{ total: string }>>,
-          summaryResult.json() as Promise<TraceSummaryRow[]>,
+          idsResult.json() as Promise<Array<{ TraceId: string }>>,
         ]);
 
         const totalHits = parseInt(countRows[0]?.total ?? "0", 10);
+        const pageTraceIds = idRows.map((r) => r.TraceId);
 
-        if (summaryRows.length === 0) {
+        if (pageTraceIds.length === 0) {
           return { traces: [], totalHits, lastTrace: null };
         }
+
+        // Step 2: Fetch full data for just the page's trace IDs.
+        // The dedup subquery is scoped to pageTraceIds so it only reads
+        // N traces instead of the entire table.
+        const summaryRows = await this.fetchTraceSummaryRows({
+          clickHouseClient,
+          projectId,
+          startDate: startDate ?? 0,
+          endDate: endDate ?? Date.now(),
+          traceIds: pageTraceIds,
+          orderDirection,
+        });
 
         const traces: Trace[] = summaryRows.map((row) => {
           const summary = this.rowToTraceSummaryData(row);
@@ -1495,6 +1419,189 @@ export class ClickHouseTraceService {
         return { traces, totalHits, lastTrace };
       },
     );
+  }
+
+  private static readonly SUMMARY_BATCH_SIZE = 25;
+
+  /**
+   * Fetch full trace summary rows for a set of trace IDs.
+   * On ClickHouse MEMORY_LIMIT_EXCEEDED, retries in smaller batches
+   * so that heavy ComputedInput/ComputedOutput columns don't blow the
+   * per-query memory cap. If a single batch still OOMs the error propagates.
+   */
+  private async fetchTraceSummaryRows({
+    clickHouseClient,
+    projectId,
+    startDate,
+    endDate,
+    traceIds,
+    orderDirection,
+  }: {
+    clickHouseClient: ClickHouseClient;
+    projectId: string;
+    startDate: number;
+    endDate: number;
+    traceIds: string[];
+    orderDirection: string;
+  }): Promise<TraceSummaryRow[]> {
+    const runQuery = async (ids: string[]) => {
+      const result = await clickHouseClient.query({
+        query: `
+          SELECT
+            ts.TraceId AS ts_TraceId,
+            ts.SpanCount AS ts_SpanCount,
+            ts.TotalDurationMs AS ts_TotalDurationMs,
+            ts.ComputedIOSchemaVersion AS ts_ComputedIOSchemaVersion,
+            ts.TimeToFirstTokenMs AS ts_TimeToFirstTokenMs,
+            ts.TimeToLastTokenMs AS ts_TimeToLastTokenMs,
+            ts.TokensPerSecond AS ts_TokensPerSecond,
+            ts.ContainsErrorStatus AS ts_ContainsErrorStatus,
+            ts.ContainsOKStatus AS ts_ContainsOKStatus,
+            ts.ErrorMessage AS ts_ErrorMessage,
+            ts.Models AS ts_Models,
+            ts.TotalCost AS ts_TotalCost,
+            ts.TokensEstimated AS ts_TokensEstimated,
+            ts.TotalPromptTokenCount AS ts_TotalPromptTokenCount,
+            ts.TotalCompletionTokenCount AS ts_TotalCompletionTokenCount,
+            ts.TopicId AS ts_TopicId,
+            ts.SubTopicId AS ts_SubTopicId,
+            ts.HasAnnotation AS ts_HasAnnotation,
+            ts.AnnotationIds AS ts_AnnotationIds,
+            ts.ComputedInput AS ts_ComputedInput,
+            ts.ComputedOutput AS ts_ComputedOutput,
+            ts.Attributes AS ts_Attributes,
+            ts.TraceName AS ts_TraceName,
+            toUnixTimestamp64Milli(ts.OccurredAt) AS ts_OccurredAt,
+            toUnixTimestamp64Milli(ts.CreatedAt) AS ts_CreatedAt,
+            toUnixTimestamp64Milli(ts.UpdatedAt) AS ts_UpdatedAt
+          FROM trace_summaries ts
+          WHERE ts.TenantId = {tenantId:String}
+            AND ts.OccurredAt >= fromUnixTimestamp64Milli({startDate:UInt64})
+            AND ts.OccurredAt <= fromUnixTimestamp64Milli({endDate:UInt64})
+            AND ts.TraceId IN ({pageTraceIds:Array(String)})
+            AND (ts.TenantId, ts.TraceId, ts.UpdatedAt) IN (
+              SELECT TenantId, TraceId, max(UpdatedAt)
+              FROM trace_summaries
+              WHERE TenantId = {tenantId:String}
+                AND OccurredAt >= fromUnixTimestamp64Milli({startDate:UInt64})
+                AND OccurredAt <= fromUnixTimestamp64Milli({endDate:UInt64})
+                AND TraceId IN ({pageTraceIds:Array(String)})
+              GROUP BY TenantId, TraceId
+            )
+          ORDER BY ts.OccurredAt ${orderDirection}, ts.TraceId ${orderDirection}
+        `,
+        query_params: {
+          tenantId: projectId,
+          startDate,
+          endDate,
+          pageTraceIds: ids,
+        },
+        format: "JSONEachRow",
+      });
+      return result.json() as Promise<TraceSummaryRow[]>;
+    };
+
+    try {
+      return await runQuery(traceIds);
+    } catch (error) {
+      if (!isClickHouseMemoryLimitError(error)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Summary query OOM for ${traceIds.length} traces, retrying in batches of ${ClickHouseTraceService.SUMMARY_BATCH_SIZE}`,
+      );
+
+      const allRows: TraceSummaryRow[] = [];
+      for (
+        let i = 0;
+        i < traceIds.length;
+        i += ClickHouseTraceService.SUMMARY_BATCH_SIZE
+      ) {
+        const batch = traceIds.slice(
+          i,
+          i + ClickHouseTraceService.SUMMARY_BATCH_SIZE,
+        );
+        const batchRows = await runQuery(batch);
+        allRows.push(...batchRows);
+      }
+
+      const dir = orderDirection === "DESC" ? -1 : 1;
+      allRows.sort((a, b) => {
+        const timeDiff = a.ts_OccurredAt - b.ts_OccurredAt;
+        if (timeDiff !== 0) return timeDiff * dir;
+        if (a.ts_TraceId === b.ts_TraceId) return 0;
+        return a.ts_TraceId < b.ts_TraceId ? -dir : dir;
+      });
+
+      return allRows;
+    }
+  }
+
+  /**
+   * Fetch evaluation rows for a set of trace IDs.
+   * Same OOM-resilient pattern as fetchTraceSummaryRows.
+   */
+  private async fetchEvaluationRows({
+    clickHouseClient,
+    projectId,
+    traceIds,
+  }: {
+    clickHouseClient: ClickHouseClient;
+    projectId: string;
+    traceIds: string[];
+  }): Promise<ClickHouseEvaluationRunRow[]> {
+    const runQuery = async (ids: string[]) => {
+      const result = await clickHouseClient.query({
+        query: `
+          SELECT *
+          FROM evaluation_runs
+          WHERE TenantId = {tenantId:String}
+            AND TraceId IN ({traceIds:Array(String)})
+            AND (TenantId, EvaluationId, UpdatedAt) IN (
+              SELECT TenantId, EvaluationId, max(UpdatedAt)
+              FROM evaluation_runs
+              WHERE TenantId = {tenantId:String}
+                AND TraceId IN ({traceIds:Array(String)})
+              GROUP BY TenantId, EvaluationId
+            )
+        `,
+        query_params: {
+          tenantId: projectId,
+          traceIds: ids,
+        },
+        format: "JSONEachRow",
+      });
+      return result.json() as Promise<ClickHouseEvaluationRunRow[]>;
+    };
+
+    try {
+      return await runQuery(traceIds);
+    } catch (error) {
+      if (!isClickHouseMemoryLimitError(error)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Evaluations query OOM for ${traceIds.length} traces, retrying in batches of ${ClickHouseTraceService.SUMMARY_BATCH_SIZE}`,
+      );
+
+      const allRows: ClickHouseEvaluationRunRow[] = [];
+      for (
+        let i = 0;
+        i < traceIds.length;
+        i += ClickHouseTraceService.SUMMARY_BATCH_SIZE
+      ) {
+        const batch = traceIds.slice(
+          i,
+          i + ClickHouseTraceService.SUMMARY_BATCH_SIZE,
+        );
+        const batchRows = await runQuery(batch);
+        allRows.push(...batchRows);
+      }
+
+      return allRows;
+    }
   }
 
   /**
@@ -1638,9 +1745,13 @@ export class ClickHouseTraceService {
           throw new Error("ClickHouse client not available");
         }
 
-        // Two parallel queries: trace summaries (with I/O) and spans (separate table)
-        const [summaryResult, spansResult] = await Promise.all([
-          clickHouseClient.query({
+        // Summaries first (light, one row per trace): they carry OccurredAt,
+        // which bounds the heavy stored_spans scan below to the traces' weekly
+        // partitions instead of cold-scanning every partition on S3. A span's
+        // StartTime always falls within its trace's lifetime, so a ±2-day window
+        // around the summaries' OccurredAt range is safe headroom; when no
+        // summary row is found we fall back to an unbounded span scan.
+        const summaryResult = await clickHouseClient.query({
             query: `
         SELECT
           TraceId AS ts_TraceId,
@@ -1683,8 +1794,39 @@ export class ClickHouseTraceService {
       `,
             query_params: { tenantId: projectId, traceIds },
             format: "JSONEachRow",
-          }),
-          clickHouseClient.query({
+          });
+
+        const summaryRows = (await summaryResult.json()) as TraceSummaryRow[];
+
+        // No matched summaries: the result map is built solely from summary
+        // rows, so the spans would be discarded anyway. Return early to skip the
+        // (otherwise unbounded) stored_spans scan — the very cold scan this path
+        // is meant to avoid.
+        if (summaryRows.length === 0) {
+          return new Map();
+        }
+
+        // Bound the stored_spans scan to the weeks the matched traces occurred
+        // in (the cold-scan cost driver).
+        const SPAN_PARTITION_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+        const occurredAts = summaryRows
+          .map((r) => r.ts_OccurredAt)
+          .filter((t): t is number => typeof t === "number" && t > 0);
+        const hasWindow = occurredAts.length > 0;
+        const spanTimeFilterOuter = hasWindow
+          ? "AND t.StartTime >= fromUnixTimestamp64Milli({spanFromMs:Int64}) AND t.StartTime <= fromUnixTimestamp64Milli({spanToMs:Int64})"
+          : "";
+        const spanTimeFilterInner = hasWindow
+          ? "AND StartTime >= fromUnixTimestamp64Milli({spanFromMs:Int64}) AND StartTime <= fromUnixTimestamp64Milli({spanToMs:Int64})"
+          : "";
+        const spanTimeParams = hasWindow
+          ? {
+              spanFromMs: Math.min(...occurredAts) - SPAN_PARTITION_WINDOW_MS,
+              spanToMs: Math.max(...occurredAts) + SPAN_PARTITION_WINDOW_MS,
+            }
+          : {};
+
+        const spansResult = await clickHouseClient.query({
             query: `
         SELECT
           SpanId,
@@ -1714,23 +1856,21 @@ export class ClickHouseTraceService {
         FROM stored_spans AS t
         WHERE t.TenantId = {tenantId:String}
           AND t.TraceId IN ({traceIds:Array(String)})
+          ${spanTimeFilterOuter}
           AND (t.TenantId, t.TraceId, t.SpanId, t.StartTime) IN (
             SELECT TenantId, TraceId, SpanId, max(StartTime)
             FROM stored_spans
             WHERE TenantId = {tenantId:String}
               AND TraceId IN ({traceIds:Array(String)})
+              ${spanTimeFilterInner}
             GROUP BY TenantId, TraceId, SpanId
           )
         ORDER BY t.TraceId, t.StartTime ASC
         LIMIT 200 BY t.TraceId
       `,
-            query_params: { tenantId: projectId, traceIds },
+            query_params: { tenantId: projectId, traceIds, ...spanTimeParams },
             format: "JSONEachRow",
-          }),
-        ]);
-
-        // Parse trace summaries (includes ComputedInput/Output)
-        const summaryRows = (await summaryResult.json()) as TraceSummaryRow[];
+          });
 
         // Parse spans
         type SpanRow = {
@@ -2087,6 +2227,85 @@ interface JoinedTraceSpanRow extends TraceSummaryRow {
   ss_DroppedAttributesCount: number | null;
   ss_DroppedEventsCount: number | null;
   ss_DroppedLinksCount: number | null;
+}
+
+interface PromptStudioCandidateRow {
+  SpanId: string;
+  ParentSpanId: string | null;
+  SpanAttributes: Record<string, unknown>;
+  StartTime: number;
+}
+
+function isClickHouseMemoryLimitError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("MEMORY_LIMIT_EXCEEDED") ||
+    error.message.toLowerCase().includes("memory limit exceeded") ||
+    (error as { type?: string }).type === "MEMORY_LIMIT_EXCEEDED"
+  );
+}
+
+/**
+ * Given a non-llm span the operator clicked "Open in Playground" from
+ * (typically `Prompt.compile` or `PromptApiService.get`), find the
+ * nearest llm in the same trace to load instead. Preference order:
+ *   1. Closest descendant llm under the requested span — usually a child
+ *      llm call that consumed the just-compiled prompt.
+ *   2. Sibling llm under the same parent that started after the
+ *      requested span — the next llm call in the chain.
+ *   3. First llm in the trace by start time as a last resort.
+ * Returns null when the trace genuinely has no llm spans.
+ */
+function findNearestLlm<T extends PromptStudioCandidateRow>(
+  rows: T[],
+  requested: T,
+): T | null {
+  const isLlm = (r: T) =>
+    (r.SpanAttributes["langwatch.span.type"] as string | undefined) === "llm";
+
+  const llmRows = rows.filter(isLlm);
+  if (llmRows.length === 0) return null;
+
+  // 1. Descendant llm closest to the requested span (smallest depth diff).
+  const childrenByParent = new Map<string, T[]>();
+  for (const r of rows) {
+    if (!r.ParentSpanId) continue;
+    const list = childrenByParent.get(r.ParentSpanId);
+    if (list) list.push(r);
+    else childrenByParent.set(r.ParentSpanId, [r]);
+  }
+  const visited = new Set<string>();
+  const queue: T[] = [requested];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current.SpanId)) continue;
+    visited.add(current.SpanId);
+    const children = childrenByParent.get(current.SpanId) ?? [];
+    for (const child of children) {
+      if (isLlm(child)) return child;
+      queue.push(child);
+    }
+  }
+
+  // 2. Sibling llm under the same parent (or root-level peer if the
+  //    requested span has no parent) that started at/after the requested
+  //    span. Earliest qualifying sibling wins, so we land on the *next*
+  //    call rather than one further down the chain. Siblings that
+  //    started *before* the requested span do NOT count — those belong
+  //    to an earlier turn and would open an unrelated playground
+  //    context — so the search falls through to step 3 instead.
+  const siblingPool =
+    requested.ParentSpanId == null
+      ? rows.filter((r) => r.ParentSpanId == null)
+      : (childrenByParent.get(requested.ParentSpanId) ?? []);
+  const siblings = siblingPool
+    .filter((s) => s.SpanId !== requested.SpanId && isLlm(s))
+    .sort((a, b) => a.StartTime - b.StartTime);
+  const nextOrSame = siblings.find((s) => s.StartTime >= requested.StartTime);
+  if (nextOrSame) return nextOrSame;
+
+  // 3. Earliest llm in the trace.
+  return llmRows.sort((a, b) => a.StartTime - b.StartTime)[0] ?? null;
 }
 
 /**

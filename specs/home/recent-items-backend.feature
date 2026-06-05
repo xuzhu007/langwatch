@@ -4,6 +4,14 @@ Feature: Recent Items Backend
   I want to retrieve my recently accessed items
   So that I can quickly jump back to what I was working on
 
+  # Most scenarios bound via existing
+  # `langwatch/src/server/home/__tests__/recent-items.integration.test.ts`.
+  # The remaining @unimplemented scenarios (monitor/annotation extraction,
+  # ordering, dedup, deep-link URLs) need additional cases in that same
+  # file — the audit-log → entity-resolver pipeline is fully functional
+  # but the scenarios for those specific entity types/edge cases haven't
+  # been written yet.
+
   Background:
     Given I am authenticated as user "user-123"
     And I have access to project "project-456"
@@ -132,8 +140,7 @@ Feature: Recent Items Backend
       | updatedAt | 2024-01-15T10:30:00Z |
 
   # Deleted entities
-  @unimplemented
-  Scenario: Excludes deleted entities from results
+  Scenario: Excludes soft-deleted prompts from results
     Given I have an audit log entry for action "prompts.update" with args:
       | configId | deleted-prompt |
     And no prompt exists with id "deleted-prompt"

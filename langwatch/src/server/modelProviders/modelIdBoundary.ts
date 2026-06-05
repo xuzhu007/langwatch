@@ -46,6 +46,9 @@ function getProvider(modelId: string): string {
   }
   return modelId.slice(0, slashIndex).toLowerCase();
 }
+function isBareAnthropicModelId(modelId: string): boolean {
+  return /^claude-/i.test(modelId);
+}
 
 function isBareAnthropicModelId(modelId: string): boolean {
   return /^claude-/i.test(modelId);
@@ -54,9 +57,12 @@ function isBareAnthropicModelId(modelId: string): boolean {
 /**
  * Translates a model ID for use with LiteLLM.
  *
- * Order matters:
- * 1) exact alias expansion (full-string match)
- * 2) dot→dash translation for selected providers
+ * First checks for exact alias matches that need expansion to dated versions.
+ * Then converts dots to dashes in model IDs for providers that need it.
+ * Other providers (OpenAI, Gemini, etc.) are returned unchanged.
+ *
+ * @param modelId - The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")
+ * @returns The translated model ID for LiteLLM (e.g., "anthropic/claude-opus-4-5")
  */
 export function translateModelIdForLitellm(modelId: string): string {
   if (!modelId) {
@@ -70,9 +76,6 @@ export function translateModelIdForLitellm(modelId: string): string {
 
   const provider = getProvider(modelId);
 
-  // Only translate providers that need it.
-  // For legacy/unknown provider-less ids, ONLY translate anthropic-shaped ones
-  // (e.g. "claude-3.5-sonnet"). Do not rewrite arbitrary bare ids.
   const needsTranslation =
     PROVIDERS_NEEDING_TRANSLATION.includes(provider) ||
     (provider === "" && isBareAnthropicModelId(modelId));

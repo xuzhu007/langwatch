@@ -20,6 +20,7 @@ import {
 } from "react-icons/lu";
 import { Popover } from "~/components/ui/popover";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import {
   type AttributeFormat,
   buildInlineDescriptor,
@@ -74,7 +75,14 @@ export function AttributeValue({ attrKey, value }: AttributeValueProps) {
   return (
     <HStack flex={1} minWidth={0} paddingX={3} paddingY={1} gap={2}>
       <FormatPill format={detected} />
-      <Popover.Root positioning={{ placement: "right-start" }}>
+      {/* lazyMount + unmountOnExit — one of these renders per pinned
+          attribute row. With 10+ pins in the auto-pin sidebar that's a
+          lot of invisible floating layers on every drawer open. */}
+      <Popover.Root
+        positioning={{ placement: "right-start" }}
+        lazyMount
+        unmountOnExit
+      >
         <Popover.Trigger asChild>
           <Button
             type="button"
@@ -358,7 +366,7 @@ function ChatRow({ message }: { message: ChatMessage }) {
 function CopyButton({ payload }: { payload: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = useCallback(() => {
-    void navigator.clipboard.writeText(payload);
+    void copyTextToClipboard(payload);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   }, [payload]);

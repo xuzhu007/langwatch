@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../../../../../components/ui/toaster";
 
 /**
@@ -14,7 +15,7 @@ export async function copyToClipboard({
   successMessage: string;
 }): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text);
+    await copyTextToClipboard(text);
     toaster.create({
       title: "Copied",
       description: successMessage,

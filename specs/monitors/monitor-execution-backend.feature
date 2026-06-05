@@ -4,6 +4,30 @@ Feature: Monitor Execution with Evaluator Reference
   I want monitors to read settings from linked evaluators
   So that evaluator changes automatically apply to monitors
 
+  # 3 of 16 scenarios bound to evaluationsWorker.integration.test.ts (Execute
+  # using evaluator settings, Evaluator settings take precedence, Backward
+  # compatibility with legacy monitors). Remaining 13 @unimplemented scenarios:
+  # - "Fetch evaluator in single query with monitor": DELETE per manifest (Prisma
+  #   join is implementation detail, not user-visible behavior)
+  # - "Handle missing evaluator": UPDATE per manifest (executeEvaluation emits
+  #   status="skipped" with details="Monitor not found", not error "Evaluator
+  #   not found")
+  # - "Handle archived evaluator": DELETE per manifest (monitors.ts:162,245
+  #   filters archivedAt:null — archived evaluators are blocked, contradicts
+  #   scenario premise)
+  # - "Evaluation worker timeout": DELETE per manifest (no 5-min timeout
+  #   enforcement; aspirational not implemented)
+  # - "LangEvals API call structure": DELETE per manifest (HTTP impl detail)
+  # - "Preconditions filter traces": DUPLICATE of online-evaluation-preconditions
+  #   "Evaluation trigger passes all trace attributes for precondition matching"
+  # - "Evaluation results stored correctly": UPDATE per manifest (results stored
+  #   in ClickHouse via fold projection, not Elasticsearch as scenario claims)
+  # - The remaining KEEP scenarios (Thread-level evaluation, Sampling, Cost
+  #   tracking, Concurrent evaluations, Evaluation error handling) need new
+  #   integration tests against executeEvaluation.command.ts.
+  # Aspirational pending DELETE/UPDATE rewrites + KEEP integration test additions
+  # tracked in PR #3458.
+
   Background:
     Given the evaluation worker is running
     And LangEvals service is available

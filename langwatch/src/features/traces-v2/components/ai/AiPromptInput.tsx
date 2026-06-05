@@ -7,6 +7,7 @@ import {
   Input,
   Text,
 } from "@chakra-ui/react";
+import { keyframes } from "@emotion/react";
 import { AlertCircle, Sparkles, X } from "lucide-react";
 import type React from "react";
 import { useEffect, useState } from "react";
@@ -17,17 +18,34 @@ import { DEFAULT_THINKING_VERBS, useCyclingVerb } from "./useCyclingVerb";
 
 const ICON_GRADIENT_ID = "ai-icon-gradient";
 
+// Use the emotion `keyframes` helper so the @keyframes rule is actually
+// emitted into the document head — embedding `"@keyframes …"` inside a
+// css object silently fails (CSS @rules can't nest inside selectors), so
+// the shimmer was previously running on a non-existent animation name.
+const aiThinkingShimmer = keyframes`
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+`;
+
+// Sweep the three AI brand stops (orange → pink → violet) through the
+// muted body colour so the shimmer reads as the same "AI" gradient the
+// Sparkles icon and Ask AI button use, instead of a single flat accent.
 const thinkingShimmerStyles = {
-  background: `linear-gradient(90deg, var(--chakra-colors-fg-muted) 0%, var(--chakra-colors-fg-muted) 35%, ${aiBrandPalette[2]} 50%, var(--chakra-colors-fg-muted) 65%, var(--chakra-colors-fg-muted) 100%)`,
+  background: `linear-gradient(
+    90deg,
+    var(--chakra-colors-fg-muted) 0%,
+    var(--chakra-colors-fg-muted) 25%,
+    ${aiBrandPalette[0]} 42%,
+    ${aiBrandPalette[1]} 50%,
+    ${aiBrandPalette[2]} 58%,
+    var(--chakra-colors-fg-muted) 75%,
+    var(--chakra-colors-fg-muted) 100%
+  )`,
   backgroundSize: "250% 100%",
   WebkitBackgroundClip: "text",
   backgroundClip: "text",
   WebkitTextFillColor: "transparent",
-  animation: "ai-thinking-shimmer 2.4s linear infinite",
-  "@keyframes ai-thinking-shimmer": {
-    "0%": { backgroundPosition: "200% 0" },
-    "100%": { backgroundPosition: "-200% 0" },
-  },
+  animation: `${aiThinkingShimmer} 4.5s linear infinite`,
 };
 
 const TYPING_MS = 70;
@@ -142,11 +160,36 @@ export const AiPromptInput: React.FC<AiPromptInputProps> = ({
   placeholderExamples = DEFAULT_PLACEHOLDER_EXAMPLES,
   thinkingVerbs = DEFAULT_THINKING_VERBS,
 }) => {
+  const reduceMotion = useReducedMotion();
   const typewriter = useTypewriterPlaceholder(
     !prompt && !isPending,
     placeholderExamples,
   );
   const verb = useCyclingVerb(isPending, thinkingVerbs);
+  // The shimmer's `animation` property comes from `thinkingShimmerStyles`;
+  // override it to `none` for users who prefer reduced motion. Static
+  // gradient stays so the text still reads as the AI brand colour
+  // sweep, just without the infinite sweep.
+  const shimmerCss = reduceMotion
+    ? { ...thinkingShimmerStyles, animation: "none" }
+    : thinkingShimmerStyles;
+
+  // Pending mode swaps the Input for a shimmer Box that has no key
+  // handlers — without a global listener the user couldn't cancel an
+  // in-flight AI request with Esc. The mutation itself can't be aborted
+  // mid-flight (tRPC mutate has no native cancel), but `onClose` tears
+  // down the composer, which flips the host hook's `cancelledRef` so
+  // any late response is dropped on the floor and the user gets out.
+  useEffect(() => {
+    if (!isPending) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isPending, onClose]);
 
   return (
     <Flex align="center" gap={2} width="full" position="relative">
@@ -185,7 +228,7 @@ export const AiPromptInput: React.FC<AiPromptInputProps> = ({
           fontWeight="500"
           letterSpacing="-0.005em"
           truncate
-          css={thinkingShimmerStyles}
+          css={shimmerCss}
         >
           {`${verb} ${prompt}…`}
         </Box>
@@ -242,14 +285,16 @@ export const AiPromptInput: React.FC<AiPromptInputProps> = ({
           </HStack>
         </Tooltip>
       )}
-      <Tooltip content="Exit AI mode (Esc)" openDelay={200}>
+      <Tooltip
+        content={isPending ? "Cancel (Esc)" : "Exit AI mode (Esc)"}
+        openDelay={200}
+      >
         <IconButton
-          aria-label="Exit AI mode"
+          aria-label={isPending ? "Cancel AI request" : "Exit AI mode"}
           size="2xs"
           variant="ghost"
           color="fg.subtle"
           onClick={onClose}
-          disabled={isPending}
         >
           <X size={13} />
         </IconButton>

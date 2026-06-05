@@ -10,6 +10,7 @@ import { Check, Copy, Eye, EyeOff, WandSparkles } from "lucide-react";
 import type React from "react";
 import { useMemo, useState } from "react";
 import type { HighlighterGeneric } from "shiki";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { useColorMode } from "../../../../../components/ui/color-mode";
 import { toaster } from "../../../../../components/ui/toaster";
 import { Tooltip } from "../../../../../components/ui/tooltip";
@@ -82,7 +83,7 @@ export function CodePreview({
     if (!llmPrompt) return;
 
     try {
-      await navigator.clipboard.writeText(llmPrompt);
+      await copyTextToClipboard(llmPrompt);
       toaster.create({
         title: "Copied LLM prompt",
         description: "Integration prompt copied to clipboard",
@@ -124,7 +125,11 @@ export function CodePreview({
             boxShadow="0 4px 30px rgba(0,0,0,0.06)"
             overflow="hidden"
           >
-            <CodeBlock.Header display="flex" justifyContent="space-between" borderColor="gray.200">
+            <CodeBlock.Header
+              display="flex"
+              justifyContent="space-between"
+              borderColor="gray.200"
+            >
               <CodeBlock.Title fontSize="xs" pt={2}>
                 {languageIconUrl ? (
                   <Icon size="xs">

@@ -37,6 +37,7 @@ class UserConfigError extends Error {
 }
 import { EvaluatorConfigError } from "~/server/app-layer/evaluations/errors";
 import { setupModelEnv } from "~/server/app-layer/evaluations/evaluation-execution.factories";
+import { stagedLangevalsFetch } from "~/server/langevals/stagedFetch";
 import { prisma } from "../../db";
 import {
   DEFAULT_MAPPINGS,
@@ -70,6 +71,10 @@ import {
 } from "../../app-layer/evaluations/azure-safety-env";
 import { getAzureSafetyEnvFromProject } from "../../app-layer/evaluations/azure-safety-env.server";
 import { runEvaluationWorkflow } from "../../workflows/runWorkflow";
+import {
+  extractParentTraceForNlpgo,
+  maxCausalityDepthOfSpans,
+} from "../../app-layer/evaluations/evaluation-execution.service";
 import {
   EVALUATIONS_QUEUE,
   updateEvaluationStatusInES,
@@ -480,6 +485,9 @@ export const runEvaluationForTrace = async ({
     settings: settings && typeof settings === "object" ? settings : undefined,
     trace,
     workflowId,
+    parentCausalityDepth: maxCausalityDepthOfSpans(
+      trace.spans as unknown as Array<{ attributes?: Record<string, unknown> | null }>,
+    ),
   });
 
   return {
@@ -497,6 +505,7 @@ export const runEvaluation = async ({
   trace,
   workflowId,
   retries = 1,
+  parentCausalityDepth,
 }: {
   projectId: string;
   evaluatorType: EvaluatorTypes | "workflow";
@@ -505,6 +514,7 @@ export const runEvaluation = async ({
   trace?: Trace;
   workflowId?: string | null;
   retries?: number;
+  parentCausalityDepth?: number;
 }): Promise<SingleEvaluationResult> => {
   if (data.type === "custom") {
     return customEvaluation(
@@ -513,6 +523,7 @@ export const runEvaluation = async ({
       data.data,
       trace,
       workflowId,
+      parentCausalityDepth,
     );
   }
 
@@ -577,35 +588,31 @@ export const runEvaluation = async ({
 
   let response;
   try {
-    response = await fetch(
-      `${env.LANGEVALS_ENDPOINT}/${builtInEvaluatorType}/evaluate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          data: [
-            {
-              input: tryAndConvertTo(data.data.input, "string"),
-              output: tryAndConvertTo(data.data.output, "string"),
-              contexts: tryAndConvertTo(data.data.contexts, "string[]"),
-              expected_contexts: tryAndConvertTo(
-                data.data.expected_contexts,
-                "string[]",
-              ),
-              expected_output: tryAndConvertTo(
-                data.data.expected_output,
-                "string",
-              ),
-              conversation: tryAndConvertTo(data.data.conversation, "array"),
-            },
-          ],
-          settings: settings && typeof settings === "object" ? settings : {},
-          env: evaluatorEnv,
-        }),
+    response = await stagedLangevalsFetch({
+      url: `${env.LANGEVALS_ENDPOINT}/${builtInEvaluatorType}/evaluate`,
+      projectId,
+      kind: "evaluation",
+      body: {
+        data: [
+          {
+            input: tryAndConvertTo(data.data.input, "string"),
+            output: tryAndConvertTo(data.data.output, "string"),
+            contexts: tryAndConvertTo(data.data.contexts, "string[]"),
+            expected_contexts: tryAndConvertTo(
+              data.data.expected_contexts,
+              "string[]",
+            ),
+            expected_output: tryAndConvertTo(
+              data.data.expected_output,
+              "string",
+            ),
+            conversation: tryAndConvertTo(data.data.conversation, "array"),
+          },
+        ],
+        settings: settings && typeof settings === "object" ? settings : {},
+        env: evaluatorEnv,
       },
-    );
+    });
   } catch (error) {
     if (error instanceof Error && error.message.includes("fetch failed")) {
       console.error({ error, path: `${env.LANGEVALS_ENDPOINT}/${builtInEvaluatorType}/evaluate` });
@@ -817,6 +824,7 @@ const customEvaluation = async (
   data: Record<string, any>,
   trace?: Trace,
   workflowId?: string | null,
+  parentCausalityDepth?: number,
 ): Promise<SingleEvaluationResult> => {
   // For workflow evaluators (checkType "workflow"), workflowId comes from the evaluator record
   // For custom evaluators (checkType "custom/<workflowId>"), workflowId is parsed from the type
@@ -830,9 +838,15 @@ const customEvaluation = async (
     throw new Error("Project not found");
   }
 
+  // do_not_trace=false on the wire so eval-emitted spans land under
+  // the parent trace's traceparent context (post-2026-05-14 fix). The
+  // explicit do_not_trace=false arg passed to runEvaluationWorkflow
+  // below already overrides this default, but pinning the field on
+  // the body itself keeps the wire shape honest if a future refactor
+  // drops the explicit override on runWorkflow.
   const requestBody: Record<string, any> = {
     trace_id: trace?.trace_id,
-    do_not_trace: true,
+    do_not_trace: false,
     ...data,
   };
 
@@ -840,10 +854,19 @@ const customEvaluation = async (
     throw new Error("Workflow ID is required");
   }
 
+  // W3C trace context — same as eval-execution.service: pass the
+  // parent trace's root span so nlpgo emits eval spans as a child
+  // sub-tree of the trace being evaluated, not as an orphan trace.
+  // See 2026-05-14 prod regression.
+  const parentTrace = extractParentTraceForNlpgo(trace);
+
   const response = await runEvaluationWorkflow(
     resolvedWorkflowId,
     project.id,
     requestBody,
+    undefined,
+    parentCausalityDepth,
+    parentTrace,
   );
 
   const { result, status } = response;

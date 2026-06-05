@@ -1,43 +1,33 @@
-/**
- * Copy text to the clipboard with graceful degradation for non-secure contexts.
- *
- * Fallback chain:
- * 1. navigator.clipboard.writeText() — available in secure contexts (HTTPS / localhost)
- * 2. document.execCommand("copy") via temporary textarea — works over HTTP
- *
- * @returns true if the copy succeeded, false otherwise
- */
-export async function copyToClipboard(text: string): Promise<boolean> {
-  // Prefer modern Clipboard API when available
+export async function copyTextToClipboard(text: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
-      return true;
+      return;
     } catch {
-      // Falls through to execCommand fallback
+      // 继续尝试 HTTP 环境可用的降级方案。
     }
   }
 
-  // Fallback: legacy execCommand("copy") via temporary textarea
   if (typeof document !== "undefined") {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "-9999px";
+    textarea.style.opacity = "0";
+
     try {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      // Move off-screen to avoid visual flash
-      textarea.style.position = "fixed";
-      textarea.style.left = "-9999px";
-      textarea.style.top = "-9999px";
-      textarea.style.opacity = "0";
       document.body.appendChild(textarea);
       textarea.focus();
       textarea.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(textarea);
-      return ok;
+      if (document.execCommand("copy")) {
+        return;
+      }
     } catch {
-      return false;
+      // 降级复制失败时统一在函数末尾抛出错误。
+    } finally {
+      textarea.remove();
     }
   }
-
-  return false;
+  throw new Error("clipboard unavailable");
 }

@@ -128,6 +128,7 @@ export default defineConfig({
       // Path aliases (matching tsconfig paths)
       "~": path.resolve(__dirname, "./src"),
       "@app": path.resolve(__dirname, "./src/server/app-layer"),
+      "@ee": path.resolve(__dirname, "./ee"),
 
       // Browser stubs for Node.js-only modules
       "pino-pretty": path.resolve(__dirname, "./src/noop-css.cjs"),
@@ -151,6 +152,27 @@ export default defineConfig({
   build: {
     outDir: "dist/client",
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          // Keep the whole Shiki ecosystem in one self-contained chunk.
+          // Under the rolldown bundler the default split hoists Shiki's
+          // singleton factory into the entry chunk and leaves the Shiki
+          // chunk calling back into it at module top level. Because the
+          // entry eagerly loads Shiki, that call runs before the entry has
+          // initialized the export, throwing "undefined is not a function"
+          // at boot and white-screening the app. One chunk removes the
+          // cross-chunk cycle.
+          if (
+            /[\\/]node_modules[\\/](\.pnpm[\\/])?(@shikijs[\\/+]|shiki[\\/@]|oniguruma-to-es|oniguruma-parser|hast-util-to-html)/.test(
+              id,
+            )
+          ) {
+            return "shiki";
+          }
+        },
+      },
+    },
   },
   server: {
     watch: {
@@ -183,6 +205,14 @@ export default defineConfig({
       : {}),
     // Proxy API requests to the Hono backend (PORT + 1000). `ws: true`
     // forwards WebSocket upgrades for the tRPC WS transport at /api/trpc-ws.
+    //
+    // The MCP routes (/mcp, /sse, /messages, /oauth/*, /.well-known/oauth-*)
+    // are registered directly on the Node HTTP server in start.ts (NOT
+    // mounted under /api), so they need explicit proxy entries here for
+    // external MCP clients (e.g. Claude Code adding the LangWatch MCP
+    // server in dev) to reach them via the canonical FRONTEND_PORT. The
+    // production server (start.ts) listens on a single port so this
+    // splitting is dev-only.
     proxy: {
       "/api": {
         target: `${API_PROTOCOL}://localhost:${API_PORT}`,
@@ -190,6 +220,36 @@ export default defineConfig({
         ws: true,
         // Self-signed dev cert — don't fail the proxy on cert verification.
         // No-op when API is on plain HTTP.
+        secure: false,
+      },
+      "/mcp": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/sse": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/messages": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/oauth": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/.well-known/oauth-protected-resource": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/.well-known/oauth-authorization-server": {
+        target: `${API_PROTOCOL}://localhost:${API_PORT}`,
+        changeOrigin: true,
         secure: false,
       },
     },

@@ -50,6 +50,12 @@ Feature: HTTP Agent Test Tracing
 
   # ============================================================================
   # Request details captured in trace
+  #
+  # The remaining @unimplemented "request details" scenarios assert on
+  # `test_context` shape — needs an integration test that snapshots the
+  # full trace_context object, not the per-field assertions in
+  # `httpProxyTracing.integration.test.ts`. Cheap to add when someone
+  # touches the request-context capture path.
   # ============================================================================
 
   @unit @unimplemented
@@ -149,6 +155,11 @@ Feature: HTTP Agent Test Tracing
 
   # ============================================================================
   # Filtering
+  #
+  # @unimplemented: needs an end-to-end test that POSTs traces, then queries
+  # the traces API with a `type=agent_test` filter and asserts the result
+  # set. The httpProxyTracing.integration.test.ts focuses on trace-creation
+  # mechanics rather than the read/filter side.
   # ============================================================================
 
   @integration @unimplemented

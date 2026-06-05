@@ -68,6 +68,11 @@ export function AnnotationPopover(props: AnnotationPopoverProps) {
     <Popover.Root
       open={props.open}
       onOpenChange={(e) => props.onOpenChange(e.open)}
+      // lazyMount + unmountOnExit so a closed annotation form is not
+      // sitting in DOM (one per turn × two trigger modes = 2N dead
+      // popovers on a long conversation otherwise).
+      lazyMount
+      unmountOnExit
       positioning={{
         placement: "bottom-end",
         // Flip & shift so the popover stays inside the viewport instead of
@@ -343,7 +348,6 @@ function SuggestBody({
         minHeight="180px"
         maxHeight="180px"
         resize="none"
-        fontFamily="mono"
         fontSize="sm"
         lineHeight="1.6"
         autoFocus
@@ -549,6 +553,11 @@ export function ScoreChip({
         setOpen(e.open);
         if (!e.open) commitReason();
       }}
+      // Multiple of these popovers can render per annotation form (one
+      // per score field). Drop them from DOM when closed so the form
+      // stays cheap to keep mounted.
+      lazyMount
+      unmountOnExit
       positioning={{ placement: "bottom-start" }}
     >
       <Popover.Trigger asChild>
@@ -664,10 +673,10 @@ function DiffCounts({
 
   return (
     <HStack gap={2}>
-      <Text textStyle="2xs" color="green.fg" fontFamily="mono">
+      <Text textStyle="2xs" color="green.fg">
         +{counts.added}
       </Text>
-      <Text textStyle="2xs" color="red.fg" fontFamily="mono">
+      <Text textStyle="2xs" color="red.fg">
         −{counts.removed}
       </Text>
     </HStack>
@@ -700,7 +709,6 @@ function DiffPanel({ original, edited }: { original: string; edited: string }) {
       paddingY={2.5}
       overflowY="auto"
       overflowX="hidden"
-      fontFamily="mono"
       fontSize="xs"
       lineHeight="1.6"
       whiteSpace="pre-wrap"

@@ -16,8 +16,11 @@ import { useRouter } from "~/utils/compat/next-router";
 import { useEffect, useMemo, useState } from "react";
 import { RandomColorAvatar } from "~/components/RandomColorAvatar";
 import { PageLayout } from "~/components/ui/layouts/PageLayout";
+import { OverflownTextWithTooltip } from "~/components/OverflownText";
 import { captureException } from "~/utils/posthogErrorCapture";
 import { AddMembersForm } from "../../components/AddMembersForm";
+import { CostCenterPicker } from "../../components/settings/CostCenterPicker";
+import { useCostCenterColumn } from "../../components/settings/useCostCenterColumn";
 import { MemberDetailDialog } from "../../components/settings/MemberDetailDialog";
 import { CopyInput } from "../../components/CopyInput";
 import { InvitesTable } from "../../components/members/InvitesTable";
@@ -74,7 +77,7 @@ function Members() {
   );
 }
 
-export default withPermissionGuard("organization:view", {
+export default withPermissionGuard("organization:manage", {
   layoutComponent: SettingsLayout,
 })(Members);
 
@@ -91,6 +94,9 @@ function MembersList({
   const { hasPermission } = useOrganizationTeamProject();
   const hasOrganizationManagePermission = hasPermission("organization:manage");
   const user = session?.user;
+
+  const costCenter = useCostCenterColumn(organization.id);
+  const showCostCenter = costCenter.show && hasOrganizationManagePermission;
 
   const teamOptions = teams.map((team) => ({
     label: team.name,
@@ -281,15 +287,26 @@ function MembersList({
           )}
         </HStack>
         <Card.Root width="full" overflow="hidden">
-          <Card.Body paddingY={0} paddingX={0}>
+          {/*
+            Card wraps the table in overflowX="auto" so the row never
+            clips the rightmost ⋮ actions menu on narrow viewports; the
+            cost-center picker keeps its full width (rchaves: do NOT
+            shrink it), and the email column truncates with a hover
+            tooltip via OverflownTextWithTooltip so long synthetic
+            addresses don't push the row width past the viewport.
+          */}
+          <Card.Body paddingY={0} paddingX={0} overflowX="auto">
             <Table.Root variant="line" size="md" width="full">
               <Table.Header>
                 <Table.Row>
                   <Table.ColumnHeader width="56px" />
                   <Table.ColumnHeader>Name</Table.ColumnHeader>
-                  <Table.ColumnHeader>Email</Table.ColumnHeader>
+                  <Table.ColumnHeader maxWidth="280px">Email</Table.ColumnHeader>
                   {hasOrganizationManagePermission && (
                     <Table.ColumnHeader textAlign="right">Access</Table.ColumnHeader>
+                  )}
+                  {showCostCenter && (
+                    <Table.ColumnHeader>Cost center</Table.ColumnHeader>
                   )}
                   <Table.ColumnHeader width="60px"></Table.ColumnHeader>
                 </Table.Row>
@@ -336,12 +353,28 @@ function MembersList({
                           )}
                         </HStack>
                       </Table.Cell>
-                      <Table.Cell>{member.user.email}</Table.Cell>
+                      <Table.Cell maxWidth="280px">
+                        <OverflownTextWithTooltip>
+                          {member.user.email}
+                        </OverflownTextWithTooltip>
+                      </Table.Cell>
                       {hasOrganizationManagePermission && (
                         <Table.Cell>
                           <MemberAccessDisplay
                             bindings={bindingsByUser.get(member.userId) ?? []}
                             isLoading={isBindingsLoading || isBindingsError}
+                          />
+                        </Table.Cell>
+                      )}
+                      {showCostCenter && (
+                        <Table.Cell>
+                          <CostCenterPicker
+                            organizationId={organization.id}
+                            kind="user"
+                            entityId={member.userId}
+                            value={costCenter.byUser.get(member.userId) ?? null}
+                            costCenters={costCenter.costCenters}
+                            onAssigned={costCenter.refetch}
                           />
                         </Table.Cell>
                       )}
@@ -420,7 +453,7 @@ function MembersList({
         open={isInviteLinkOpen}
         onOpenChange={({ open }) => (open ? undefined : onInviteModalClose())}
       >
-        <Dialog.Content>
+        <Dialog.Content bg="bg">
           <Dialog.Header>
             <Dialog.Title>
               <Heading>Invite Link</Heading>
@@ -462,7 +495,7 @@ function MembersList({
           open ? onAddMembersOpen() : onAddMembersClose()
         }
       >
-        <Dialog.Content width="100%" maxWidth="1024px">
+        <Dialog.Content bg="bg" width="100%" maxWidth="1024px">
           <Dialog.Header>
             <Dialog.Title>
               <Heading>Add members</Heading>
