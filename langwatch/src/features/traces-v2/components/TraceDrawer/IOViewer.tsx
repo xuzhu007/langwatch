@@ -1,12 +1,5 @@
 import { Box, Button, HStack, Icon, Text } from "@chakra-ui/react";
-import {
-  forwardRef,
-  memo,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   LuCheck,
   LuChevronDown,
@@ -20,10 +13,11 @@ import {
   LuPencil,
   LuPlay,
 } from "react-icons/lu";
-import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { PersonalFeatureGateDialog } from "~/components/me/PersonalFeatureGateDialog";
 import { usePersonalFeatureGate } from "~/components/me/usePersonalFeatureGate";
+import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { useGoToSpanInPlaygroundTabUrlBuilder } from "~/prompts/prompt-playground/hooks/useLoadSpanIntoPromptPlayground";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { AnnotationPopover } from "./conversationView/AnnotationPopover";
 import { IOViewerBody } from "./IOViewerBody";
 import { safePrettyJson } from "./JsonHighlight";
@@ -184,7 +178,7 @@ function CopyButton({ text }: { text: string }) {
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(text);
+    void copyTextToClipboard(text);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   };

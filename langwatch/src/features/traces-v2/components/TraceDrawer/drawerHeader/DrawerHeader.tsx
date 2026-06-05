@@ -32,19 +32,19 @@ import { useDejaViewLink } from "~/hooks/useDejaViewLink";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import type { TraceHeader } from "~/server/api/routers/tracesV2.schemas";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { useConversationContext } from "../../../hooks/useConversationContext";
 import { usePinnedAttributes } from "../../../hooks/usePinnedAttributes";
-import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
 import { useSpanTree } from "../../../hooks/useSpanTree";
+import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
 import { useTraceHeader } from "../../../hooks/useTraceHeader";
 import { useTraceRefresh } from "../../../hooks/useTraceRefresh";
 import { useTraceResources } from "../../../hooks/useTraceResources";
 import { useDrawerStore } from "../../../stores/drawerStore";
 import { useFilterStore } from "../../../stores/filterStore";
 import { useFocusSectionStore } from "../../../stores/focusSectionStore";
-import { rankedErrorSpans } from "../../../utils/errorSpans";
-import { ExceptionsContent } from "../ExceptionsContent";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
+import { rankedErrorSpans } from "../../../utils/errorSpans";
 import {
   abbreviateModel,
   formatAbsoluteTime,
@@ -57,6 +57,7 @@ import {
 } from "../../../utils/formatters";
 import { Chip } from "../Chip";
 import { splitChipsForOverflow } from "../ChipBar";
+import { ExceptionsContent } from "../ExceptionsContent";
 import { ModeSwitch } from "../ModeSwitch";
 import { RawJsonDialog } from "../RawJsonDialog";
 import { useTraceHeaderChipDefs } from "../TraceHeaderChips";
@@ -103,35 +104,23 @@ interface DrawerHeaderProps {
 function TraceIdChip({ traceId }: { traceId: string }) {
   const short = traceId.slice(0, 8);
   const handleCopy = async () => {
-    // navigator.clipboard requires a secure context (https or localhost).
-    // Surface a friendly hint when it fails so users running LangWatch on
-    // a plain-http internal domain understand what went wrong instead of
-    // seeing a silent no-op.
     try {
-      if (
-        typeof navigator !== "undefined" &&
-        navigator.clipboard?.writeText
-      ) {
-        await navigator.clipboard.writeText(traceId);
-        toaster.create({
-          title: "Trace ID copied",
-          // Show the full id so the operator can verify what landed on
-          // their clipboard at a glance. The chip shows a short id by
-          // design (git-SHA convention) but the toast has the real
-          // estate — operator report: the previous "<8 chars>…" felt
-          // truncated for no benefit.
-          description: traceId,
-          type: "success",
-          duration: 2500,
-        });
-        return;
-      }
-      throw new Error("clipboard unavailable");
+      await copyTextToClipboard(traceId);
+      toaster.create({
+        title: "Trace ID copied",
+        // Show the full id so the operator can verify what landed on
+        // their clipboard at a glance. The chip shows a short id by
+        // design (git-SHA convention) but the toast has the real
+        // estate — operator report: the previous "<8 chars>…" felt
+        // truncated for no benefit.
+        description: traceId,
+        type: "success",
+        duration: 2500,
+      });
     } catch {
       toaster.create({
         title: "Couldn't copy trace ID",
-        description:
-          "Clipboard access is restricted. This can happen on non-HTTPS domains. Copy the ID manually from the URL.",
+        description: "Copy the ID manually from the URL.",
         type: "error",
         duration: 6000,
       });
@@ -152,7 +141,13 @@ function TraceIdChip({ traceId }: { traceId: string }) {
         ".chip-root:hover & [data-expanded]": { display: "inline" },
       }}
     >
-      <Text as="span" data-collapsed textStyle="xs" color="fg" fontWeight="medium">
+      <Text
+        as="span"
+        data-collapsed
+        textStyle="xs"
+        color="fg"
+        fontWeight="medium"
+      >
         {short}
       </Text>
       <Text
@@ -360,10 +355,7 @@ const SAFE_METADATA_KEY_RE = /^[A-Za-z0-9_.-]+$/;
  * key can't be safely round-tripped as a bare Liqe field, or the value
  * collapses to empty after escape.
  */
-function formatMetadataFilterQuery(
-  key: string,
-  value: string,
-): string | null {
+function formatMetadataFilterQuery(key: string, value: string): string | null {
   if (!SAFE_METADATA_KEY_RE.test(key)) return null;
   const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   if (!escaped) return null;
@@ -722,7 +714,7 @@ export const DrawerHeader = memo(function DrawerHeader({
   ]);
 
   const handleCopyTraceId = () => {
-    void navigator.clipboard.writeText(trace.traceId);
+    void copyTextToClipboard(trace.traceId);
   };
 
   const [rawOpen, setRawOpen] = useState(false);
@@ -888,11 +880,7 @@ export const DrawerHeader = memo(function DrawerHeader({
                         <Text textStyle="xs" color="fg.muted" minWidth="16px">
                           {stepsBack === 1 ? "←" : `${stepsBack}↑`}
                         </Text>
-                        <Text
-                          textStyle="xs"
-                          flex={1}
-                          truncate
-                        >
+                        <Text textStyle="xs" flex={1} truncate>
                           {entry.traceId.slice(0, 16)}
                           <Text
                             as="span"

@@ -1,7 +1,8 @@
+import { generateClientId } from "~/utils/generateClientId";
 export function createTabId() {
-  return `tab-${crypto.randomUUID()}`;
+  return `tab-${generateClientId()}`;
 }
 
 export function createWindowId() {
-  return `window-${crypto.randomUUID()}`;
+  return `window-${generateClientId()}`;
 }

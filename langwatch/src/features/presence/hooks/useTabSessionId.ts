@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { generateClientId } from "~/utils/generateClientId";
 
 /**
  * Stable per-tab sessionId. Persists for the lifetime of the window object,
@@ -16,9 +17,10 @@ export function useTabSessionId(): string {
     if (cached) {
       ref.current = cached;
     } else {
-      ref.current = crypto.randomUUID();
-      (window as { __lw_presence_session_id?: string }).__lw_presence_session_id =
-        ref.current;
+      ref.current = generateClientId();
+      (
+        window as { __lw_presence_session_id?: string }
+      ).__lw_presence_session_id = ref.current;
     }
   }
   return ref.current;

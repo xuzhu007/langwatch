@@ -9,10 +9,11 @@ import {
 } from "@chakra-ui/react";
 import type React from "react";
 import { LuCheckCheck, LuExternalLink } from "react-icons/lu";
+import { copyTextToClipboard } from "~/utils/clipboard";
+import { CopyableInputWithPrefix } from "../../features/onboarding/components/sections/observability/CopyableInputWithPrefix";
 import { useOrganizationTeamProject } from "../../hooks/useOrganizationTeamProject";
 import { usePublicEnv } from "../../hooks/usePublicEnv";
 import { trackEvent } from "../../utils/tracking";
-import { CopyableInputWithPrefix } from "../../features/onboarding/components/sections/observability/CopyableInputWithPrefix";
 import { useIntegrationChecks } from "../IntegrationChecks";
 import { Link } from "../ui/link";
 import { toaster } from "../ui/toaster";
@@ -34,7 +35,7 @@ const APICard: React.FC = () => {
   }): Promise<void> {
     trackEvent("api_key_copy", { project_id: project?.id });
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_API_KEY=${effectiveApiKey}`
           : effectiveApiKey,
@@ -62,7 +63,7 @@ const APICard: React.FC = () => {
   }): Promise<void> {
     trackEvent("endpoint_copy", { project_id: project?.id });
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_ENDPOINT=${effectiveEndpoint}`
           : effectiveEndpoint,

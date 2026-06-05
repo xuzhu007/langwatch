@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { generateClientId } from "~/utils/generateClientId";
 import type { RowKind } from "../components/TraceTable/registry";
 import {
   LENS_CAPABILITIES,
@@ -383,7 +384,7 @@ function generateId(): string {
     typeof crypto !== "undefined" &&
     typeof crypto.randomUUID === "function"
   ) {
-    return `custom-${crypto.randomUUID()}`;
+    return `custom-${generateClientId()}`;
   }
   return `custom-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -722,9 +723,7 @@ export const useViewStore = create<ViewState>((set, get) => ({
       // empty between mount and hydration.
       // If the active lens disappeared (deleted by another browser
       // tab / teammate), fall back to the first available.
-      const activeStillPresent = allLenses.some(
-        (l) => l.id === s.activeLensId,
-      );
+      const activeStillPresent = allLenses.some((l) => l.id === s.activeLensId);
       if (activeStillPresent) return { allLenses };
       const next = allLenses[0];
       if (!next) return { allLenses };

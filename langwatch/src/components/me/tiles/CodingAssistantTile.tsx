@@ -14,7 +14,7 @@ import { IngestionTemplateInstallDrawer } from "~/components/me/IngestionTemplat
 import { usePersonalIngestionBinding } from "~/components/me/usePersonalIngestionBinding";
 import { Dialog } from "~/components/ui/dialog";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { InstallCliCard } from "../InstallCliCard";
 import { TileIcon } from "./TileIcon";
 import type { CodingAssistantConfig } from "./types";
@@ -61,7 +61,7 @@ export function CodingAssistantTile({
   });
 
   const onCopy = () => {
-    void navigator.clipboard.writeText(config.setupCommand);
+    void copyTextToClipboard(config.setupCommand);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -152,9 +152,8 @@ export function CodingAssistantTile({
                 Already using Claude Code?
               </Text>
               <Text fontSize="xs" color="fg.muted" marginBottom={2}>
-                Send its usage to your personal workspace and see cost,
-                tokens, and model on every request, no change to how you call
-                the API.
+                Send its usage to your personal workspace and see cost, tokens,
+                and model on every request, no change to how you call the API.
               </Text>
               <Button size="xs" variant="outline" onClick={openIngest}>
                 Connect Claude Code

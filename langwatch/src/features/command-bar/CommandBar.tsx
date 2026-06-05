@@ -1,39 +1,40 @@
-import { useRouter } from "~/utils/compat/next-router";
-import { useTheme } from "next-themes";
-import { useSession } from "~/utils/auth-client";
 import { subDays } from "date-fns";
+import { useTheme } from "next-themes";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-import { useDrawer } from "~/hooks/useDrawer";
-import { usePublicEnv } from "~/hooks/usePublicEnv";
 import { Dialog } from "~/components/ui/dialog";
 import { toaster } from "~/components/ui/toaster";
+import { useDrawer } from "~/hooks/useDrawer";
+import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { useSession } from "~/utils/auth-client";
+import { copyTextToClipboard } from "~/utils/clipboard";
+import type { NextRouter } from "~/utils/compat/next-router";
+import { useRouter } from "~/utils/compat/next-router";
 import { useCommandBar } from "./CommandBarContext";
-import { useCommandSearch } from "./useCommandSearch";
-import { useRecentItems } from "./useRecentItems";
-import type { ListItem } from "./getIconInfo";
-import { COMMAND_BAR_TOP_MARGIN, COMMAND_BAR_MAX_WIDTH } from "./constants";
-import { HintsSection } from "./components/HintsSection";
+import { CommandBarFooter } from "./components/CommandBarFooter";
 import { CommandBarInput } from "./components/CommandBarInput";
 import { CommandBarResults } from "./components/CommandBarResults";
-import { CommandBarFooter } from "./components/CommandBarFooter";
+import { HintsSection } from "./components/HintsSection";
+import { COMMAND_BAR_MAX_WIDTH, COMMAND_BAR_TOP_MARGIN } from "./constants";
+import { findEasterEgg } from "./easterEggs";
+import { useEasterEggEffects } from "./effects/useEasterEggEffects";
+import type { ListItem } from "./getIconInfo";
 import {
-  useFilteredCommands,
-  useFilteredProjects,
+  useAutoFocusInput,
   useCommandBarItems,
   useCommandBarKeyboard,
+  useFilteredCommands,
+  useFilteredProjects,
   useScrollIntoView,
-  useAutoFocusInput,
 } from "./hooks";
 import {
   handleCommandSelect,
-  handleSearchResultSelect,
-  handleRecentItemSelect,
   handleProjectSelect,
+  handleRecentItemSelect,
+  handleSearchResultSelect,
 } from "./selectHandlers";
-import { findEasterEgg } from "./easterEggs";
-import { useEasterEggEffects } from "./effects/useEasterEggEffects";
-import type { NextRouter } from "~/utils/compat/next-router";
+import { useCommandSearch } from "./useCommandSearch";
+import { useRecentItems } from "./useRecentItems";
 
 /**
  * Handle page-specific commands for the traces page.
@@ -322,7 +323,7 @@ export function CommandBar() {
 
     if (path) {
       const url = `${window.location.origin}${path}`;
-      void navigator.clipboard.writeText(url);
+      void copyTextToClipboard(url);
     }
   }, [allItems, selectedIndex, project?.slug]);
 
@@ -343,7 +344,8 @@ export function CommandBar() {
       placement="top"
       motionPreset="slide-in-top"
     >
-      <Dialog.Content bg="bg"
+      <Dialog.Content
+        bg="bg"
         width={COMMAND_BAR_MAX_WIDTH}
         maxWidth="90vw"
         marginTop={COMMAND_BAR_TOP_MARGIN}

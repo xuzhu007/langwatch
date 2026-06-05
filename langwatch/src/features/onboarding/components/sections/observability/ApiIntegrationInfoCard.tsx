@@ -1,6 +1,7 @@
 import { Text, VStack } from "@chakra-ui/react";
 import type React from "react";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../../../../../components/ui/toaster";
 import { useActiveProject } from "../../../contexts/ActiveProjectContext";
 import { CLOUD_ENDPOINT } from "../shared/build-mcp-config";
@@ -19,7 +20,7 @@ export function ApiIntegrationInfoCard(): React.ReactElement {
     withBashPrefix?: boolean;
   }): Promise<void> {
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_API_KEY=${effectiveApiKey}`
           : effectiveApiKey,
@@ -46,7 +47,7 @@ export function ApiIntegrationInfoCard(): React.ReactElement {
     withBashPrefix?: boolean;
   }): Promise<void> {
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_ENDPOINT=${effectiveEndpoint}`
           : effectiveEndpoint,

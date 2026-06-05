@@ -1,6 +1,7 @@
 import { Badge, Box, HStack, IconButton, Spacer } from "@chakra-ui/react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../../../components/ui/toaster";
 
 /**
@@ -33,16 +34,7 @@ export function CodeBlock({
   const shown = revealed && revealedDisplay ? revealedDisplay : display;
 
   const handleCopy = () => {
-    if (!navigator.clipboard) {
-      toaster.create({
-        title: "Clipboard not available. Copy manually.",
-        type: "error",
-        duration: 3000,
-        meta: { closable: true },
-      });
-      return;
-    }
-    void navigator.clipboard.writeText(copyValue).then(() => {
+    void copyTextToClipboard(copyValue).then(() => {
       toaster.create({
         title: copyToastTitle ?? "Copied to clipboard",
         type: "success",

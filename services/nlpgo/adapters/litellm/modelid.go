@@ -29,7 +29,6 @@ var modelAliases = map[string]string{
 // `gpt-3.5-turbo` would break that model name.
 var providersNeedingDotToDash = map[string]bool{
 	"anthropic": true,
-	"custom":    true,
 }
 
 // reasoningModelPattern catches the reasoning-class models that pin
@@ -72,10 +71,13 @@ func TranslateModelID(modelID string) string {
 		return expanded
 	}
 	provider, _ := SplitProviderModel(modelID)
-	// An empty-provider id (e.g. bare "claude-3.5-sonnet") gets treated as
-	// possibly anthropic. The TS source applies dot→dash in that case for
-	// safety; mirror it.
-	if provider != "" && !providersNeedingDotToDash[provider] {
+	if provider == "" {
+		if !strings.HasPrefix(strings.ToLower(modelID), "claude-") {
+			return modelID
+		}
+		return strings.ReplaceAll(modelID, ".", "-")
+	}
+	if !providersNeedingDotToDash[provider] {
 		return modelID
 	}
 	return strings.ReplaceAll(modelID, ".", "-")

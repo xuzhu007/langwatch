@@ -20,7 +20,7 @@ import { useState } from "react";
 
 import { Link } from "~/components/ui/link";
 import { api } from "~/utils/api";
-
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { TileIcon } from "./TileIcon";
 import type { ModelProviderConfig } from "./types";
 
@@ -141,7 +141,7 @@ export function ModelProviderTile({
 
   const onCopySecret = () => {
     if (!issued) return;
-    void navigator.clipboard.writeText(issued.secret);
+    void copyTextToClipboard(issued.secret);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -161,11 +161,7 @@ export function ModelProviderTile({
       padding={4}
       width="full"
     >
-      <HStack
-        cursor="pointer"
-        onClick={() => setExpanded(!expanded)}
-        gap={3}
-      >
+      <HStack cursor="pointer" onClick={() => setExpanded(!expanded)} gap={3}>
         <TileIcon
           iconAsset={iconAsset}
           iconKey={iconKey ?? config.providerKey}
@@ -198,8 +194,8 @@ export function ModelProviderTile({
         >
           <Text fontSize="sm" color="orange.900" marginBottom={2}>
             Your organization doesn&apos;t have {articleFor(displayName)}{" "}
-            {displayName} credential configured yet, so issuing a key here
-            would mint a VK that fails on first call with{" "}
+            {displayName} credential configured yet, so issuing a key here would
+            mint a VK that fails on first call with{" "}
             <Code fontSize="xs" backgroundColor="transparent">
               provider_error
             </Code>

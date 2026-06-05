@@ -1,6 +1,7 @@
 import { Input } from "@chakra-ui/react";
 import { useState } from "react";
 import { FiCopy, FiEye, FiEyeOff } from "react-icons/fi";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../components/ui/toaster";
 import { InputGroup, type InputGroupProps } from "./ui/input-group";
 
@@ -31,20 +32,8 @@ export function CopyInput(
           props.onClick();
         }
 
-        if (!navigator.clipboard) {
-          toaster.create({
-            title: `Your browser does not support clipboard access, please copy the ${props.label} manually`,
-            type: "error",
-            duration: 2000,
-            meta: {
-              closable: true,
-            },
-          });
-          return;
-        }
-
         void (async () => {
-          await navigator.clipboard.writeText(props.value);
+          await copyTextToClipboard(props.value);
           toaster.create({
             title: `${props.label} copied to your clipboard`,
             type: "success",

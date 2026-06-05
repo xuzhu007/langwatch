@@ -1,6 +1,7 @@
 import { Box, IconButton } from "@chakra-ui/react";
 import { CopyIcon } from "lucide-react";
 import { Highlight, Prism, type PrismTheme } from "prism-react-renderer";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../ui/toaster";
 import { monokaiTheme } from "./monokaiTheme";
 
@@ -29,8 +30,7 @@ export const RenderCode = ({
   theme?: PrismTheme;
 }) => {
   const handleCopy = () => {
-    navigator.clipboard
-      .writeText(code)
+    copyTextToClipboard(code)
       .then(() => {
         toaster.success({
           title: "Code copied",

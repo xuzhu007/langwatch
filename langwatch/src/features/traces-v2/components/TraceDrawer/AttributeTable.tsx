@@ -3,6 +3,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { LuCheck, LuCopy, LuPin, LuPinOff } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { usePinnedAttributes } from "../../hooks/usePinnedAttributes";
 import type { PinnedAttributeSource } from "../../stores/pinnedAttributesStore";
 import { AttributeValue } from "./AttributeValue";
@@ -19,7 +20,10 @@ const LABEL_WIDTH_DEFAULT = 200;
 
 function clampLabelWidth(value: number): number {
   if (!Number.isFinite(value)) return LABEL_WIDTH_DEFAULT;
-  return Math.min(LABEL_WIDTH_MAX, Math.max(LABEL_WIDTH_MIN, Math.round(value)));
+  return Math.min(
+    LABEL_WIDTH_MAX,
+    Math.max(LABEL_WIDTH_MIN, Math.round(value)),
+  );
 }
 
 /**
@@ -277,7 +281,7 @@ function PinToggle({
 function CopyAllButton({ payload }: { payload: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = () => {
-    void navigator.clipboard.writeText(payload);
+    void copyTextToClipboard(payload);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   };
@@ -377,7 +381,7 @@ function FlatRow({
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => void navigator.clipboard.writeText(display)}
+        onClick={() => void copyTextToClipboard(display)}
         aria-label={`Copy ${attrKey}`}
         padding={0}
         minWidth="auto"
@@ -449,7 +453,7 @@ function AttrSection({
           borderRadius="md"
           borderWidth="1px"
           borderColor="border"
-            overflow="hidden"
+          overflow="hidden"
           bg="bg.panel"
         >
           {sortedEntries.map(([key, val], i) => (

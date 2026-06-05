@@ -7,25 +7,29 @@ import {
   Spacer,
   Table,
   Text,
-  VStack,
   useDisclosure,
+  VStack,
 } from "@chakra-ui/react";
-import { Tooltip } from "../../../components/ui/tooltip";
 import { Clipboard, Key, Pencil, Plus, Trash2 } from "lucide-react";
-import { PageLayout } from "../../../components/ui/layouts/PageLayout";
 import { useMemo, useState } from "react";
-import { toaster } from "../../../components/ui/toaster";
-import { usePublicEnv } from "../../../hooks/usePublicEnv";
-import { useOrganizationTeamProject } from "../../../hooks/useOrganizationTeamProject";
-import { useSession } from "~/utils/auth-client";
-import { api, type RouterOutputs } from "../../../utils/api";
-import { formatTimeAgo } from "../../../utils/formatTimeAgo";
-import { ProviderScopeChips } from "../../../components/settings/ProviderScopeChips";
 import { ScopeFilter as ScopeFilterComponent } from "~/components/settings/ScopeFilter";
 import { useAvailableScopes } from "~/hooks/useAvailableScopes";
 import { useUrlScopeFilter } from "~/hooks/useUrlScopeFilter";
+import { useSession } from "~/utils/auth-client";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { filterProvidersByScope } from "~/utils/filterProvidersByScope";
-import { CreateApiKeyDrawer, type CreateApiKeyInput } from "./CreateApiKeyDrawer";
+import { ProviderScopeChips } from "../../../components/settings/ProviderScopeChips";
+import { PageLayout } from "../../../components/ui/layouts/PageLayout";
+import { toaster } from "../../../components/ui/toaster";
+import { Tooltip } from "../../../components/ui/tooltip";
+import { useOrganizationTeamProject } from "../../../hooks/useOrganizationTeamProject";
+import { usePublicEnv } from "../../../hooks/usePublicEnv";
+import { api, type RouterOutputs } from "../../../utils/api";
+import { formatTimeAgo } from "../../../utils/formatTimeAgo";
+import {
+  CreateApiKeyDrawer,
+  type CreateApiKeyInput,
+} from "./CreateApiKeyDrawer";
 import { EditApiKeyDrawer } from "./EditApiKeyDrawer";
 import { RevokeConfirmDialog } from "./RevokeConfirmDialog";
 import { TokenCreatedDialog } from "./TokenCreatedDialog";
@@ -39,7 +43,7 @@ function ProjectKeyActions({ apiKey }: { apiKey: string }) {
       variant="ghost"
       aria-label="Copy secret key"
       onClick={() => {
-        void navigator.clipboard.writeText(apiKey);
+        void copyTextToClipboard(apiKey);
         toaster.create({
           title: "API key copied to clipboard",
           type: "success",
@@ -96,7 +100,9 @@ export function ApiKeysSection({
   } = useDisclosure();
 
   const [newToken, setNewToken] = useState<string | null>(null);
-  const [newKeyInput, setNewKeyInput] = useState<CreateApiKeyInput | null>(null);
+  const [newKeyInput, setNewKeyInput] = useState<CreateApiKeyInput | null>(
+    null,
+  );
   const [apiKeyToRevoke, setApiKeyToRevoke] = useState<string | null>(null);
   const [apiKeyToEdit, setApiKeyToEdit] = useState<ApiKeyRow | null>(null);
 
@@ -140,15 +146,18 @@ export function ApiKeysSection({
     if (input.permissionMode === "restricted" && input.bindings.length === 0) {
       toaster.create({
         title: "No scopes selected",
-        description:
-          "Select at least one scope for a restricted key.",
+        description: "Select at least one scope for a restricted key.",
         type: "error",
         duration: 5000,
         meta: { closable: true },
       });
       return;
     }
-    if (input.keyType === "personal" && input.permissionMode !== "restricted" && input.bindings.length === 0) {
+    if (
+      input.keyType === "personal" &&
+      input.permissionMode !== "restricted" &&
+      input.bindings.length === 0
+    ) {
       toaster.create({
         title: "No permissions to grant",
         description:
@@ -172,7 +181,9 @@ export function ApiKeysSection({
         keyType: input.keyType,
         assignedToUserId: input.assignedToUserId,
         permissions: input.permissions,
-        bindings: input.bindings as Parameters<typeof createMutation.mutate>[0]["bindings"],
+        bindings: input.bindings as Parameters<
+          typeof createMutation.mutate
+        >[0]["bindings"],
       },
       {
         onSuccess: (result) => {
@@ -213,7 +224,9 @@ export function ApiKeysSection({
         description: input.description,
         permissionMode: input.permissionMode,
         permissions: input.permissions,
-        bindings: input.bindings as Parameters<typeof updateMutation.mutate>[0]["bindings"],
+        bindings: input.bindings as Parameters<
+          typeof updateMutation.mutate
+        >[0]["bindings"],
       },
       {
         onSuccess: () => {
@@ -281,11 +294,13 @@ export function ApiKeysSection({
     const fakeRow = {
       scopes: [{ scopeType: "PROJECT" as const, scopeId: project.id }],
     };
-    return filterProvidersByScope([fakeRow], scopeFilter, {
-      hierarchy,
-      currentTeamId: team?.id,
-      currentProjectId: project?.id,
-    }).length > 0;
+    return (
+      filterProvidersByScope([fakeRow], scopeFilter, {
+        hierarchy,
+        currentTeamId: team?.id,
+        currentProjectId: project?.id,
+      }).length > 0
+    );
   }, [projectApiKey, project?.id, scopeFilter, hierarchy, team?.id]);
 
   const getStatus = (key: ApiKeyRow) => {
@@ -295,9 +310,17 @@ export function ApiKeysSection({
 
   const getPermissionBadge = (apiKeyRow: ApiKeyRow) => {
     if (apiKeyRow.permissionMode === "all") {
-      return <Badge size="sm" colorPalette="green">All</Badge>;
+      return (
+        <Badge size="sm" colorPalette="green">
+          All
+        </Badge>
+      );
     }
-    return <Badge size="sm" colorPalette="orange">Restricted</Badge>;
+    return (
+      <Badge size="sm" colorPalette="orange">
+        Restricted
+      </Badge>
+    );
   };
 
   const getScopeBadge = (apiKeyRow: ApiKeyRow) => {
@@ -364,27 +387,43 @@ export function ApiKeysSection({
                       </HStack>
                     </Table.Cell>
                     <Table.Cell>
-                      <Badge size="sm" colorPalette="green">Active</Badge>
+                      <Badge size="sm" colorPalette="green">
+                        Active
+                      </Badge>
                     </Table.Cell>
                     <Table.Cell>
-                      <Text fontSize="xs" fontFamily="monospace" color="fg.muted">
+                      <Text
+                        fontSize="xs"
+                        fontFamily="monospace"
+                        color="fg.muted"
+                      >
                         sk-…{projectApiKey.slice(-4)}
                       </Text>
                     </Table.Cell>
                     <Table.Cell>
-                      <Text fontSize="sm" color="fg.muted">—</Text>
+                      <Text fontSize="sm" color="fg.muted">
+                        —
+                      </Text>
                     </Table.Cell>
                     <Table.Cell>
-                      <Text fontSize="sm" color="fg.muted">—</Text>
+                      <Text fontSize="sm" color="fg.muted">
+                        —
+                      </Text>
                     </Table.Cell>
                     <Table.Cell>
-                      <Badge size="sm" colorPalette="purple">Service</Badge>
+                      <Badge size="sm" colorPalette="purple">
+                        Service
+                      </Badge>
                     </Table.Cell>
                     <Table.Cell>
-                      <Badge size="sm" colorPalette="teal">Project</Badge>
+                      <Badge size="sm" colorPalette="teal">
+                        Project
+                      </Badge>
                     </Table.Cell>
                     <Table.Cell>
-                      <Badge size="sm" colorPalette="green">All</Badge>
+                      <Badge size="sm" colorPalette="green">
+                        All
+                      </Badge>
                     </Table.Cell>
                     <Table.Cell>
                       <ProjectKeyActions apiKey={projectApiKey} />
@@ -412,13 +451,21 @@ export function ApiKeysSection({
                     </Table.Cell>
                     <Table.Cell>
                       {getStatus(apiKey) === "Expired" ? (
-                        <Badge size="sm" colorPalette="red">Expired</Badge>
+                        <Badge size="sm" colorPalette="red">
+                          Expired
+                        </Badge>
                       ) : (
-                        <Badge size="sm" colorPalette="green">Active</Badge>
+                        <Badge size="sm" colorPalette="green">
+                          Active
+                        </Badge>
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <Text fontSize="xs" fontFamily="monospace" color="fg.muted">
+                      <Text
+                        fontSize="xs"
+                        fontFamily="monospace"
+                        color="fg.muted"
+                      >
                         sk-lw-{apiKey.lookupIdPrefix}…
                       </Text>
                     </Table.Cell>
@@ -431,17 +478,23 @@ export function ApiKeysSection({
                     </Table.Cell>
                     <Table.Cell>
                       {apiKey.lastUsedAt ? (
-                        <Tooltip content={new Date(apiKey.lastUsedAt).toISOString()}>
+                        <Tooltip
+                          content={new Date(apiKey.lastUsedAt).toISOString()}
+                        >
                           <Text
                             cursor="help"
                             tabIndex={0}
                             aria-label={`Last used at ${new Date(apiKey.lastUsedAt).toISOString()}`}
                           >
-                            {formatTimeAgo(new Date(apiKey.lastUsedAt).getTime())}
+                            {formatTimeAgo(
+                              new Date(apiKey.lastUsedAt).getTime(),
+                            )}
                           </Text>
                         </Tooltip>
                       ) : (
-                        <Text fontSize="sm" color="fg.muted">Never</Text>
+                        <Text fontSize="sm" color="fg.muted">
+                          Never
+                        </Text>
                       )}
                     </Table.Cell>
                     <Table.Cell>
@@ -450,15 +503,13 @@ export function ApiKeysSection({
                           {apiKey.userEmail ?? apiKey.userName ?? "—"}
                         </Badge>
                       ) : (
-                        <Badge size="sm" colorPalette="purple">Service</Badge>
+                        <Badge size="sm" colorPalette="purple">
+                          Service
+                        </Badge>
                       )}
                     </Table.Cell>
-                    <Table.Cell>
-                      {getScopeBadge(apiKey)}
-                    </Table.Cell>
-                    <Table.Cell>
-                      {getPermissionBadge(apiKey)}
-                    </Table.Cell>
+                    <Table.Cell>{getScopeBadge(apiKey)}</Table.Cell>
+                    <Table.Cell>{getPermissionBadge(apiKey)}</Table.Cell>
                     <Table.Cell>
                       {/* Owner or admin can edit/revoke; service keys (no userId) require admin */}
                       {(isAdmin || apiKey.userId === currentUserId) && (
@@ -486,25 +537,29 @@ export function ApiKeysSection({
                   </Table.Row>
                 ))}
 
-                {filteredKeys.length === 0 && !showProjectKey && scopeFilter.kind === "all" && (
-                  <Table.Row>
-                    <Table.Cell colSpan={9}>
-                      <Text color="fg.muted" textAlign="center" paddingY={4}>
-                        No API keys. Create one to get started.
-                      </Text>
-                    </Table.Cell>
-                  </Table.Row>
-                )}
-                {filteredKeys.length === 0 && !showProjectKey && scopeFilter.kind !== "all" && (
-                  <Table.Row>
-                    <Table.Cell colSpan={9}>
-                      <Text color="fg.muted" textAlign="center" paddingY={4}>
-                        No keys match the current scope. Change the filter above to
-                        see other keys.
-                      </Text>
-                    </Table.Cell>
-                  </Table.Row>
-                )}
+                {filteredKeys.length === 0 &&
+                  !showProjectKey &&
+                  scopeFilter.kind === "all" && (
+                    <Table.Row>
+                      <Table.Cell colSpan={9}>
+                        <Text color="fg.muted" textAlign="center" paddingY={4}>
+                          No API keys. Create one to get started.
+                        </Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                {filteredKeys.length === 0 &&
+                  !showProjectKey &&
+                  scopeFilter.kind !== "all" && (
+                    <Table.Row>
+                      <Table.Cell colSpan={9}>
+                        <Text color="fg.muted" textAlign="center" paddingY={4}>
+                          No keys match the current scope. Change the filter
+                          above to see other keys.
+                        </Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
               </Table.Body>
             </Table.Root>
           </Card.Body>

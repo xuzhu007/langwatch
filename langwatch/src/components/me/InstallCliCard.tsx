@@ -13,6 +13,7 @@ import { useState } from "react";
 
 import { Link } from "~/components/ui/link";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { docsUrl } from "~/utils/docsUrl";
 
 /**
@@ -116,20 +117,12 @@ export function InstallCliCard({
 
         <HStack gap={2}>
           <Button size="xs" variant="outline" asChild>
-            <Link
-              href={docsUrl("/integration/install")}
-              isExternal
-              gap={1}
-            >
+            <Link href={docsUrl("/integration/install")} isExternal gap={1}>
               Install guide <ExternalLink size={12} />
             </Link>
           </Button>
           <Button size="xs" variant="ghost" asChild>
-            <Link
-              href={docsUrl("/integration/cli")}
-              isExternal
-              gap={1}
-            >
+            <Link href={docsUrl("/integration/cli")} isExternal gap={1}>
               CLI reference <ExternalLink size={12} />
             </Link>
           </Button>
@@ -150,7 +143,7 @@ function CommandRow({
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
-    void navigator.clipboard.writeText(command);
+    void copyTextToClipboard(command);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

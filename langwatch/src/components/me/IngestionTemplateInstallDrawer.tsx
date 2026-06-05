@@ -21,6 +21,7 @@ import {
   DrawerTitle,
 } from "~/components/ui/drawer";
 import { toaster } from "~/components/ui/toaster";
+import { copyTextToClipboard } from "~/utils/clipboard";
 
 const SECRET_MASK = "•".repeat(48);
 
@@ -136,13 +137,11 @@ export function IngestionTemplateInstallDrawer({
   const [showSecret, setShowSecret] = useState(false);
 
   const copy = (value: string, label: string) => {
-    void navigator.clipboard.writeText(value);
+    void copyTextToClipboard(value);
     toaster.create({ title: `${label} copied to clipboard`, type: "success" });
   };
 
-  const renderedToken = showSecret
-    ? installResult?.token ?? ""
-    : SECRET_MASK;
+  const renderedToken = showSecret ? (installResult?.token ?? "") : SECRET_MASK;
   const copyToken = installResult?.token ?? "";
 
   // Claude Code only emits OTLP when CLAUDE_CODE_ENABLE_TELEMETRY=1 plus
@@ -172,9 +171,7 @@ export function IngestionTemplateInstallDrawer({
     >
       <DrawerContent>
         <DrawerHeader>
-          <DrawerTitle>
-            Connect {template.displayName}, auto-shaped
-          </DrawerTitle>
+          <DrawerTitle>Connect {template.displayName}, auto-shaped</DrawerTitle>
           <DrawerCloseTrigger />
         </DrawerHeader>
         <DrawerBody>
@@ -192,8 +189,10 @@ export function IngestionTemplateInstallDrawer({
               </Alert.Root>
             )}
 
-            {!installResult && !isInstalling && template.credentialSchema === null && (
-              hasExistingBinding ? (
+            {!installResult &&
+              !isInstalling &&
+              template.credentialSchema === null &&
+              (hasExistingBinding ? (
                 <VStack align="stretch" gap={2}>
                   <Alert.Root status="warning" variant="surface">
                     <Alert.Indicator />
@@ -212,12 +211,13 @@ export function IngestionTemplateInstallDrawer({
                 <Button onClick={onInstall} colorPalette="orange">
                   Use this template
                 </Button>
-              )
-            )}
+              ))}
 
             {isInstalling && (
               <Text fontSize="sm" color="fg.muted">
-                {hasExistingBinding ? "Rotating token…" : "Installing template…"}
+                {hasExistingBinding
+                  ? "Rotating token…"
+                  : "Installing template…"}
               </Text>
             )}
 
@@ -229,8 +229,8 @@ export function IngestionTemplateInstallDrawer({
                   </Alert.Indicator>
                   <Alert.Content>
                     <Text fontSize="sm" fontWeight="medium">
-                      Binding issued. Copy the token now, it won't be
-                      shown again.
+                      Binding issued. Copy the token now, it won't be shown
+                      again.
                     </Text>
                   </Alert.Content>
                 </Alert.Root>
@@ -242,9 +242,7 @@ export function IngestionTemplateInstallDrawer({
                 />
                 <Field
                   label="Token"
-                  value={
-                    showSecret ? installResult.token : SECRET_MASK
-                  }
+                  value={showSecret ? installResult.token : SECRET_MASK}
                   onCopy={() => copy(installResult.token, "Token")}
                   trailing={
                     <Button
@@ -266,11 +264,7 @@ export function IngestionTemplateInstallDrawer({
                   backgroundColor="bg.subtle"
                 >
                   <HStack alignItems="start" marginBottom={2}>
-                    <Text
-                      fontSize="xs"
-                      color="fg.muted"
-                      fontWeight="semibold"
-                    >
+                    <Text fontSize="xs" color="fg.muted" fontWeight="semibold">
                       .env (bash)
                     </Text>
                     <Spacer />
@@ -303,8 +297,8 @@ export function IngestionTemplateInstallDrawer({
 
                 <Text fontSize="xs" color="fg.muted">
                   To keep this across new terminals, add these lines to your{" "}
-                  <code>~/.zshrc</code> (or <code>~/.bashrc</code>), then open
-                  a new shell.
+                  <code>~/.zshrc</code> (or <code>~/.bashrc</code>), then open a
+                  new shell.
                 </Text>
 
                 <HStack>

@@ -1,12 +1,8 @@
 import { Box, HStack, Icon, Text, VStack } from "@chakra-ui/react";
 import { useCallback, useState } from "react";
-import {
-  LuArrowUpRight,
-  LuFilter,
-  LuPin,
-  LuSparkles,
-} from "react-icons/lu";
+import { LuArrowUpRight, LuFilter, LuPin, LuSparkles } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
 import { Chip } from "../Chip";
 import { TooltipRow } from "./TooltipRow";
@@ -58,7 +54,7 @@ export function PinnedMetricPill({
 
   const handleCopy = useCallback(() => {
     if (value == null) return;
-    void navigator.clipboard.writeText(value);
+    void copyTextToClipboard(value);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }, [value]);

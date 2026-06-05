@@ -1,8 +1,9 @@
 import { Box, Button, type ButtonProps, HStack, Text } from "@chakra-ui/react";
 import type { ReactJsonViewProps } from "@microlink/react-json-view";
-import dynamic from "~/utils/compat/next-dynamic";
 import React, { useState } from "react";
 import type { SpanInputOutput } from "~/server/tracer/types";
+import { copyTextToClipboard } from "~/utils/clipboard";
+import dynamic from "~/utils/compat/next-dynamic";
 import {
   isPythonRepr,
   parsePythonInsideJson,
@@ -59,7 +60,7 @@ export const RenderInputOutput = React.memo(function RenderInputOutput(
             onClick={() => {
               void (async () => {
                 try {
-                  await navigator.clipboard.writeText(
+                  await copyTextToClipboard(
                     json
                       ? JSON.stringify(json, null, 2)
                       : value
