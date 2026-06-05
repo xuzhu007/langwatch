@@ -54,23 +54,6 @@ function truncateJsonForCsv(value: unknown): string {
   return `${s.slice(0, CSV_JSON_CAP)}…[truncated ${s.length - CSV_JSON_CAP} chars]`;
 }
 
-// CSV-cell cap for JSON columns (args / before / after). 4 KB is enough
-// to capture typical gateway-shape diffs while staying well under the
-// per-cell limits of common spreadsheet tools (Excel: 32K chars).
-// `slice` counts UTF-16 code units, so the byte size can be up to ~16 KB
-// for fully non-ASCII payloads — acceptable upper bound.
-const CSV_JSON_CAP = 4096;
-
-// Stringify + cap a JSON-shaped value for inclusion in a CSV cell.
-// When the JSON exceeds the cap, append an explicit truncation marker so
-// downstream consumers can tell the cell was clipped vs. just empty.
-function truncateJsonForCsv(value: unknown): string {
-  if (value == null) return "";
-  const s = JSON.stringify(value);
-  if (s.length <= CSV_JSON_CAP) return s;
-  return `${s.slice(0, CSV_JSON_CAP)}…[truncated ${s.length - CSV_JSON_CAP} chars]`;
-}
-
 function AuditLogPage() {
   const { organization, project, organizations } = useOrganizationTeamProject();
   const { isEnterprise, isLoading: isPlanLoading } = useActivePlan();
