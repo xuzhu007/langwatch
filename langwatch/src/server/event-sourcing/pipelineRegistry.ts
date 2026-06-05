@@ -8,6 +8,8 @@ import type { EvaluationCostRecorder } from "../app-layer/evaluations/evaluation
 import type { OrganizationService } from "../app-layer/organizations/organization.service";
 
 import type { TraceSummaryData } from "../app-layer/traces/types";
+import type { RetentionPolicyResolver } from "../data-retention/retentionPolicyResolver";
+import { getClickHouseClientForProject } from "../clickhouse/clickhouseClient";
 import type { BroadcastService } from "../app-layer/broadcast/broadcast.service";
 import type { FoldProjectionStore } from "./projections/foldProjection.types";
 import type { EvaluationExecutionService } from "../app-layer/evaluations/evaluation-execution.service";
@@ -19,6 +21,8 @@ import type { LogRecordStorageRepository } from "../app-layer/traces/repositorie
 import type { MetricRecordStorageRepository } from "../app-layer/traces/repositories/metric-record-storage.repository";
 import type { TraceSummaryRepository } from "../app-layer/traces/repositories/trace-summary.repository";
 import type { SpanStorageService } from "../app-layer/traces/span-storage.service";
+import { TraceReadDerivationService } from "../app-layer/traces/trace-read-derivation.service";
+import type { DerivedTraceEvent } from "./pipelines/trace-processing/projections/services/trace-events.derivation";
 import type { TraceSummaryService } from "../app-layer/traces/trace-summary.service";
 
 import { createEvaluationProcessingPipeline } from "./pipelines/evaluation-processing/pipeline";
@@ -52,10 +56,18 @@ import { createExperimentMetricsSyncReactor } from "./pipelines/trace-processing
 import {
   createGatewayBudgetSyncReactor,
   type GatewayBudgetSyncReactorDeps,
-} from "./pipelines/trace-processing/reactors/gatewayBudgetSync.reactor";
+} from "@ee/governance/reactors/gatewayBudgetSync.reactor";
+import {
+  createGovernanceKpisSyncReactor,
+  type GovernanceKpisSyncReactorDeps,
+} from "@ee/governance/reactors/governanceKpisSync.reactor";
+import {
+  createGovernanceOcsfEventsSyncReactor,
+  type GovernanceOcsfEventsSyncReactorDeps,
+} from "@ee/governance/reactors/governanceOcsfEventsSync.reactor";
 import type { ComputeExperimentRunMetricsCommandData } from "./pipelines/experiment-run-processing/schemas/commands";
 
-import { createElasticsearchBatchEvaluationRepository } from "../evaluations-v3/repositories/elasticsearchBatchEvaluation.repository";
+import { createElasticsearchBatchEvaluationRepository } from "../experiments-v3/repositories/elasticsearchBatchEvaluation.repository";
 import { Deferred, type CommandDispatcher } from "./deferred";
 import type { EventSourcing } from "./eventSourcing";
 import { mapCommands } from "./mapCommands";
@@ -84,7 +96,7 @@ import { createOrUpdateQueueItems } from "~/server/api/routers/annotation";
 import { createManyDatasetRecords } from "~/server/api/routers/datasetRecord.utils";
 import { getProtectionsForProject } from "~/server/api/utils";
 import { TraceService } from "~/server/traces/trace.service";
-import { createAlertTriggerReactor } from "./pipelines/trace-processing/reactors/alertTrigger.reactor";
+import { createAlertTriggerReactor } from "@ee/governance/reactors/alertTrigger.reactor";
 import { createEvaluationTriggerReactor } from "./pipelines/trace-processing/reactors/evaluationTrigger.reactor";
 import {
   createOriginGateReactor,
@@ -180,6 +192,9 @@ export interface PipelineRegistryDeps {
   billingCheckpoints: BillingCheckpointService;
   usageReportingService?: UsageReportingService;
   gatewayBudgetSync?: GatewayBudgetSyncReactorDeps;
+  governanceKpisSync?: GovernanceKpisSyncReactorDeps;
+  governanceOcsfEventsSync?: GovernanceOcsfEventsSyncReactorDeps;
+  retentionPolicyResolver?: RetentionPolicyResolver;
 }
 
 /**
@@ -210,7 +225,17 @@ export class PipelineRegistry {
   private buildTraceReactorContext(): Pick<
     TriggerActionDispatchDeps,
     "traceById" | "addToAnnotationQueue" | "addToDataset"
-  > {
+  > & {
+    deriveEvents: (params: {
+      tenantId: string;
+      traceId: string;
+      occurredAtMs?: number;
+      foldVersion?: number;
+    }) => Promise<DerivedTraceEvent[]>;
+  } {
+    const traceReadDerivation = new TraceReadDerivationService(
+      this.deps.traces.spans,
+    );
     return {
       traceById: async (projectId, traceId) => {
         const traceService = TraceService.create(this.deps.prisma);
@@ -225,6 +250,7 @@ export class PipelineRegistry {
       addToDataset: async (params) => {
         await createManyDatasetRecords(params);
       },
+      deriveEvents: (params) => traceReadDerivation.deriveEvents(params),
     };
   }
 
@@ -371,6 +397,14 @@ export class PipelineRegistry {
       ? createGatewayBudgetSyncReactor(this.deps.gatewayBudgetSync)
       : undefined;
 
+    const governanceKpisSyncReactor = this.deps.governanceKpisSync
+      ? createGovernanceKpisSyncReactor(this.deps.governanceKpisSync)
+      : undefined;
+
+    const governanceOcsfEventsSyncReactor = this.deps.governanceOcsfEventsSync
+      ? createGovernanceOcsfEventsSyncReactor(this.deps.governanceOcsfEventsSync)
+      : undefined;
+
     const tracePipeline = this.deps.eventSourcing.register(
       createTraceProcessingPipeline({
         spanAppendStore: new SpanAppendStore(this.deps.traces.spans.repository),
@@ -387,6 +421,8 @@ export class PipelineRegistry {
         experimentMetricsSyncReactor,
         spanStorageBroadcastReactor,
         gatewayBudgetSyncReactor,
+        governanceKpisSyncReactor,
+        governanceOcsfEventsSyncReactor,
       }),
     );
 
@@ -498,9 +534,14 @@ export class PipelineRegistry {
     const selfComputeRunMetrics = new Deferred<CommandDispatcher<ComputeRunMetricsCommandData>>("selfComputeRunMetrics");
     const scheduleRetry = new Deferred<(payload: ComputeRunMetricsCommandData) => Promise<void>>("scheduleRetry");
 
+    const traceReadDerivation = new TraceReadDerivationService(
+      this.deps.traces.spans,
+    );
     const computeRunMetricsCommand = new ComputeRunMetricsCommand({
       traceSummaryStore,
       scheduleRetry: scheduleRetry.fn,
+      deriveScenarioRoleMetrics: (params) =>
+        traceReadDerivation.deriveScenarioRoleMetrics(params),
     });
 
     const traceMetricsSyncReactor = createTraceMetricsSyncReactor({
@@ -612,7 +653,6 @@ export class PipelineRegistry {
     // Create the experimentId lookup function using the experiment run ClickHouse repository
     const lookupExperimentId = async (tenantId: string, runId: string): Promise<string | null> => {
       try {
-        const { getClickHouseClientForProject } = await import("../clickhouse/clickhouseClient");
         const client = await getClickHouseClientForProject(tenantId);
         if (!client) return null;
 
@@ -707,6 +747,57 @@ export function getReactorMetadata(): ReactorMetadata[] {
       afterProjection: projectionName,
     }));
   });
+}
+
+/**
+ * One descriptor per ES kill-switch key that the registered pipelines
+ * will generate at runtime. Used by the Ops Feature Flags page to list
+ * every togglable kill switch, even ones that have no postgres row yet.
+ *
+ * Names follow `es-<aggregate>-<componentType>-<componentName>-killswitch`
+ * (see src/server/event-sourcing/utils/killSwitch.ts).
+ */
+export interface KillSwitchDescriptor {
+  key: string;
+  aggregateType: string;
+  componentType: "projection" | "mapProjection" | "command";
+  componentName: string;
+  pipelineName: string;
+}
+
+export function getKillSwitchDescriptors(): KillSwitchDescriptor[] {
+  const out: KillSwitchDescriptor[] = [];
+  for (const def of getDefinitions()) {
+    const { name: pipelineName, aggregateType } = def.metadata;
+    for (const { definition } of def.foldProjections.values()) {
+      out.push({
+        key: `es-${aggregateType}-projection-${definition.name}-killswitch`,
+        aggregateType,
+        componentType: "projection",
+        componentName: definition.name,
+        pipelineName,
+      });
+    }
+    for (const { definition } of def.mapProjections.values()) {
+      out.push({
+        key: `es-${aggregateType}-mapProjection-${definition.name}-killswitch`,
+        aggregateType,
+        componentType: "mapProjection",
+        componentName: definition.name,
+        pipelineName,
+      });
+    }
+    for (const cmd of def.commands) {
+      out.push({
+        key: `es-${aggregateType}-command-${cmd.name}-killswitch`,
+        aggregateType,
+        componentType: "command",
+        componentName: cmd.name,
+        pipelineName,
+      });
+    }
+  }
+  return out;
 }
 
 export function getDejaViewProjections(): DejaViewProjection[] {

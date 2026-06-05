@@ -3,6 +3,12 @@ Feature: Model Provider Configuration
   I want to set up API keys, models, and provider-specific settings
   So that I can use the provider for LangWatch operations
 
+  # Most remaining @unimplemented scenarios describe the provider drawer UI
+  # (toggles, Custom Models section, extra-headers). Need a JSDOM render of
+  # `ModelProviderForm` + the Custom Models / Extra Headers subforms. The
+  # masking/preservation pieces are bound to `modelProvider.service.unit.test.ts`
+  # (mergeCustomKeys / maskApiKeys). Aspirational pending the form harness.
+
   Background:
     Given I am logged in
     And I have access to a project

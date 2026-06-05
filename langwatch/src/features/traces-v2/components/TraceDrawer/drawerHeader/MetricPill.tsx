@@ -1,14 +1,8 @@
 import { Box, HStack, Icon, Text, VStack } from "@chakra-ui/react";
 import { useCallback, useState } from "react";
-import {
-  LuArrowUpRight,
-  LuCheck,
-  LuCopy,
-  LuFilter,
-  LuPin,
-  LuSparkles,
-} from "react-icons/lu";
+import { LuArrowUpRight, LuFilter, LuPin, LuSparkles } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
 import { Chip } from "../Chip";
 import { TooltipRow } from "./TooltipRow";
@@ -60,7 +54,7 @@ export function PinnedMetricPill({
 
   const handleCopy = useCallback(() => {
     if (value == null) return;
-    void navigator.clipboard.writeText(value);
+    void copyTextToClipboard(value);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }, [value]);
@@ -134,12 +128,14 @@ export function PinnedMetricPill({
             flexShrink={0}
           />
         </Box>
+        {/* Mixed-case + no letter-spacing so pinned-attribute labels
+            (e.g. "User", "Conversation") read at the same rhythm as
+            the neutral Chip labels above ("Duration", "Origin"). The
+            previous uppercase + tracked-out treatment made auto-pins
+            stand out as a separate visual language for no reason. */}
         <Text
           textStyle="2xs"
           color={fg}
-          fontFamily="mono"
-          textTransform="uppercase"
-          letterSpacing="0.04em"
           fontWeight="medium"
           truncate
           flexShrink={0}
@@ -147,8 +143,11 @@ export function PinnedMetricPill({
         >
           {label}
         </Text>
-        {/* Value: click copies. Doubles as the primary affordance —
-            users mostly want the value; unpinning is secondary. */}
+        {/* Value: click copies. The chip body itself is the affordance —
+            the dedicated copy icon was dropped to claim back the
+            horizontal space (every pin previously ate ~14px of icon
+            chrome). Tooltip + the "copied" text replacing the value on
+            click are now the cue. */}
         <Box
           as="button"
           onClick={(e: React.MouseEvent) => {
@@ -167,7 +166,6 @@ export function PinnedMetricPill({
           <Text
             textStyle="xs"
             color={value == null ? "fg.subtle" : "fg"}
-            fontFamily="mono"
             fontWeight="medium"
             truncate
             minWidth={0}
@@ -175,14 +173,6 @@ export function PinnedMetricPill({
           >
             {copied ? "copied" : display}
           </Text>
-          <Icon
-            as={copied ? LuCheck : LuCopy}
-            boxSize={2.5}
-            color={fg}
-            opacity={copied ? 1 : 0.55}
-            transition="opacity 0.12s ease"
-            flexShrink={0}
-          />
         </Box>
         {onNavigate && value != null && (
           <Tooltip

@@ -7,6 +7,13 @@ Feature: Agent management
   # Note: Agents are now only Code or Workflow types.
   # For LLM-based prompts, use the Prompts feature instead.
 
+  # The remaining @unimplemented scenarios in this file cover the agents-page
+  # CRUD flows (create / list / edit / archive via the UI) and the
+  # WorkflowSelectorDrawer flows below. These still need either a Next.js
+  # page-level integration harness or Playwright E2E support — neither exists
+  # for these surfaces today. The individual drawer components that are
+  # bindable have been covered by tests in this PR.
+
   # ============================================================================
   # Agent types
   # ============================================================================

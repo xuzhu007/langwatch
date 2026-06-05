@@ -1,5 +1,4 @@
 import { generateClientId } from "~/utils/generateClientId";
-
 export function createTabId() {
   return `tab-${generateClientId()}`;
 }

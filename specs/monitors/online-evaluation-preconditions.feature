@@ -3,6 +3,27 @@ Feature: Online Evaluation Preconditions Renewal
   I want powerful preconditions using the same filters available across LangWatch
   So that evaluations only run on relevant traces
 
+  # 14 of 21 scenarios bound to preconditions.unit.test.ts,
+  # precondition-matchers.unit.test.ts, preconditionFieldUtils.unit.test.ts, and
+  # OnlineEvaluationDrawer.preconditions.integration.test.tsx (per AUDIT_MANIFEST.md).
+  # Remaining 7 @unimplemented scenarios:
+  # - "Origin is application matches only explicit application origin": DELETE per
+  #   manifest (contradicts impl: normalizePreconditionTraceData defaults
+  #   undefined origin to "application")
+  # - "Sentiment filter": DELETE per manifest (no sentiment.input_sentiment matcher
+  #   in PRECONDITION_FIELD_MATCHERS — field not implemented)
+  # - "Migration adds origin precondition": KEEP per manifest, no migration test exists
+  # - "Nested key with contains rule": KEEP — metadata.value/contains backend
+  #   logic not yet covered by a unit test
+  # - "Clicking add precondition expands":
+  #   covered by drawer integration test "expands the form showing the origin row"
+  # - "All preconditions must pass": UPDATE — scenario's "no origin" branch
+  #   contradicts default-application semantics
+  # - "Evaluation trigger passes all trace attributes": KEEP, covered partially
+  #   by buildPreconditionTraceDataFromCommand tests
+  # Aspirational pending DELETE/UPDATE rewrites and KEEP test additions tracked
+  # in PR #3458.
+
   Background:
     Given I am logged in to a project
     And I have at least one evaluator created
@@ -54,13 +75,17 @@ Feature: Online Evaluation Preconditions Renewal
   # In-Memory Trace Matching
   # ────────────────────────────────────────────
 
-  @unit @unimplemented
-  Scenario: Origin "is" application matches only explicit application origin
+  @unit
+  Scenario: Origin "is" application treats missing origin as application (legacy default)
     Given a precondition: traces.origin is "application"
     When a trace arrives with langwatch.origin = "application"
     Then the precondition passes
+    # Legacy traces without an explicit origin attribute default to
+    # "application" via normalizePreconditionTraceData (deferred origin
+    # stamping). This keeps existing customer monitors firing on traces
+    # written before origin tagging shipped.
     When a trace arrives with no langwatch.origin attribute
-    Then the precondition fails
+    Then the precondition passes
     When a trace arrives with langwatch.origin = ""
     Then the precondition fails
     When a trace arrives with langwatch.origin = "evaluation"
@@ -142,13 +167,17 @@ Feature: Online Evaluation Preconditions Renewal
       | input         | contains | help        |
     When a trace arrives with origin "application" and input "I need help"
     Then the evaluation runs
+    # Legacy traces without an explicit origin default to "application"
+    # via normalizePreconditionTraceData (see "Origin 'is' application"
+    # scenario above), so a missing-origin + matching input passes both
+    # preconditions and the evaluation runs.
     When a trace arrives with no origin and input "I need help"
-    Then the evaluation is skipped
+    Then the evaluation runs
     When a trace arrives with origin "simulation" and input "I need help"
     Then the evaluation is skipped
 
-  @unit @unimplemented
-  Scenario: Missing field values fail "is" and "contains" checks
+  @unit
+  Scenario: Missing field values fail "is" checks
     Given a precondition: metadata.user_id is "admin"
     When a trace arrives with no user_id set
     Then the precondition fails

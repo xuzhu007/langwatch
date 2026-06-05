@@ -76,6 +76,7 @@ export function CreateProjectDrawer({
             void queryClient.organization.getAll.invalidate();
             void queryClient.limits.getUsage.invalidate();
             void queryClient.team.getTeamsWithMembers.invalidate();
+            void queryClient.team.getTeamWithMembers.invalidate();
 
             trackEvent("project_created", {
               project_slug: result.projectSlug,
@@ -123,7 +124,7 @@ export function CreateProjectDrawer({
         }
       }}
     >
-      <Drawer.Content>
+      <Drawer.Content bg="bg">
         <Drawer.Header>
           <Drawer.CloseTrigger onClick={handleClose} />
           <Heading>Create New Project</Heading>

@@ -22,6 +22,11 @@ Feature: Structured Logging for ClickHouse Queries
     When a ClickHouse query succeeds
     Then a structured debug log is emitted with source, operation, durationMs, and queryId
 
+  # @unimplemented: needs a dedicated test that asserts the structured log
+  # objects do NOT contain raw `query` text or `query_params` values — the
+  # current resilient-client tests only assert the presence of source/operation/
+  # durationMs fields, not the absence of sensitive fields. Cheap to add when
+  # someone touches this path.
   @unit @regression @unimplemented
   Scenario: Sensitive data is excluded from logs
     When a ClickHouse query is logged
@@ -29,7 +34,12 @@ Feature: Structured Logging for ClickHouse Queries
     And only safe metadata is logged: queryId, format, parameter key names, and table name
 
   # ---------------------------------------------------------------------------
-  # Retry behavior (insert only)
+  # Retry behavior
+  #
+  # Both reads and inserts retry transient ClickHouse failures (overload,
+  # connection, cluster-recovery). Read-side retry behavior lives in
+  # clickhouse-concurrency-resilience.feature; the insert scenarios stay here
+  # next to the logging they emit.
   # ---------------------------------------------------------------------------
 
   @unit @regression @unimplemented
@@ -42,12 +52,6 @@ Feature: Structured Logging for ClickHouse Queries
   Scenario: Non-transient insert errors fail immediately
     When an insert fails with a non-transient error (e.g. syntax)
     Then the insert is not retried
-    And a structured error log is emitted
-
-  @unit @regression @unimplemented
-  Scenario: Queries are not retried on failure
-    When a query fails with any error type
-    Then the query is not retried
     And a structured error log is emitted
 
   # ---------------------------------------------------------------------------

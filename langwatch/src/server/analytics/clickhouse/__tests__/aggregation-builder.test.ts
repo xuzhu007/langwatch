@@ -1232,6 +1232,30 @@ describe("aggregation-builder", () => {
 
       expect(result.sql).toContain("LIMIT 10");
     });
+
+    it("prunes the deduped trace_summaries read to identity columns", () => {
+      const result = buildTopDocumentsQuery(projectId, startDate, endDate);
+
+      // The document payload comes from the stored_spans ARRAY JOIN, so the
+      // deduped trace_summaries subquery only needs identity/date columns and
+      // must not materialise the wide Attributes map.
+      expect(result.sql).toContain(
+        "SELECT TenantId, TraceId, OccurredAt, UpdatedAt FROM trace_summaries"
+      );
+    });
+
+    it("adds filter-referenced columns to the deduped read so filtered queries stay valid", () => {
+      const result = buildTopDocumentsQuery(projectId, startDate, endDate, {
+        "topics.topics": ["topic-1"],
+      });
+
+      // TopicId is referenced by the filter WHERE, so the deduped subquery must
+      // also select it (otherwise ClickHouse would reject ts.TopicId).
+      expect(result.sql).toContain(
+        "SELECT TenantId, TraceId, OccurredAt, UpdatedAt, TopicId FROM trace_summaries"
+      );
+      expect(result.sql).toContain("ts.TopicId IN");
+    });
   });
 
   describe("buildFeedbacksQuery", () => {
@@ -1298,6 +1322,113 @@ describe("aggregation-builder", () => {
       const result = buildFeedbacksQuery(projectId, startDate, endDate);
 
       expect(result.sql).toContain("ORDER BY event_timestamp DESC");
+    });
+
+    it("prunes the deduped trace_summaries read to identity columns", () => {
+      const result = buildFeedbacksQuery(projectId, startDate, endDate);
+
+      // Feedback payload comes from the stored_spans Events arrays, so the
+      // deduped trace_summaries subquery only needs identity/date columns.
+      expect(result.sql).toContain(
+        "SELECT TenantId, TraceId, OccurredAt, UpdatedAt FROM trace_summaries"
+      );
+    });
+
+    it("adds a filter-referenced Attributes read to the deduped subquery", () => {
+      const result = buildFeedbacksQuery(projectId, startDate, endDate, {
+        "metadata.user_id": ["user-1"],
+      });
+
+      // The user_id filter references ts.Attributes[...], so Attributes must be
+      // present in the deduped subquery's column list for the query to be valid.
+      expect(result.sql).toContain(
+        "SELECT TenantId, TraceId, OccurredAt, UpdatedAt, Attributes FROM trace_summaries"
+      );
+      expect(result.sql).toContain("ts.Attributes[{metaValues_");
+    });
+  });
+
+  describe("mapEvalAggregationToOuter", () => {
+    const cases: Array<{ expression: string; expected: string }> = [
+      { expression: "avgIf(toFloat64(es.Passed), cond)", expected: "avg" },
+      { expression: "sumIf(es.Score, cond)", expected: "sum" },
+      { expression: "minIf(es.Score, cond)", expected: "min" },
+      { expression: "maxIf(es.Score, cond)", expected: "max" },
+      // uniqIf -> sum: per-trace count of unique evaluation runs, safe to
+      // sum across traces because EvaluationId is unique per trace.
+      { expression: "uniqIf(es.EvaluationId, cond)", expected: "sum" },
+      { expression: "countIf(es.Score, cond)", expected: "sum" },
+      // quantileExactIf collapses to avg — an approximation that preserves
+      // monotonic ordering of the metric across periods.
+      { expression: "quantileExactIf(0.5)(es.Score, cond)", expected: "avg" },
+    ];
+
+    for (const { expression, expected } of cases) {
+      const name = expression.split("(")[0];
+      it(`maps ${name} to ${expected}`, () => {
+        expect(mapEvalAggregationToOuter(expression)).toBe(expected);
+      });
+    }
+
+    it("returns null for unknown aggregation patterns", () => {
+      expect(mapEvalAggregationToOuter("stddevIf(es.Score, cond)")).toBeNull();
+    });
+  });
+
+  describe("extractTraceAggregationColumn", () => {
+    it("returns null for expressions that do not contain a column reference", () => {
+      // No `<alias>.<column>` shape at all — should not match anything.
+      expect(extractTraceAggregationColumn("some_udf(42)")).toBeNull();
+    });
+
+    it("handles bracketed Attributes columns", () => {
+      expect(
+        extractTraceAggregationColumn(
+          "uniqIf(ts.Attributes['langwatch.user_id'], ts.Attributes['langwatch.user_id'] != '')",
+        ),
+      ).toBe("ts.Attributes['langwatch.user_id']");
+    });
+
+    it("handles dot-access columns wrapped in coalesce+sum", () => {
+      expect(
+        extractTraceAggregationColumn("coalesce(sum(ts.TotalCost), 0)"),
+      ).toBe("ts.TotalCost");
+    });
+  });
+
+  describe("hasEvalMixedWithTraceMetrics", () => {
+    // Minimal MetricTranslation-shaped fixtures — the helper only inspects
+    // `requiredJoins`, so other fields are intentionally stub values.
+    type MetricStub = Parameters<typeof hasEvalMixedWithTraceMetrics>[0][number];
+    const evalMetric = {
+      selectExpression: "avgIf(es.Passed, 1)",
+      alias: "e",
+      requiredJoins: ["evaluation_runs"],
+      params: {},
+    } as unknown as MetricStub;
+    const traceMetric = {
+      selectExpression: "sum(ts.TotalCost)",
+      alias: "t",
+      requiredJoins: [],
+      params: {},
+    } as unknown as MetricStub;
+
+    it("returns true when both eval and trace metrics are present", () => {
+      expect(hasEvalMixedWithTraceMetrics([evalMetric, traceMetric])).toBe(
+        true,
+      );
+    });
+
+    it("returns false when only eval metrics are present", () => {
+      expect(hasEvalMixedWithTraceMetrics([evalMetric])).toBe(false);
+    });
+
+    it("returns false when only trace metrics are present", () => {
+      expect(hasEvalMixedWithTraceMetrics([traceMetric])).toBe(false);
+    });
+
+    it("returns false for an empty list", () => {
+      expect(hasEvalMixedWithTraceMetrics([])).toBe(false);
     });
   });
 

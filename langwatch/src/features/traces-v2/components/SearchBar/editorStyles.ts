@@ -78,6 +78,21 @@ export const editorStyles: SystemStyleObject = {
   "& .filter-keyword-not": {
     color: "red.fg",
   },
+  // AND/OR keyword tokens are clickable in place — clicking cycles the
+  // operator. Show a subtle underline + pointer so users discover the
+  // affordance without a tooltip-only hint.
+  "& .filter-keyword-clickable": {
+    cursor: "pointer",
+    borderRadius: "2px",
+    marginX: "2px",
+    transition: "background 80ms ease, color 80ms ease",
+  },
+  "& .filter-keyword-clickable:hover": {
+    background: "bg.muted",
+    textDecoration: "underline",
+    textDecorationStyle: "dotted",
+    textUnderlineOffset: "3px",
+  },
   "& .filter-paren": {
     color: "fg.subtle",
     fontWeight: "semibold",
@@ -92,15 +107,20 @@ export const editorStyles: SystemStyleObject = {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    width: "18px",
+    width: "20px",
     height: "23px",
     paddingLeft: "2px",
-    paddingRight: 0,
+    paddingRight: "2px",
     background: "blue.subtle",
     borderTop: "1px solid",
     borderBottom: "1px solid",
     borderRight: "1px solid",
-    borderLeft: "1px solid",
+    // Intentionally NO borderLeft — the left half of the chip
+    // (`.filter-token`) paints its own right edge is omitted by design,
+    // and `marginLeft: -1px` here visually butts the two halves
+    // together. Adding a left border draws a faint inner divider that
+    // becomes obvious on hover when both halves take on the red.muted
+    // tint, looking like a misaligned middle stripe.
     borderColor: "blue.solid",
     borderTopRightRadius: "8px",
     borderBottomRightRadius: "8px",
@@ -150,5 +170,18 @@ export const editorStyles: SystemStyleObject = {
     background: "red.muted",
     borderColor: "red.muted",
     color: "red.fg",
+  },
+  // Back-propagate hover from the X button onto the left half of the chip
+  // so the whole pill reads "about to delete" — without this the variant
+  // tint (green for numeric, purple for scenario, etc.) stayed on the
+  // left half while only the X button turned red, which made the hover
+  // state look broken.
+  "& .filter-token:has(+ .filter-token-delete:hover)": {
+    background: "red.subtle",
+    borderColor: "red.muted",
+  },
+  "& .filter-token:has(+ .filter-token-delete:active)": {
+    background: "red.muted",
+    borderColor: "red.muted",
   },
 };

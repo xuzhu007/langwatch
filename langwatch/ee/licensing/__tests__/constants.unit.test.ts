@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTACT_SALES_URL,
   FREE_PLAN,
   LICENSE_ERRORS,
   LICENSE_ERROR_MESSAGES,
@@ -72,8 +73,16 @@ describe("UNLIMITED_PLAN", () => {
   });
 });
 
+describe("CONTACT_SALES_URL", () => {
+  /** @scenario CONTACT_SALES_URL resolves to the public demo form */
+  it("equals the public LangWatch demo form URL", () => {
+    expect(CONTACT_SALES_URL).toBe("https://langwatch.ai/get-a-demo");
+  });
+});
+
 describe("FREE_PLAN", () => {
   /** @scenario FREE_PLAN has correct limits for expired/invalid licenses */
+  /** @scenario PlanInfo defaults maxMembers to 1 when not specified */
   it("has the expected fallback limits for expired/invalid licenses", () => {
     expect(FREE_PLAN.type).toBe("FREE");
     expect(FREE_PLAN.name).toBe("Free");

@@ -50,7 +50,7 @@ func TestTranslateModelID_AliasExpansion(t *testing.T) {
 }
 
 func TestTranslateModelID_OpenAIPreserveDots(t *testing.T) {
-	// gpt-3.5-turbo must keep its dot — only anthropic/custom translate.
+	// gpt-3.5-turbo must keep its dot — only anthropic translates.
 	got := TranslateModelID("openai/gpt-3.5-turbo")
 	if got != "openai/gpt-3.5-turbo" {
 		t.Errorf("expected openai dots preserved, got %q", got)
@@ -58,14 +58,11 @@ func TestTranslateModelID_OpenAIPreserveDots(t *testing.T) {
 }
 
 func TestTranslateModelID_BareAnthropicIDsTranslated(t *testing.T) {
-	// Bare ids (no provider prefix) only get the dot→dash treatment when
-	// they look like Anthropic Claude ids.
 	got := TranslateModelID("claude-3.5-sonnet")
 	if got != "claude-3-5-sonnet" {
 		t.Errorf("expected bare anthropic-shaped id translated, got %q", got)
 	}
 }
-
 func TestTranslateModelID_BareNonAnthropicPreserved(t *testing.T) {
 	got := TranslateModelID("Qwen3.5-9B")
 	if got != "Qwen3.5-9B" {

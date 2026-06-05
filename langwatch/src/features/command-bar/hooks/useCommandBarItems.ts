@@ -32,20 +32,7 @@ export function useCommandBarItems(
   searchInDocsItem: ListItem | null;
   easterEggItem: ListItem | null;
 } {
-  const { enabled: isTracesV2Enabled } = useFeatureFlag(
-    "release_ui_traces_v2_enabled",
-    { projectId, enabled: !!projectId },
-  );
-
-  const availableTopLevelNav = useMemo(
-    () =>
-      isTracesV2Enabled
-        ? topLevelNavigationCommands
-        : topLevelNavigationCommands.filter(
-            (cmd) => cmd.id !== "nav-traces-v2",
-          ),
-    [isTracesV2Enabled],
-  );
+  const availableTopLevelNav = topLevelNavigationCommands;
 
   // Get top recent items across all time groups
   const recentItemsLimited = useMemo(() => {

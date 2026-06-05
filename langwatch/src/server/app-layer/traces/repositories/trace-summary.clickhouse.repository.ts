@@ -1,5 +1,6 @@
 import type { ClickHouseClientResolver } from "~/server/clickhouse/clickhouseClient";
 import type { WithDateWrites } from "~/server/clickhouse/types";
+import { PLATFORM_DEFAULT_RETENTION_DAYS } from "~/server/data-retention/retentionPolicy.schema";
 import { TRACE_SUMMARY_PROJECTION_VERSION_LATEST } from "~/server/event-sourcing/pipelines/trace-processing/schemas/constants";
 import { IdUtils } from "~/server/event-sourcing/pipelines/trace-processing/utils/id.utils";
 import { EventUtils } from "~/server/event-sourcing/utils/event.utils";
@@ -30,11 +31,8 @@ interface ClickHouseSummaryRecord extends TraceSummaryFieldsBase {
   Version: string;
   Attributes: Record<string, string>;
   HasAnnotation: number | null;
-  "Events.SpanId": string[];
-  "Events.Timestamp": string[];
-  "Events.Name": string[];
-  "Events.Attributes": Record<string, string>[];
   LastEventOccurredAt: number;
+  _retention_days: number;
 }
 
 export class TraceSummaryClickHouseRepository
@@ -42,7 +40,7 @@ export class TraceSummaryClickHouseRepository
 {
   constructor(private readonly resolveClient: ClickHouseClientResolver) {}
 
-  async upsert(data: TraceSummaryData, tenantId: string): Promise<void> {
+  async upsert(data: TraceSummaryData, tenantId: string, retentionDays = PLATFORM_DEFAULT_RETENTION_DAYS): Promise<void> {
     EventUtils.validateTenantId(
       { tenantId },
       "TraceSummaryClickHouseRepository.upsert",
@@ -61,6 +59,7 @@ export class TraceSummaryClickHouseRepository
         tenantId,
         projectionId,
         TRACE_SUMMARY_PROJECTION_VERSION_LATEST,
+        retentionDays,
       );
 
       await client.insert({
@@ -81,7 +80,7 @@ export class TraceSummaryClickHouseRepository
   }
 
   async upsertBatch(
-    entries: Array<{ data: TraceSummaryData; tenantId: string }>,
+    entries: Array<{ data: TraceSummaryData; tenantId: string; retentionDays?: number }>,
   ): Promise<void> {
     if (entries.length === 0) return;
 
@@ -92,7 +91,7 @@ export class TraceSummaryClickHouseRepository
 
     try {
       const client = await this.resolveClient(tenantId);
-      const records = entries.map(({ data, tenantId: tid }) => {
+      const records = entries.map(({ data, tenantId: tid, retentionDays: rd }) => {
         const projectionId =
           IdUtils.generateDeterministicTraceSummaryIdFromData(
             tid,
@@ -104,6 +103,7 @@ export class TraceSummaryClickHouseRepository
           tid,
           projectionId,
           TRACE_SUMMARY_PROJECTION_VERSION_LATEST,
+          rd,
         );
       });
 
@@ -235,15 +235,7 @@ export class TraceSummaryClickHouseRepository
           t.SubTopicId AS SubTopicId,
           t.AnnotationIds AS AnnotationIds,
           t.HasAnnotation AS HasAnnotation,
-          t.ScenarioRoleCosts AS ScenarioRoleCosts,
-          t.ScenarioRoleLatencies AS ScenarioRoleLatencies,
-          t.ScenarioRoleSpans AS ScenarioRoleSpans,
-          t.SpanCosts AS SpanCosts,
-          t.TraceName AS TraceName,
-          t.\`Events.SpanId\` AS \`Events.SpanId\`,
-          t.\`Events.Timestamp\` AS \`Events.Timestamp\`,
-          t.\`Events.Name\` AS \`Events.Name\`,
-          t.\`Events.Attributes\` AS \`Events.Attributes\`
+          t.TraceName AS TraceName
         FROM ${TABLE_NAME} AS t
         WHERE t.TenantId = {tenantId:String}
           AND t.TraceId = {traceId:String}
@@ -311,16 +303,6 @@ export class TraceSummaryClickHouseRepository
       annotationIds: record.AnnotationIds ?? [],
       traceName: record.TraceName ?? "",
       attributes: record.Attributes ?? {},
-      scenarioRoleCosts: record.ScenarioRoleCosts ?? {},
-      scenarioRoleLatencies: record.ScenarioRoleLatencies ?? {},
-      scenarioRoleSpans: record.ScenarioRoleSpans ?? {},
-      spanCosts: record.SpanCosts ?? {},
-      events: (record["Events.SpanId"] ?? []).map((spanId, i) => ({
-        spanId,
-        timestamp: new Date(record["Events.Timestamp"]![i]!).getTime(),
-        name: record["Events.Name"]![i]!,
-        attributes: record["Events.Attributes"]![i] ?? {},
-      })),
       occurredAt: record.OccurredAt,
       createdAt: record.CreatedAt,
       updatedAt: record.UpdatedAt,
@@ -333,6 +315,7 @@ export class TraceSummaryClickHouseRepository
     tenantId: string,
     projectionId: string,
     version: string,
+    retentionDays = PLATFORM_DEFAULT_RETENTION_DAYS,
   ): ClickHouseSummaryWriteRecord {
     return {
       ProjectionId: projectionId,
@@ -386,14 +369,7 @@ export class TraceSummaryClickHouseRepository
       AnnotationIds: data.annotationIds,
       HasAnnotation: data.annotationIds.length > 0 ? 1 : 0,
       TraceName: data.traceName,
-      ScenarioRoleCosts: data.scenarioRoleCosts ?? {},
-      ScenarioRoleLatencies: data.scenarioRoleLatencies ?? {},
-      ScenarioRoleSpans: data.scenarioRoleSpans ?? {},
-      SpanCosts: data.spanCosts ?? {},
-      "Events.SpanId": (data.events ?? []).map((e) => e.spanId),
-      "Events.Timestamp": (data.events ?? []).map((e) => new Date(e.timestamp)),
-      "Events.Name": (data.events ?? []).map((e) => e.name),
-      "Events.Attributes": (data.events ?? []).map((e) => e.attributes),
+      _retention_days: retentionDays,
     };
   }
 }

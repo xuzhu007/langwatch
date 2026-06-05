@@ -5,7 +5,10 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Text as TiptapText } from "@tiptap/extension-text";
 import { type Editor, useEditor } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { removeNodeAtLocation } from "~/server/app-layer/traces/query-language/mutations";
+import {
+  removeNodeAtLocation,
+  swapOperatorAtLocation,
+} from "~/server/app-layer/traces/query-language/mutations";
 import { AutoUppercaseOperators } from "./autoUppercaseOperators";
 import {
   applyAcceptToEditor,
@@ -151,6 +154,25 @@ interface UseFilterEditorParams {
    * Return `null` to fall back to the static `FIELD_VALUES` enum.
    */
   valueResolver?: ValueResolver;
+  /**
+   * Fired when the user clicks an existing categorical chip in the
+   * search bar. Caller decides whether to render a value-picker
+   * popover; if undefined, chip clicks behave like normal text clicks
+   * (cursor placement).
+   */
+  onTokenClick?: (payload: {
+    rect: DOMRect;
+    field: string;
+    currentValue: string;
+    location: { start: number; end: number };
+  }) => void;
+  /**
+   * Fired when the user presses ⌘+⏎ / Ctrl+⏎ while typing. The caller is
+   * expected to enter AI mode with the captured text auto-submitted, so
+   * a typed free-text query becomes an Ask-AI invocation in one keystroke
+   * instead of requiring a separate click on the Ask AI button.
+   */
+  onAiShortcut?: (currentText: string) => void;
 }
 
 interface FilterEditorApi {
@@ -164,6 +186,16 @@ interface FilterEditorApi {
    * the active token, not back at column 0.
    */
   cursorAnchorX: number;
+  /**
+   * Pixel offset to the right edge of the rendered document content.
+   * Independent of the cursor — drives the inline "Press ⏎ to search,
+   * ⌘+⏎ to Ask AI" hint so the hint stays pinned to the end of the
+   * typed text even when the caret is mid-line or `⌘+A` selected
+   * everything.
+   */
+  endAnchorX: number;
+  /** Whether the editor currently holds focus. */
+  isFocused: boolean;
 }
 
 export function useFilterEditor({
@@ -171,11 +203,22 @@ export function useFilterEditor({
   applyQueryText,
   onHasContentChange,
   valueResolver,
+  onTokenClick,
+  onAiShortcut,
 }: UseFilterEditorParams): FilterEditorApi {
   const [suggestion, setSuggestion] =
     useState<SuggestionUIState>(CLOSED_SUGGESTION);
   const [dropdownDismissed, setDropdownDismissed] = useState(false);
   const [cursorAnchorX, setCursorAnchorX] = useState(0);
+  // Independent anchor that tracks the *end of the rendered content*,
+  // not the cursor — drives the inline submit hint so a ⌘+A or
+  // mid-text caret placement doesn't drag the hint on top of the
+  // user's text. Always updated (regardless of dropdown state).
+  const [endAnchorX, setEndAnchorX] = useState(0);
+  // TipTap's `editor.isFocused` doesn't trigger React renders. Mirror
+  // focus/blur into state so the SearchBar can hide chrome (inline
+  // submit hint, …) when the editor isn't actively engaged.
+  const [isFocused, setIsFocused] = useState(false);
 
   const editorRef = useRef<Editor | null>(null);
   const isProgrammaticRef = useRef(false);
@@ -185,6 +228,7 @@ export function useFilterEditor({
   const suggestionRef = useLatestRef(suggestion);
   const dismissedRef = useLatestRef(dropdownDismissed);
   const valueResolverRef = useLatestRef(valueResolver);
+  const onAiShortcutRef = useLatestRef(onAiShortcut);
   // Tracks last reported hasContent so we only fire onHasContentChange when
   // it actually flips (not on every keystroke that keeps the state).
   const lastHasContentRef = useRef<boolean>(queryText.length > 0);
@@ -251,6 +295,23 @@ export function useFilterEditor({
         } catch {
           // coordsAtPos can throw if the doc isn't yet mounted; ignore.
         }
+      }
+
+      // End-of-content anchor for the inline submit hint. Independent
+      // of the cursor — a ⌘+A or click-back-to-middle puts the caret
+      // anywhere, but the hint should stay pinned right after whatever
+      // the user has typed. Measure the rightmost edge of the document
+      // by asking PM for coords at the document's *end* position
+      // (PARAGRAPH_OFFSET + text length).
+      try {
+        const view = editor.view;
+        const editorRect = view.dom.getBoundingClientRect();
+        const endPos = PARAGRAPH_OFFSET + text.length;
+        const coords = view.coordsAtPos(endPos);
+        const next = Math.round(coords.left - editorRect.left);
+        setEndAnchorX((prev) => (prev === next ? prev : next));
+      } catch {
+        // coordsAtPos throws on cold mount; the next refresh will recover.
       }
 
       // Escape is sticky for the session — `dismissedRef` only clears on
@@ -339,9 +400,11 @@ export function useFilterEditor({
       refreshSuggestion(ed);
     },
     onFocus: ({ editor: ed }) => {
+      setIsFocused(true);
       refreshSuggestion(ed);
     },
     onBlur: ({ editor: ed }) => {
+      setIsFocused(false);
       applyQueryTextRef.current(ed.getText().trim());
       setSuggestion(CLOSED_SUGGESTION);
       setDropdownDismissed(false);
@@ -349,9 +412,45 @@ export function useFilterEditor({
     },
     editorProps: {
       attributes: { spellcheck: "false" },
+      // Suppress PM's default cursor placement when the user clicks on a
+      // chip pill or its X widget. PM otherwise drops the caret into the
+      // text node *inside* the chip (between "value" and the widget), so
+      // typing the next clause read as if it were extending the chip's
+      // value (`status:errorx`). Returning `true` here keeps PM out of
+      // the click — the addEventListener-based handler below still runs
+      // and opens the value picker / deletes the chip.
+      handleDOMEvents: {
+        mousedown: (_view, event) => {
+          const target = event.target as HTMLElement | null;
+          if (!target) return false;
+          if (
+            target.closest("[data-filter-chip-start]") ||
+            target.closest("[data-filter-delete]") ||
+            target.closest("[data-filter-op-start]")
+          ) {
+            return true;
+          }
+          return false;
+        },
+      },
       handleKeyDown: (view, event) => {
         const text = view.state.doc.textContent;
         const cursorPos = view.state.selection.from - PARAGRAPH_OFFSET;
+
+        // ⌘+⏎ / Ctrl+⏎ → punt the current text into Ask AI. We intercept
+        // before any of the autocomplete or submit logic runs so a held
+        // modifier always wins, even mid-autocomplete. Without content
+        // the shortcut still opens AI mode but with an empty seed (same
+        // as clicking the Ask AI button).
+        if (
+          event.key === "Enter" &&
+          (event.metaKey || event.ctrlKey) &&
+          onAiShortcutRef.current
+        ) {
+          event.preventDefault();
+          onAiShortcutRef.current(text);
+          return true;
+        }
 
         // `@` is a virtual trigger: it never enters the document. We anchor
         // the autocomplete to the cursor position and let subsequent typing
@@ -453,6 +552,66 @@ export function useFilterEditor({
       // destroyed view crashes ProseMirror.
       if (editor.isDestroyed) return;
       const target = event.target as HTMLElement | null;
+
+      // Chip click → open the value-picker popover. Chip spans carry
+      // field/value/location data attrs from filterHighlight's
+      // decoration pass; the parent receives the click rect to anchor
+      // the popover. Skip when no callback is wired so chip clicks
+      // still place the cursor as before.
+      const chipEl = target?.closest("[data-filter-chip-start]") as
+        | HTMLElement
+        | null;
+      if (chipEl && onTokenClick) {
+        event.preventDefault();
+        event.stopPropagation();
+        const start = Number(chipEl.dataset.filterChipStart);
+        const end = Number(chipEl.dataset.filterChipEnd);
+        const field = chipEl.dataset.filterChipField ?? "";
+        const value = chipEl.dataset.filterChipValue ?? "";
+        if (
+          Number.isFinite(start) &&
+          Number.isFinite(end) &&
+          field &&
+          value
+        ) {
+          onTokenClick({
+            rect: chipEl.getBoundingClientRect(),
+            field,
+            currentValue: value,
+            location: { start, end },
+          });
+        }
+        return;
+      }
+
+      // AND/OR operator click → cycle the keyword in place. The inline
+      // span carries the liqe-text coordinates as data attributes (set
+      // by `filterHighlight`'s decoration pass) so we can flip without
+      // re-parsing the AST here.
+      const opEl = target?.closest("[data-filter-op-start]") as
+        | HTMLElement
+        | null;
+      if (opEl) {
+        event.preventDefault();
+        event.stopPropagation();
+        const start = Number(opEl.dataset.filterOpStart);
+        const end = Number(opEl.dataset.filterOpEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+        const current = editor.getText();
+        const next = swapOperatorAtLocation({
+          currentQuery: current,
+          start,
+          end,
+        });
+        if (next === current) return;
+        isProgrammaticRef.current = true;
+        editor.commands.setContent(buildDocument(next));
+        isProgrammaticRef.current = false;
+        lastCommittedTextRef.current = next;
+        applyQueryTextRef.current(next);
+        return;
+      }
+
       const btn = target?.closest("[data-filter-delete]") as HTMLElement | null;
       if (!btn) return;
       event.preventDefault();
@@ -469,7 +628,7 @@ export function useFilterEditor({
       // out of the raw text and tidy any AND/OR glue we leave behind.
       const next =
         kind === "ast"
-          ? removeNodeAtLocation(current, start, end)
+          ? removeNodeAtLocation({ currentQuery: current, start, end })
           : sliceFallbackTokenRange(current, start, end);
       // Update the editor directly — the sync effect skips while focused
       // (so it doesn't race with typing), so a delete from a still-focused
@@ -482,7 +641,7 @@ export function useFilterEditor({
     };
     dom.addEventListener("mousedown", handler);
     return () => dom.removeEventListener("mousedown", handler);
-  }, [editor, applyQueryTextRef]);
+  }, [editor, applyQueryTextRef, onTokenClick]);
 
   // Sync external query changes back into the editor. Only runs while the
   // editor is NOT focused — while focused, the editor is the source of
@@ -547,5 +706,7 @@ export function useFilterEditor({
     acceptSuggestion,
     reset,
     cursorAnchorX,
+    endAnchorX,
+    isFocused,
   };
 }

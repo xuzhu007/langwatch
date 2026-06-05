@@ -1,6 +1,7 @@
 import { Text, VStack } from "@chakra-ui/react";
 import type React from "react";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import { toaster } from "../../../../../components/ui/toaster";
 import { useActiveProject } from "../../../contexts/ActiveProjectContext";
 import { CLOUD_ENDPOINT } from "../shared/build-mcp-config";
@@ -19,7 +20,7 @@ export function ApiIntegrationInfoCard(): React.ReactElement {
     withBashPrefix?: boolean;
   }): Promise<void> {
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_API_KEY=${effectiveApiKey}`
           : effectiveApiKey,
@@ -46,7 +47,7 @@ export function ApiIntegrationInfoCard(): React.ReactElement {
     withBashPrefix?: boolean;
   }): Promise<void> {
     try {
-      await navigator.clipboard.writeText(
+      await copyTextToClipboard(
         withBashPrefix
           ? `LANGWATCH_ENDPOINT=${effectiveEndpoint}`
           : effectiveEndpoint,
@@ -87,7 +88,7 @@ export function ApiIntegrationInfoCard(): React.ReactElement {
       />
 
       {/*
-       * Mirror the rule used by the empty-state PAT card and
+       * Mirror the rule used by the empty-state API key card and
        * `buildMcpConfig`: only surface `LANGWATCH_ENDPOINT` when the
        * deployment differs from the public cloud default. Cloud users
        * never need this in their .env (it's the SDK's default), and

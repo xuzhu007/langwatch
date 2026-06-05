@@ -58,9 +58,6 @@ function createTraceSummaryState(overrides: Partial<TraceSummaryData> = {}): Tra
     lastUsedPromptSpanId: null,
     lastUsedPromptStartTimeMs: null,
     attributes: {},
-    scenarioRoleCosts: {},
-    scenarioRoleLatencies: {},
-    scenarioRoleSpans: {},
     LastEventOccurredAt: 0,
     occurredAt: 1000,
     createdAt: 1000,
@@ -106,6 +103,8 @@ describe("experimentMetricsSync reactor (trace-side ECST publisher)", () => {
   });
 
   describe("when trace has evaluation.run_id attribute", () => {
+    /** @scenario Trace metrics are published to experiment pipeline after stabilisation */
+    /** @scenario evaluation.run_id is hoisted to trace-level attributes */
     it("dispatches computeExperimentRunMetrics with cost payload", async () => {
       const deps = createDeps();
       const reactor = createExperimentMetricsSyncReactor(deps);
@@ -137,6 +136,7 @@ describe("experimentMetricsSync reactor (trace-side ECST publisher)", () => {
   });
 
   describe("when trace has no evaluation.run_id attribute", () => {
+    /** @scenario Reactor does not fire for traces without evaluation.run_id */
     it("skips without dispatching", async () => {
       const deps = createDeps();
       const reactor = createExperimentMetricsSyncReactor(deps);
@@ -156,6 +156,7 @@ describe("experimentMetricsSync reactor (trace-side ECST publisher)", () => {
   });
 
   describe("when trace has no cost data", () => {
+    /** @scenario Reactor does not fire when trace has no cost data */
     it("skips without dispatching when totalCost is null", async () => {
       const deps = createDeps();
       const reactor = createExperimentMetricsSyncReactor(deps);

@@ -24,7 +24,11 @@ interface ToneStyle {
 const TONE_STYLES: Record<ChipTone, ToneStyle> = {
   neutral: {
     bg: "bg.subtle",
-    border: "border.muted",
+    // Slightly more present than `border.muted` (which is nearly
+    // invisible against the now-translucent drawer header). Matches
+    // the perceived weight of the tinted-tone borders (purple/blue
+    // `/30`) so neutral and toned chips read as one strip.
+    border: "border",
     fg: "fg.muted",
     hoverBg: "bg.muted",
   },
@@ -136,15 +140,12 @@ export const Chip = forwardRef<HTMLDivElement, ChipProps>(function Chip(
       minWidth={0}
       className="chip-root"
     >
-      {dot && <Circle size="6px" bg={dot} flexShrink={0} />}
+      {dot && <Circle size="8px" bg={dot} flexShrink={0} />}
       {icon && <Icon as={icon} boxSize={3} color={style.fg} flexShrink={0} />}
       {label && (
         <Text
           textStyle="2xs"
           color={style.fg}
-          fontFamily="mono"
-          textTransform="uppercase"
-          letterSpacing="0.04em"
           fontWeight="medium"
           flexShrink={0}
         >
@@ -202,8 +203,17 @@ export const Chip = forwardRef<HTMLDivElement, ChipProps>(function Chip(
   );
 
   if (popover) {
+    // lazyMount + unmountOnExit so the chip popover lives at ~0 DOM
+    // cost when closed. The trace header can render 10-20 chips on
+    // a span-heavy trace; without unmount-on-exit each open-then-
+    // close leaks an invisible floating layer that the audit caught
+    // as "6 popovers mounted simultaneously".
     return (
-      <Popover.Root positioning={{ placement: "bottom-start" }} lazyMount>
+      <Popover.Root
+        positioning={{ placement: "bottom-start" }}
+        lazyMount
+        unmountOnExit
+      >
         <Popover.Trigger asChild>{body}</Popover.Trigger>
         <Popover.Content width="360px">
           <Popover.Body padding={0}>{popover}</Popover.Body>

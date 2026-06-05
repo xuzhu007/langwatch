@@ -22,6 +22,7 @@ import type {
   AnnotationAddedEvent,
   AnnotationRemovedEvent,
   AnnotationsBulkSyncedEvent,
+  TraceNameChangedEvent,
 } from "../schemas/events";
 import {
   spanReceivedEventSchema,
@@ -32,6 +33,7 @@ import {
   annotationAddedEventSchema,
   annotationRemovedEventSchema,
   annotationsBulkSyncedEventSchema,
+  traceNameChangedEventSchema,
 } from "../schemas/events";
 import type { NormalizedSpan } from "../schemas/spans";
 import {
@@ -41,9 +43,8 @@ import {
   TraceOriginService,
   TraceAttributeAccumulationService,
   TraceIOAccumulationService,
-  ScenarioRoleCostService,
   TracePromptAccumulationService,
-  accumulateEvents,
+  TraceNameResolutionService,
   shouldOverrideOutput,
   extractIOFromLogRecord,
   OUTPUT_SOURCE,
@@ -72,10 +73,18 @@ const traceIOExtractionService = new TraceIOExtractionService();
 const traceIOAccumulationService = new TraceIOAccumulationService(
   traceIOExtractionService,
 );
-const scenarioRoleCostService = new ScenarioRoleCostService(spanCostService);
 const tracePromptAccumulationService = new TracePromptAccumulationService();
+const traceNameResolutionService = new TraceNameResolutionService();
 
 // ─── Main composition ───────────────────────────────────────────────
+
+/**
+ * Max spans we fully process (normalize + derive) into a trace summary. A
+ * handful of traces accumulate tens of thousands of spans (reused trace_id,
+ * runaway loops); deriving every one pays unbounded cost for no added value.
+ * Past the cap we only keep counting so the true magnitude stays visible.
+ */
+export const MAX_PROCESSED_SPANS = 512;
 
 /** @internal Exported for unit testing */
 export function applySpanToSummary({
@@ -86,6 +95,11 @@ export function applySpanToSummary({
   span: NormalizedSpan;
 }): TraceSummaryData {
   if (SYNTHETIC_SPAN_NAMES.has(span.name)) {
+    // Synthetic spans (e.g. `langwatch.track_event`) must not contribute to
+    // timing/cost/I-O -- they don't represent real execution. Their payload
+    // (the `/api/track_event` endpoint stuffs the user-tracked event into
+    // `span.events`) is still persisted to stored_spans like any other span,
+    // so the trace-level events list is derived from there at read time.
     return state;
   }
 
@@ -111,10 +125,20 @@ export function applySpanToSummary({
       ? [...new Set([...state.models, ...newModels])].sort()
       : state.models;
 
-  const roleAccumulation = scenarioRoleCostService.accumulateRoleCostLatency({
-    state,
-    span,
-  });
+  // Precedence rules for traceName / rootSpanType / rootSpanStartTimeMs
+  // live in TraceNameResolutionService — see that file for the full set.
+  const {
+    traceName,
+    rootSpanType,
+    rootSpanStartTimeMs,
+    traceNameFromFallback,
+    rootMetadataFromFallback,
+  } = traceNameResolutionService.resolveFromSpan({ state, span });
+
+  const spanType = String(span.spanAttributes[ATTR_KEYS.SPAN_TYPE] ?? "");
+  const containsAi = state.containsAi || AI_SPAN_TYPES.has(spanType);
+
+  const promptRollup = tracePromptAccumulationService.accumulate({ state, span });
 
   // Pick the canonical root span. Precedence:
   //   1. Named roots win over empty-named roots ("" = not set yet)
@@ -157,6 +181,8 @@ export function applySpanToSummary({
     totalDurationMs: timing.totalDurationMs,
     models,
     traceName,
+    traceNameFromFallback,
+    rootMetadataFromFallback,
     rootSpanStartTimeMs,
     ...tokens,
     ...status,
@@ -169,8 +195,6 @@ export function applySpanToSummary({
     containsAi,
     ...promptRollup,
     attributes,
-    ...roleAccumulation,
-    events,
   };
 }
 
@@ -185,6 +209,7 @@ const traceSummaryEvents = [
   annotationAddedEventSchema,
   annotationRemovedEventSchema,
   annotationsBulkSyncedEventSchema,
+  traceNameChangedEventSchema,
 ] as const;
 
 /**
@@ -247,12 +272,18 @@ export class TraceSummaryFoldProjection
       annotationIds: [],
       traceName: "",
       rootSpanStartTimeMs: undefined,
+      traceNameUserOverridden: false,
+      traceNameFromFallback: false,
+      rootMetadataFromFallback: false,
       attributes: {},
-      events: [],
-      scenarioRoleCosts: {},
-      scenarioRoleLatencies: {},
-      scenarioRoleSpans: {},
-      spanCosts: {},
+      // events, scenarioRoleCosts/Latencies/Spans and spanCosts are no longer
+      // accumulated in the fold state: they scaled O(span-count) and made each
+      // fold step O(n) (copy + re-serialize the whole growing blob), so a
+      // single long-lived trace turned folding into O(n^2). The trace-level
+      // events list and scenario role cost/latency are now derived from
+      // stored_spans at read time (events on the trace-detail read, scenario
+      // metrics when simulation metrics are computed), keeping all
+      // span-count-scaling collections off the hot path entirely.
       // Sentinel: 0 means "no spans received yet". The timing function uses
       // occurredAt > 0 to decide first-span vs min-of-existing. Using Date.now()
       // here would break Math.min logic -- wall-clock time >> span startTimeUnixMs.
@@ -264,6 +295,13 @@ export class TraceSummaryFoldProjection
     event: SpanReceivedEvent,
     state: TraceSummaryData,
   ): TraceSummaryData {
+    // Past the processing cap, keep counting but skip the expensive
+    // normalization + derivation — a runaway trace cannot keep growing the
+    // fold cost. Derived fields stay frozen at the first MAX_PROCESSED_SPANS.
+    if (state.spanCount >= MAX_PROCESSED_SPANS) {
+      return { ...state, spanCount: state.spanCount + 1 };
+    }
+
     const normalizedSpan =
       spanNormalizationPipelineService.normalizeSpanReceived(
         event.tenantId,
@@ -294,6 +332,17 @@ export class TraceSummaryFoldProjection
     event: LogRecordReceivedEvent,
     state: TraceSummaryData,
   ): TraceSummaryData {
+    // Standalone OTLP logs (e.g. Claude Code's OTEL_LOGS_EXPORTER without a
+    // traces exporter) carry no trace context. The wire-level fix accepts
+    // them and the map projection persists them to stored_log_records, but
+    // folding them here would aggregate every context-less log per tenant
+    // under the same empty aggregateId — surfacing a single nameless
+    // "trace" in the messages list that grows unboundedly. Skip the fold;
+    // the log row still lands in CH and remains queryable directly.
+    if (!event.data.traceId || !event.data.spanId) {
+      return state;
+    }
+
     const mergedAttributes = { ...state.attributes };
     const logCount = parseInt(
       mergedAttributes["langwatch.reserved.log_record_count"] ?? "0",
@@ -358,6 +407,15 @@ export class TraceSummaryFoldProjection
     event: MetricRecordReceivedEvent,
     state: TraceSummaryData,
   ): TraceSummaryData {
+    // Standalone OTLP metrics (gauges/sums without exemplar trace context)
+    // are common from Claude Code's OTEL_METRICS_EXPORTER. The map
+    // projection persists them to stored_metric_records; skip the fold to
+    // avoid folding every context-less data point into an empty-id ghost
+    // summary. Mirrors handleTraceLogRecordReceived.
+    if (!event.data.traceId || !event.data.spanId) {
+      return state;
+    }
+
     let timeToFirstTokenMs = state.timeToFirstTokenMs;
     if (event.data.metricName === "gen_ai.server.time_to_first_token") {
       const ttftMs = event.data.value * 1000;
@@ -430,5 +488,25 @@ export class TraceSummaryFoldProjection
   ): TraceSummaryData {
     const merged = [...new Set([...(state.annotationIds ?? []), ...event.data.annotationIds])];
     return { ...state, annotationIds: merged };
+  }
+
+  handleTraceTraceNameChanged(
+    event: TraceNameChangedEvent,
+    state: TraceSummaryData,
+  ): TraceSummaryData {
+    return {
+      ...state,
+      traceId: state.traceId || event.data.traceId,
+      traceName: event.data.newName,
+      // Latch the override so any later root-span arrival doesn't
+      // silently revert the user's edit. The latch persists even if
+      // the new name happens to coincide with the discovered root span
+      // name — intent matters more than the value.
+      traceNameUserOverridden: true,
+      // A user-supplied name is the highest-precedence source; whatever
+      // came before is no longer a "fallback" guess that should be
+      // displaced by a later real-root span.
+      traceNameFromFallback: false,
+    };
   }
 }

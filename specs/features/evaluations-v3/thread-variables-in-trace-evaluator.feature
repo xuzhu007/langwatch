@@ -100,3 +100,5 @@ Feature: Thread variables available in trace-level evaluator input mapping
     Given a trace-level monitor with "input" mapped to "trace.input" and "history" mapped to "thread.traces"
     When the evaluations worker processes a trace with thread_id "xyz"
     Then both trace and thread fields resolve correctly
+
+

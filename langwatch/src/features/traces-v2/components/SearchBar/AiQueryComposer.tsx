@@ -1,11 +1,24 @@
 import type React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AiPromptInput } from "../ai/AiPromptInput";
 import { useAiTraceAction } from "../ai/useAiTraceAction";
 
 interface AiQueryComposerProps {
   onClose: () => void;
   onPendingChange?: (pending: boolean) => void;
+  /**
+   * Seed value for the prompt input. Used when the user typed something
+   * into the search bar and then hit ⌘I / clicked Ask AI — without this
+   * the typed text gets wiped and the user has to re-type.
+   */
+  initialPrompt?: string;
+  /**
+   * When true, submit the `initialPrompt` automatically on mount. Wired
+   * to the ⌘+⏎ shortcut in the search bar so a typed free-text query
+   * can be punted to Ask AI in one keystroke instead of "enter AI mode,
+   * then press Enter again".
+   */
+  autoSubmit?: boolean;
 }
 
 const PLACEHOLDERS = [
@@ -20,8 +33,10 @@ const PLACEHOLDERS = [
 export const AiQueryComposer: React.FC<AiQueryComposerProps> = ({
   onClose,
   onPendingChange,
+  initialPrompt = "",
+  autoSubmit = false,
 }) => {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt);
   const { submit, isPending, error, clearError } = useAiTraceAction({
     mode: "filter",
     onDone: onClose,
@@ -30,6 +45,19 @@ export const AiQueryComposer: React.FC<AiQueryComposerProps> = ({
   useEffect(() => {
     onPendingChange?.(isPending);
   }, [isPending, onPendingChange]);
+
+  // Auto-submit on mount when the caller seeded a prompt AND asked us
+  // to fire it without a second Enter keystroke. Guarded by a ref so the
+  // submission never repeats on a re-render (e.g. when the parent's
+  // pending state flips back and forth).
+  const autoSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmit) return;
+    if (autoSubmittedRef.current) return;
+    if (!initialPrompt.trim()) return;
+    autoSubmittedRef.current = true;
+    submit(initialPrompt);
+  }, [autoSubmit, initialPrompt, submit]);
 
   return (
     <AiPromptInput

@@ -49,3 +49,4 @@ Feature: Subscription service refactor
     Given an existing organization
     When notifyProspective is called with plan and contact details
     Then a prospective notification event is dispatched
+

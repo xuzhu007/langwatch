@@ -1,11 +1,4 @@
-import {
-  Button,
-  HStack,
-  Separator,
-  Spacer,
-  Text,
-  VStack,
-} from "@chakra-ui/react";
+import { HStack, IconButton, Text, VStack } from "@chakra-ui/react";
 import {
   closestCenter,
   DndContext,
@@ -23,9 +16,10 @@ import {
 } from "@dnd-kit/sortable";
 import { PanelLeftClose } from "lucide-react";
 import type React from "react";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { Kbd } from "~/components/ops/shared/Kbd";
 import { IsolatedErrorBoundary } from "~/components/ui/IsolatedErrorBoundary";
+import { Tooltip } from "~/components/ui/tooltip";
 import {
   FIELD_NAMES,
   SEARCH_FIELDS,
@@ -35,11 +29,14 @@ import {
   getRangeValue,
 } from "~/server/app-layer/traces/query-language/queries";
 import { useUIStore } from "../../stores/uiStore";
-import { CollapsedSidebar } from "./CollapsedSidebar";
-import { CollapsedSidebarSkeleton } from "./CollapsedSidebarSkeleton";
 import { getFacetGroupId } from "./constants";
 import { FacetGroupHeader } from "./FacetGroupHeader";
+import { FacetManagerPopover } from "./FacetManagerPopover";
 import { FilterSidebarSkeleton } from "./FilterSidebarSkeleton";
+import {
+  ConnectorLaneWidth as CONNECTOR_LANE_WIDTH,
+  OrConnectorOverlay,
+} from "./OrConnectorOverlay";
 import { useFilterSidebarData } from "./hooks/useFilterSidebarData";
 import { SectionRenderer } from "./SectionRenderer";
 
@@ -53,7 +50,10 @@ const groupIdFromSortableId = (id: string): string =>
 const DRAG_ACTIVATION_DISTANCE_PX = 5;
 
 export const FilterSidebar: React.FC = () => {
-  const collapsed = useUIStore((s) => s.sidebarCollapsed);
+  // The collapsed-state branch lives one level up: when collapsed,
+  // `FilterAside` returns `null` and the page renders no sidebar DOM at
+  // all (the expand affordance sits on the table footer's pagination
+  // row). So this component is only ever mounted in the expanded path.
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const {
@@ -66,18 +66,29 @@ export const FilterSidebar: React.FC = () => {
     descriptors,
     orderedKeys,
     orderedGroups,
+    hiddenByGroup,
     sectionByKey,
     toggleFacet,
     setRange,
     removeRange,
     setGroupOrder,
     setAllSectionsOpen,
+    orAnalysis,
+    showFacet,
+    hideFacet,
+    resetAllFacets,
+    orderedKeysAll,
+    isSectionVisibleForDensity,
   } = useFilterSidebarData();
 
   const groupSortableIds = useMemo(
     () => orderedGroups.map((g) => groupSortableId(g.id)),
     [orderedGroups],
   );
+
+  // Ref to the inner scroll container so OrConnectorOverlay can read
+  // FacetRow positions and re-measure on scroll/resize.
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
 
   // A group is "modified" when at least one of its sections has an active
   // filter in the working AST. We walk every known SEARCH_FIELD (not just
@@ -159,6 +170,58 @@ export const FilterSidebar: React.FC = () => {
             setRange={setRange}
             removeRange={removeRange}
             onShiftToggle={handleShiftToggle}
+            onHide={() => hideFacet(key)}
+            // INTENTIONAL: `fieldToGroupIds` includes same-field OR groups
+            // (e.g. `status:error OR status:warning`), so a same-field OR
+            // query gets the full visual treatment — colored ring on rows,
+            // pinning via `orMemberValues`, AND a connector line via the
+            // overlay scanning `[data-or-group=...]`. Same-field ORs are
+            // already visually adjacent within their own facet section, but
+            // the connector + ring confirm to the user that those values
+            // are bound by OR (not just both checked under the implicit
+            // sidebar-ANDing). If this ever feels noisy, filter to
+            // `g.fields.size > 1` here — but the current call is to keep
+            // the link visible.
+            //
+            // Only project a single id when the field belongs to exactly
+            // one group. With multiple disjoint OR groups (e.g.
+            // `(status:error OR model:gpt-4o) AND (status:warning OR
+            // origin:application)`), `status:warning` would otherwise
+            // render under the FIRST group's id/colour/lane — wrong half
+            // of the time. Leaving it `undefined` for ambiguous fields
+            // means the row drops the ring/lane assignment but still
+            // joins both groups' peer/member sets via the unions below.
+            orGroupId={(() => {
+              const ids = orAnalysis.fieldToGroupIds.get(key);
+              return ids && ids.length === 1 ? ids[0] : undefined;
+            })()}
+            orPeers={(() => {
+              const ids = orAnalysis.fieldToGroupIds.get(key);
+              if (!ids || ids.length === 0) return undefined;
+              // Union peers across every group this field touches — when
+              // a field shows up in multiple disjoint OR groups, the
+              // sidebar should mention all of its co-facets.
+              const peers = new Set<string>();
+              for (const id of ids) {
+                const group = orAnalysis.groups.find((g) => g.id === id);
+                if (!group) continue;
+                for (const f of group.fields) if (f !== key) peers.add(f);
+              }
+              return peers.size > 0 ? [...peers] : undefined;
+            })()}
+            orMemberValues={(() => {
+              const ids = orAnalysis.fieldToGroupIds.get(key);
+              if (!ids || ids.length === 0) return undefined;
+              const values = new Set<string>();
+              for (const id of ids) {
+                const group = orAnalysis.groups.find((g) => g.id === id);
+                if (!group) continue;
+                for (const m of group.members) {
+                  if (m.field === key) values.add(m.value);
+                }
+              }
+              return values.size > 0 ? values : undefined;
+            })()}
           />
         </IsolatedErrorBoundary>
       );
@@ -172,38 +235,96 @@ export const FilterSidebar: React.FC = () => {
       setRange,
       removeRange,
       handleShiftToggle,
+      hideFacet,
+      orAnalysis,
     ],
   );
 
-  const showSkeleton = facetsLoading && descriptors.length === 0;
-
-  if (collapsed) {
-    // Mirror the expanded-sidebar skeleton policy on the collapsed
-    // rail: until the first facet payload lands the rail used to
-    // render as an empty 40px column, which read as a layout glitch
-    // rather than "filters are loading." Showing circular icon
-    // placeholders matches the live rail's silhouette so the swap
-    // when data arrives feels like a fade-in, not a pop-in.
-    if (showSkeleton) return <CollapsedSidebarSkeleton />;
-    return (
-      <CollapsedSidebar
-        ast={ast}
-        categoricals={categoricals}
-        ranges={ranges}
-        onExpand={toggleSidebar}
-      />
-    );
-  }
+  // The hook now synthesises FACET_DEFAULTS rows while discover is in
+  // flight, so `descriptors.length === 0 && facetsLoading` no longer
+  // happens — `categoricals` is always populated. We keep `showSkeleton`
+  // wired through but it'll only fire in genuinely degenerate states
+  // (empty FACET_DEFAULTS, etc.) so as not to silently regress to a
+  // blank rail if the synthesis is ever short-circuited.
+  const showSkeleton =
+    facetsLoading && descriptors.length === 0 && categoricals.length === 0;
 
   return (
-    <VStack height="full" gap={0} align="stretch" overflow="hidden" as="aside">
-      <VStack
-        flex={1}
-        gap={0}
-        align="stretch"
-        overflowY="auto"
-        overflowX="hidden"
-        paddingTop={1}
+    <VStack
+      height="full"
+      gap={0}
+      align="stretch"
+      overflow="hidden"
+      as="aside"
+      position="relative"
+    >
+      <OrConnectorOverlay
+        groups={orAnalysis.groups}
+        containerRef={scrollAreaRef}
+      />
+      {/* Header bar — owns the close affordance in a flex row instead
+          of an absolutely-positioned overlay. The previous overlay sat
+          at top:6 / right:6 with z-index:2 and visibly overlapped the
+          first group's heading ("TRACE") because both lived in the
+          same ~24px-tall band on the right edge. Putting the close
+          button in its own row keeps the math obvious: the scrollable
+          area below starts AFTER the header bar, so there's no overlap
+          to reason about. Padding-y matches the group header so
+          the close icon's vertical center aligns with the heading
+          baseline that appears just below it. */}
+      <HStack
+        gap={1}
+        paddingX={2}
+        paddingY={1.5}
+        height="28px"
+        align="center"
+        justify="flex-end"
+        flexShrink={0}
+        borderBottomWidth="0"
+      >
+        <FacetManagerPopover
+          orderedKeysAll={orderedKeysAll}
+          sectionByKey={sectionByKey}
+          isVisible={isSectionVisibleForDensity}
+          onShow={showFacet}
+          onHide={hideFacet}
+          onResetAll={resetAllFacets}
+        />
+        <Tooltip
+          positioning={{ placement: "bottom" }}
+          content={
+            <HStack gap={1.5}>
+              <Text>Hide filters sidebar</Text>
+              <Kbd>{"["}</Kbd>
+            </HStack>
+          }
+        >
+          <IconButton
+            aria-label="Hide filters sidebar"
+            size="2xs"
+            variant="ghost"
+            color="fg.subtle"
+            onClick={toggleSidebar}
+          >
+            <PanelLeftClose size={14} />
+          </IconButton>
+        </Tooltip>
+      </HStack>
+      <div
+        ref={scrollAreaRef}
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          overflowY: "auto",
+          overflowX: "hidden",
+          paddingTop: 0,
+          // Reserve right-side gutter for OR connector lanes — one lane
+          // per OR group, sized to match `OrConnectorOverlay`'s internal
+          // LANE_WIDTH. With no OR groups the gutter collapses to zero
+          // and the rail looks identical to before this feature.
+          paddingRight: `${orAnalysis.groups.length * CONNECTOR_LANE_WIDTH}px`,
+        }}
       >
         {showSkeleton ? (
           <FilterSidebarSkeleton />
@@ -227,6 +348,8 @@ export const FilterSidebar: React.FC = () => {
                     id={groupSortableId(group.id)}
                     label={group.label}
                     isModified={modifiedGroupIds.has(group.id)}
+                    hiddenKeys={hiddenByGroup[group.id]}
+                    onAddFacet={showFacet}
                   >
                     {group.keys.map(renderSection)}
                   </FacetGroupHeader>
@@ -235,23 +358,8 @@ export const FilterSidebar: React.FC = () => {
             </SortableContext>
           </DndContext>
         )}
-      </VStack>
+      </div>
 
-      <Separator />
-      <HStack paddingX={3} paddingY={1.5}>
-        <Spacer />
-        <Button
-          aria-label="Collapse sidebar"
-          size="2xs"
-          variant="ghost"
-          color="fg.subtle"
-          onClick={toggleSidebar}
-        >
-          <PanelLeftClose size={12} />
-          <Text textStyle="2xs">Collapse</Text>
-          <Kbd>{"["}</Kbd>
-        </Button>
-      </HStack>
     </VStack>
   );
 };

@@ -29,6 +29,7 @@ describe("Prompts API", () => {
   let testOrganization: Organization;
   let testTeam: Team;
   let testProject: Project;
+  let testDefaultConfigId: string;
   let helpers: {
     api: {
       put: (path: string, body: any) => Response | Promise<Response>;
@@ -47,7 +48,7 @@ describe("Prompts API", () => {
   beforeEach(async () => {
     // Initialize the test App container so middleware that depends on it
     // (resource-limit, license-enforcement) can run.
-    resetApp();
+    await resetApp();
     globalForApp.__langwatch_app = createTestApp({
       planProvider: PlanProviderService.create({
         getActivePlan: vi
@@ -77,21 +78,35 @@ describe("Prompts API", () => {
       },
     });
 
-    // Test data setup
-    testProject = projectFactory.build({
-      slug: nanoid(),
-    });
     // Create test project in the database with the proper team
     testProject = await prisma.project.create({
       data: {
-        ...testProject,
+        ...projectFactory.build({ slug: nanoid() }),
         teamId: testTeam.id,
+        personalFeatures: {},
       },
     });
 
     // Update variables after project creation to ensure they have the correct values
     testApiKey = testProject.apiKey;
     testProjectId = testProject.id;
+
+    // The cascading resolver requires a model to be configured at
+    // PROJECT, TEAM, or ORG scope for `prompt.create_default` —
+    // otherwise prompt creation throws `ModelNotConfiguredError`. Seed
+    // a project-scoped DEFAULT so the prompt-api tests can create
+    // prompts without depending on a fallback model.
+    const seededDefault = await prisma.modelDefaultConfig.create({
+      data: {
+        config: { DEFAULT: "openai/gpt-4o-mini" },
+        organizationId: testOrganization.id,
+        scopes: {
+          create: [{ scopeType: "PROJECT", scopeId: testProjectId }],
+        },
+      },
+      select: { id: true },
+    });
+    testDefaultConfigId = seededDefault.id;
 
     // Update the mock config with the correct project ID
     mockConfig = llmPromptConfigFactory.build({
@@ -128,6 +143,15 @@ describe("Prompts API", () => {
     await prisma.llmPromptConfig.deleteMany({
       where: { projectId: testProjectId },
     });
+
+    await prisma.modelDefaultConfigScope.deleteMany({
+      where: { scopeType: "PROJECT", scopeId: testProjectId },
+    });
+    if (testDefaultConfigId) {
+      await prisma.modelDefaultConfig.deleteMany({
+        where: { id: testDefaultConfigId },
+      });
+    }
 
     await prisma.project.delete({
       where: { id: testProjectId },

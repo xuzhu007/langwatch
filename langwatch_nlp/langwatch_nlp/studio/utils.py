@@ -300,10 +300,7 @@ MODEL_ALIASES: Dict[str, str] = {
 }
 
 # Providers that need dot-to-dash translation for their model IDs.
-#
-# IMPORTANT: Do NOT apply this to OpenAI-compatible "custom" providers.
-# Custom model ids are opaque identifiers owned by the upstream endpoint,
-# and rewriting them breaks routing (e.g. internal MaaS model IDs like "Qwen3.5-9B").
+# Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
 PROVIDERS_NEEDING_TRANSLATION = {"anthropic"}
 
 
@@ -314,9 +311,9 @@ def _is_bare_anthropic_model_id(model_id: str) -> bool:
 def translate_model_id_for_litellm(model_id: str | None) -> str | None:
     """Translates a model ID for use with LiteLLM.
 
-    Order matters:
-    1) exact alias expansion (full-string match)
-    2) dot→dash translation for selected providers
+    First checks for exact alias matches that need expansion to dated versions.
+    Then converts dots to dashes in model IDs for providers that need it.
+    Other providers (OpenAI, Gemini, etc.) are returned unchanged.
 
     Args:
         model_id: The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")
@@ -333,12 +330,8 @@ def translate_model_id_for_litellm(model_id: str | None) -> str | None:
 
     provider = get_provider_from_model(model_id)
 
-    # Only translate providers that need it.
-    # For legacy/unknown provider-less ids, ONLY translate anthropic-shaped ones
-    # (e.g. "claude-3.5-sonnet"). Do not rewrite arbitrary bare ids.
-    needs_translation = (
-        provider in PROVIDERS_NEEDING_TRANSLATION
-        or (provider == "" and _is_bare_anthropic_model_id(model_id))
+    needs_translation = provider in PROVIDERS_NEEDING_TRANSLATION or (
+        provider == "" and _is_bare_anthropic_model_id(model_id)
     )
 
     if not needs_translation:

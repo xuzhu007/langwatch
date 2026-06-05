@@ -154,3 +154,4 @@ Feature: Dual Pricing Model — Seat+Usage Billing
     Then the subscription is ACTIVE with maxMembers 5
     And when the subscription.updated webhook fires with quantity 5
     Then maxMembers remains 5
+

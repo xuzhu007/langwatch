@@ -3,6 +3,7 @@ import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { usePageVisibility } from "~/hooks/usePageVisibility";
 import { api } from "~/utils/api";
 import { useFilterStore } from "../stores/filterStore";
+import { useRefreshUIStore } from "../stores/refreshUIStore";
 import { useSseStatusStore } from "../stores/sseStatusStore";
 import { useTraceListRefresh } from "./useTraceListRefresh";
 
@@ -57,17 +58,58 @@ export function useTraceNewCount(): TraceNewCountResult {
     setIntervalMs(FAST_MS);
   }, [fastPollRequestedAt]);
 
-  // Reset to fast polling when tab becomes visible again, and surface
-  // any traces that arrived while we were away by invalidating the list.
+  // Reset to fast polling when tab becomes visible again. What we
+  // refetch depends on the operator's live-updates mode:
+  //
+  //   live   — full refresh: list + discover + newCount, so the table
+  //            reflects whatever arrived while we were away.
+  //   ask    — newCount only; the user explicitly opted *out* of
+  //            silent list merges, so we just update the (N new) pill
+  //            and let them click it to commit.
+  //   paused — do nothing; "no updates, no pill, no polling" per the
+  //            store's contract.
+  const trpcUtils = api.useContext();
   const prevVisibleRef = useRef(isVisible);
   useEffect(() => {
     if (isVisible && !prevVisibleRef.current) {
-      consecutiveZerosRef.current = 0;
-      setIntervalMs(FAST_MS);
-      refresh();
+      const mode = useSseStatusStore.getState().liveUpdatesMode;
+      if (mode !== "paused") {
+        consecutiveZerosRef.current = 0;
+        setIntervalMs(FAST_MS);
+      }
+      if (mode === "live") {
+        refresh();
+      } else if (mode === "ask") {
+        void trpcUtils.tracesV2.newCount.invalidate();
+      }
     }
     prevVisibleRef.current = isVisible;
-  }, [isVisible, refresh]);
+  }, [isVisible, refresh, trpcUtils]);
+
+  const liveUpdatesMode = useSseStatusStore((s) => s.liveUpdatesMode);
+
+  // Aurora refresh pulse is now scoped to "trace about to appear" — fires
+  // once when the count transitions from 0 to >0 in live mode, signalling
+  // to the user that the list is being merged with new rows. In ask mode
+  // the user opted to gate merges behind the floating pill click, so we
+  // stay quiet there; the pill itself is the signal.
+  const pulseRefresh = useRefreshUIStore((s) => s.pulse);
+  // `null` = no baseline yet for the current query identity. Reset
+  // whenever the identity (project / time range / search / since)
+  // changes so a count from one context never gets compared against a
+  // count from another — that comparison can spuriously fire or
+  // suppress the 0→N pulse.
+  const prevCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    prevCountRef.current = null;
+  }, [
+    project?.id,
+    timeRange.from,
+    timeRange.to,
+    timeRange.label,
+    since,
+    queryText,
+  ]);
 
   const query = api.tracesV2.newCount.useQuery(
     {
@@ -81,8 +123,16 @@ export function useTraceNewCount(): TraceNewCountResult {
       query: queryText || undefined,
     },
     {
-      enabled: !!project?.id,
+      // Honour the store contract: paused = "no updates, no pill, no
+      // polling". Stops the query from firing at all so a paused
+      // operator can leave the tab without burning quota on count
+      // pings they explicitly turned off.
+      enabled: !!project?.id && liveUpdatesMode !== "paused",
       staleTime: 0,
+      // A failing poll is almost always ClickHouse easing us off under
+      // concurrent load. One client-side retry is enough; the refetch
+      // interval (backed off in onError) will try again shortly.
+      retry: 1,
       refetchInterval: isVisible && !sseConnected ? intervalMs : false,
       onSuccess: (data) => {
         if (data.count === 0) {
@@ -94,6 +144,29 @@ export function useTraceNewCount(): TraceNewCountResult {
           consecutiveZerosRef.current = 0;
           setIntervalMs(FAST_MS);
         }
+        // Fire the aurora pulse only on the 0→N transition in live
+        // mode. Ask mode stays quiet (the floating pill is the
+        // operator's chosen signal). High-throughput projects no longer
+        // see the pulse loop every SSE event — it now correlates with
+        // an actual UI change (new rows are about to land).
+        const prev = prevCountRef.current;
+        prevCountRef.current = data.count;
+        if (
+          prev === 0 &&
+          data.count > 0 &&
+          useSseStatusStore.getState().liveUpdatesMode === "live"
+        ) {
+          // First success in a new query context (prev === null) is
+          // baseline only — never pulses.
+          pulseRefresh();
+        }
+      },
+      onError: () => {
+        // Ease off when the count query fails (typically ClickHouse
+        // "Too many simultaneous queries" under load) so the client does
+        // not amplify the storm with fast polling. Recovers to the fast
+        // cadence on the next successful poll or SSE fast-poll signal.
+        setIntervalMs(SLOW_MS);
       },
     },
   );

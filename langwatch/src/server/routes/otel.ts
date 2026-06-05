@@ -7,80 +7,44 @@
  * - POST /api/otel/v1/metrics
  */
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
-import type {
-  IExportLogsServiceRequest,
-  IExportMetricsServiceRequest,
-  IExportTraceServiceRequest,
-} from "@opentelemetry/otlp-transformer";
+import type { IExportTraceServiceRequest } from "@opentelemetry/otlp-transformer";
 import * as root from "@opentelemetry/otlp-transformer/build/src/generated/root";
 import { getLangWatchTracer } from "langwatch";
-import { brotliDecompress, gunzip, inflate } from "node:zlib";
-import { promisify } from "node:util";
-import { Hono } from "hono";
-import { loggerMiddleware } from "~/app/api/middleware/logger";
-import { tracerMiddleware } from "~/app/api/middleware/tracer";
 import { getApp } from "~/server/app-layer/app";
 import { prisma } from "~/server/db";
-import { TokenResolver } from "~/server/pat/token-resolver";
+import {
+  parseOtlpLogs,
+  parseOtlpMetrics,
+  parseOtlpTraces,
+  readOtlpBody,
+} from "~/server/otel/parseOtlpBody";
+import { TokenResolver } from "~/server/api-key/token-resolver";
+import { BINDING_TOKEN_PREFIX } from "@ee/governance/services/userIngestionBindingToken.utils";
 import {
   collectAuthDiagnostics,
-  enforcePatCeiling,
+  enforceApiKeyCeiling,
   extractCredentials,
-  patCeilingDenialResponse,
-} from "~/server/pat/auth-middleware";
+  apiKeyCeilingDenialResponse,
+} from "~/server/api-key/auth-middleware";
+import {
+  stampBindingProvenanceOnLogRequest,
+  stampBindingProvenanceOnTraceRequest,
+} from "@ee/governance/services/bindingProvenance.utils";
 import { decodeBase64OpenTelemetryId } from "~/server/tracer/utils";
 import { createLogger } from "~/utils/logger/server";
 import { captureException } from "~/utils/posthogErrorCapture";
-
-const gunzipAsync = promisify(gunzip);
-const inflateAsync = promisify(inflate);
-const brotliDecompressAsync = promisify(brotliDecompress);
-
-function toArrayBuffer(buf: Buffer): ArrayBuffer {
-  return new Uint8Array(buf).buffer as ArrayBuffer;
-}
-
-/**
- * Reads the request body, decompressing based on Content-Encoding.
- * Supports gzip (OTEL standard), deflate, and brotli.
- */
-async function readBody(req: Request): Promise<ArrayBuffer> {
-  const raw = await req.arrayBuffer();
-  const encoding = req.headers.get("content-encoding");
-
-  if (!encoding || encoding === "identity") {
-    return raw;
-  }
-
-  if (encoding === "gzip") {
-    return toArrayBuffer(await gunzipAsync(Buffer.from(raw)));
-  }
-
-  if (encoding === "deflate") {
-    return toArrayBuffer(await inflateAsync(Buffer.from(raw)));
-  }
-
-  if (encoding === "br") {
-    return toArrayBuffer(await brotliDecompressAsync(Buffer.from(raw)));
-  }
-
-  throw new Error(`Unsupported Content-Encoding: ${encoding}`);
-}
+import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
 
 const traceRequestType = (root as any).opentelemetry.proto.collector.trace.v1
   .ExportTraceServiceRequest;
-const logRequestType = (root as any).opentelemetry.proto.collector.logs.v1
-  .ExportLogsServiceRequest;
-const metricsRequestType = (root as any).opentelemetry.proto.collector.metrics
-  .v1.ExportMetricsServiceRequest;
 
 const loggerTraces = createLogger("langwatch:otel:v1:traces");
 const loggerLogs = createLogger("langwatch:otel:v1:logs");
 const loggerMetrics = createLogger("langwatch:otel:v1:metrics");
 
-export const app = new Hono().basePath("/api/otel/v1");
-app.use(tracerMiddleware({ name: "otel-v1" }));
-app.use(loggerMiddleware());
+const AUTH_REASON = "OTLP ingestion API key resolved in-handler";
+
+const secured = createServiceApp({ basePath: "/api/otel/v1" });
 
 // ── shared auth + limit check ────────────────────────────────────────
 
@@ -99,10 +63,19 @@ type RouteContext = {
  * Classifies a token by prefix without exposing the value. Mirrors the
  * `tokenType` field emitted by the unified auth middleware so on-call can
  * filter CloudWatch by SDK shape.
+ *
+ * `ingestion_key` covers UserIngestionBinding tokens (`ik-lw-`) — the
+ * shape Claude Code's OTEL exporter sends from the personal-portal
+ * onboarding tile. Without this branch a stale ingestion key surfaces
+ * as `unknown`, which is indistinguishable from a malformed bearer and
+ * gives on-call no way to attribute the 401 to a specific user flow.
  */
-export function classifyTokenType(token: string): "pat" | "legacy" | "unknown" {
+export function classifyTokenType(
+  token: string,
+): "pat" | "legacy" | "ingestion_key" | "unknown" {
   if (token.startsWith("pat-lw-")) return "pat";
   if (token.startsWith("sk-lw-")) return "legacy";
+  if (token.startsWith(BINDING_TOKEN_PREFIX)) return "ingestion_key";
   return "unknown";
 }
 
@@ -146,27 +119,36 @@ async function authenticate(c: RouteContext, logger: ReturnType<typeof createLog
   }
 
   if (!resolved) {
+    const tokenType = classifyTokenType(credentials.token);
     logger.warn(
       {
         ...diag,
-        tokenType: classifyTokenType(credentials.token),
+        tokenType,
         hasProjectId: !!credentials.projectId,
       },
       "Authentication failed: invalid credentials",
     );
-    return { error: "Invalid auth token.", status: 401 as const };
+    // An ik-lw- 401 most often means the binding was rotated (reinstall
+    // mints a fresh hash on the same row) and the caller is still using
+    // the old token. The generic body gives them nowhere to look — name
+    // the surface that re-issues the token.
+    const error =
+      tokenType === "ingestion_key"
+        ? "Ingestion key not recognized. Re-mint the binding at /me and update your OTLP exporter."
+        : "Invalid auth token.";
+    return { error, status: 401 as const };
   }
 
-  // Enforce PAT ceiling (legacy tokens bypass). `traces:create` gates write
+  // Enforce API-key ceiling (legacy tokens bypass). `traces:create` gates write
   // access on OTLP ingestion — same semantics as the collector path.
   try {
-    await enforcePatCeiling({
+    await enforceApiKeyCeiling({
       prisma,
       resolved,
       permission: "traces:create",
     });
   } catch (error) {
-    const denial = patCeilingDenialResponse(error);
+    const denial = apiKeyCeilingDenialResponse(error);
     logger.warn(
       {
         ...diag,
@@ -174,7 +156,7 @@ async function authenticate(c: RouteContext, logger: ReturnType<typeof createLog
         tokenType: classifyTokenType(credentials.token),
         denialStatus: denial.status,
       },
-      "PAT permission denied for traces:create",
+      "API key permission denied for traces:create",
     );
     return { error: denial.message, status: denial.status };
   }
@@ -297,7 +279,7 @@ export function peekCustomerTraceIds(
 
 // ── POST /traces ─────────────────────────────────────────────────────
 
-app.post("/traces", async (c) => {
+secured.access(handlerManagedAuth(AUTH_REASON)).post("/traces", async (c) => {
   const tracer = getLangWatchTracer("langwatch.otel.traces");
 
   return tracer.withActiveSpan(
@@ -316,23 +298,8 @@ app.post("/traces", async (c) => {
       const { project, resolved } = authResult;
       span.setAttribute("langwatch.project.id", project.id);
 
+      const body = await readOtlpBody(c.req.raw);
       const contentType = c.req.header("content-type");
-
-      let body: ArrayBuffer;
-      try {
-        body = await readBody(c.req.raw);
-      } catch (error) {
-        loggerTraces.warn(
-          {
-            projectId: project.id,
-            contentEncoding: c.req.header("content-encoding") ?? null,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          "OTel /traces: failed to read request body",
-        );
-        span.setStatus({ code: SpanStatusCode.ERROR, message: "Body read failed" });
-        return c.json({ error: "Unable to read body" }, 400);
-      }
 
       // Best-effort. If the body can't be peeked (malformed, unsupported
       // shape, etc.), customerTraceIds stays empty — the projectId is still
@@ -371,52 +338,51 @@ app.post("/traces", async (c) => {
         });
       }
 
-      let traceRequest: IExportTraceServiceRequest;
-      try {
-        if (contentType === "application/json") {
-          traceRequest = JSON.parse(Buffer.from(body).toString("utf-8"));
-        } else {
-          traceRequest = traceRequestType.decode(new Uint8Array(body));
-        }
-      } catch (error) {
-        try {
-          const json = JSON.parse(Buffer.from(body).toString("utf-8"));
-          traceRequest = traceRequestType.decode(
-            new Uint8Array(traceRequestType.encode(json).finish()),
-          );
-          if (
-            !traceRequest.resourceSpans ||
-            traceRequest.resourceSpans.length === 0
-          ) {
-            throw new Error("Spans are empty, likely an invalid format");
-          }
-        } catch (jsonError) {
-          loggerTraces.error(
-            {
-              error: jsonError,
-              projectId: project.id,
-              customerTraceIds,
-              traceRequest: Buffer.from(body).toString("base64"),
-            },
-            "error parsing traces",
-          );
-          captureException(error, {
-            extra: {
-              projectId: project.id,
-              customerTraceIds,
-              traceRequest: Buffer.from(body).toString("base64"),
-              jsonError,
-            },
-          });
+      const parsed = parseOtlpTraces(body, contentType);
+      if (!parsed.ok) {
+        loggerTraces.error(
+          {
+            error: parsed.error,
+            projectId: project.id,
+            customerTraceIds,
+            traceRequest: Buffer.from(body).toString("base64"),
+          },
+          "error parsing traces",
+        );
+        captureException(new Error(parsed.error), {
+          extra: {
+            projectId: project.id,
+            customerTraceIds,
+            traceRequest: Buffer.from(body).toString("base64"),
+          },
+        });
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse traces" });
+        return c.json({ error: "Failed to parse traces" }, { status: 400 });
+      }
+      const traceRequest = parsed.request;
 
-          span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse traces" });
-          return c.json({ error: "Failed to parse traces" }, { status: 400 });
-        }
+      // Body successfully parsed — mark the API key as used
+      if (resolved.type === "apiKey") {
+        tokenResolver.markUsed({ apiKeyId: resolved.apiKeyId });
       }
 
-      // Body successfully parsed — mark PAT as used
-      if (resolved.type === "pat") {
-        tokenResolver.markUsed({ patId: resolved.patId });
+      // Receiver-authoritative provenance stamp for UserIngestionBinding
+      // tokens. Overwrites any payload-supplied values for the protected
+      // template attribute keys (langwatch.template.id /
+      // langwatch.user_ingestion_binding.id / langwatch.source) — even
+      // a malicious upstream cannot forge a different template/binding
+      // identity onto its own bound traces.
+      if (resolved.type === "user_ingestion_binding") {
+        // OTLP SDK types and the local stamp helper agree structurally on
+        // the slice we mutate (resourceSpans → resource → attributes). The
+        // cast bridges nullability differences in deeper fields the helper
+        // never reads.
+        stampBindingProvenanceOnTraceRequest(traceRequest as unknown as Parameters<typeof stampBindingProvenanceOnTraceRequest>[0], {
+          bindingId: resolved.bindingId,
+          templateId: resolved.templateId,
+          templateSlug: resolved.templateSlug,
+          organizationId: resolved.organizationId,
+        });
       }
 
       const collectionResult =
@@ -439,7 +405,7 @@ app.post("/traces", async (c) => {
 
 // ── POST /logs ───────────────────────────────────────────────────────
 
-app.post("/logs", async (c) => {
+secured.access(handlerManagedAuth(AUTH_REASON)).post("/logs", async (c) => {
   const tracer = getLangWatchTracer("langwatch.otel.logs");
 
   return tracer.withActiveSpan(
@@ -468,67 +434,41 @@ app.post("/logs", async (c) => {
         );
       }
 
-      const contentType = c.req.header("content-type");
-
-      let body: ArrayBuffer;
-      try {
-        body = await readBody(c.req.raw);
-      } catch (error) {
-        loggerLogs.warn(
+      const body = await readOtlpBody(c.req.raw);
+      const parsed = parseOtlpLogs(body, c.req.header("content-type"));
+      if (!parsed.ok) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse logs" });
+        span.recordException(new Error(parsed.error));
+        loggerLogs.error(
           {
+            error: parsed.error,
             projectId: project.id,
-            contentEncoding: c.req.header("content-encoding") ?? null,
-            error: error instanceof Error ? error.message : String(error),
+            logRequest: Buffer.from(body).toString("base64"),
           },
-          "OTel /logs: failed to read request body",
+          "error parsing logs",
         );
-        span.setStatus({ code: SpanStatusCode.ERROR, message: "Body read failed" });
-        return c.json({ error: "Unable to read body" }, 400);
+        captureException(new Error(parsed.error), {
+          extra: {
+            projectId: project.id,
+            logRequest: Buffer.from(body).toString("base64"),
+          },
+        });
+        return c.json({ error: "Failed to parse logs" }, { status: 400 });
+      }
+      const logRequest = parsed.request;
+
+      // Body successfully parsed — mark the API key as used
+      if (resolved.type === "apiKey") {
+        tokenResolver.markUsed({ apiKeyId: resolved.apiKeyId });
       }
 
-      let logRequest: IExportLogsServiceRequest;
-      try {
-        if (contentType === "application/json") {
-          logRequest = JSON.parse(Buffer.from(body).toString("utf-8"));
-        } else {
-          logRequest = logRequestType.decode(new Uint8Array(body));
-        }
-      } catch (error) {
-        try {
-          const json = JSON.parse(Buffer.from(body).toString("utf-8"));
-          logRequest = logRequestType.decode(
-            new Uint8Array(logRequestType.encode(json).finish()),
-          );
-        } catch (jsonError) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse logs" });
-          span.recordException(
-            jsonError instanceof Error ? jsonError : new Error(String(jsonError)),
-          );
-
-          loggerLogs.error(
-            {
-              error: jsonError,
-              projectId: project.id,
-              logRequest: Buffer.from(body).toString("base64"),
-            },
-            "error parsing logs",
-          );
-
-          captureException(error, {
-            extra: {
-              projectId: project.id,
-              logRequest: Buffer.from(body).toString("base64"),
-              jsonError,
-            },
-          });
-
-          return c.json({ error: "Failed to parse logs" }, { status: 400 });
-        }
-      }
-
-      // Body successfully parsed — mark PAT as used
-      if (resolved.type === "pat") {
-        tokenResolver.markUsed({ patId: resolved.patId });
+      if (resolved.type === "user_ingestion_binding") {
+        stampBindingProvenanceOnLogRequest(logRequest as unknown as Parameters<typeof stampBindingProvenanceOnLogRequest>[0], {
+          bindingId: resolved.bindingId,
+          templateId: resolved.templateId,
+          templateSlug: resolved.templateSlug,
+          organizationId: resolved.organizationId,
+        });
       }
 
       await getApp().traces.logCollection.handleOtlpLogRequest({
@@ -544,7 +484,7 @@ app.post("/logs", async (c) => {
 
 // ── POST /metrics ────────────────────────────────────────────────────
 
-app.post("/metrics", async (c) => {
+secured.access(handlerManagedAuth(AUTH_REASON)).post("/metrics", async (c) => {
   const tracer = getLangWatchTracer("langwatch.otel.metrics");
 
   return tracer.withActiveSpan(
@@ -573,67 +513,32 @@ app.post("/metrics", async (c) => {
         );
       }
 
-      const contentType = c.req.header("content-type");
-
-      let body: ArrayBuffer;
-      try {
-        body = await readBody(c.req.raw);
-      } catch (error) {
-        loggerMetrics.warn(
+      const body = await readOtlpBody(c.req.raw);
+      const parsed = parseOtlpMetrics(body, c.req.header("content-type"));
+      if (!parsed.ok) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse metrics" });
+        span.recordException(new Error(parsed.error));
+        loggerMetrics.error(
           {
+            error: parsed.error,
             projectId: project.id,
-            contentEncoding: c.req.header("content-encoding") ?? null,
-            error: error instanceof Error ? error.message : String(error),
+            metricsRequest: Buffer.from(body).toString("base64"),
           },
-          "OTel /metrics: failed to read request body",
+          "error parsing metrics",
         );
-        span.setStatus({ code: SpanStatusCode.ERROR, message: "Body read failed" });
-        return c.json({ error: "Unable to read body" }, 400);
+        captureException(new Error(parsed.error), {
+          extra: {
+            projectId: project.id,
+            metricsRequest: Buffer.from(body).toString("base64"),
+          },
+        });
+        return c.json({ error: "Failed to parse metrics" }, { status: 400 });
       }
+      const metricsRequest = parsed.request;
 
-      let metricsRequest: IExportMetricsServiceRequest;
-      try {
-        if (contentType === "application/json") {
-          metricsRequest = JSON.parse(Buffer.from(body).toString("utf-8"));
-        } else {
-          metricsRequest = metricsRequestType.decode(new Uint8Array(body));
-        }
-      } catch (error) {
-        try {
-          const json = JSON.parse(Buffer.from(body).toString("utf-8"));
-          metricsRequest = metricsRequestType.decode(
-            new Uint8Array(metricsRequestType.encode(json).finish()),
-          );
-        } catch (jsonError) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: "Failed to parse metrics" });
-          span.recordException(
-            jsonError instanceof Error ? jsonError : new Error(String(jsonError)),
-          );
-
-          loggerMetrics.error(
-            {
-              error: jsonError,
-              projectId: project.id,
-              metricsRequest: Buffer.from(body).toString("base64"),
-            },
-            "error parsing metrics",
-          );
-
-          captureException(error, {
-            extra: {
-              projectId: project.id,
-              metricsRequest: Buffer.from(body).toString("base64"),
-              jsonError,
-            },
-          });
-
-          return c.json({ error: "Failed to parse metrics" }, { status: 400 });
-        }
-      }
-
-      // Body successfully parsed — mark PAT as used
-      if (resolved.type === "pat") {
-        tokenResolver.markUsed({ patId: resolved.patId });
+      // Body successfully parsed — mark the API key as used
+      if (resolved.type === "apiKey") {
+        tokenResolver.markUsed({ apiKeyId: resolved.apiKeyId });
       }
 
       await getApp().traces.metricCollection.handleOtlpMetricRequest({
@@ -646,3 +551,5 @@ app.post("/metrics", async (c) => {
     },
   );
 });
+
+export const app = secured.hono;

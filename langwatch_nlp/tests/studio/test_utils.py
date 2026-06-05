@@ -480,7 +480,7 @@ class TestTranslateModelIdForLitellm:
         assert result == "anthropic/claude-opus-4-5-1"
 
     def test_preserves_custom_model_ids_with_dots(self):
-        """Preserves dots for custom OpenAI-compatible model ids (do not rewrite opaque MaaS ids)."""
+        """Preserves dots for custom OpenAI-compatible model ids."""
         result = translate_model_id_for_litellm("custom/Qwen3.5-9B")
         assert result == "custom/Qwen3.5-9B"
 

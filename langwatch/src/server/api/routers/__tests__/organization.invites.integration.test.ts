@@ -230,7 +230,7 @@ describe.skip("Organization Invites Integration", () => {
     mockGetActivePlan.mockResolvedValue(makeTestPlan());
 
     // Re-wire App singleton with fresh mock values
-    resetApp();
+    await resetApp();
     globalForApp.__langwatch_app = createTestApp({
       planProvider: PlanProviderService.create({
         getActivePlan: mockGetActivePlan,
@@ -239,7 +239,7 @@ describe.skip("Organization Invites Integration", () => {
   });
 
   afterAll(async () => {
-    resetApp();
+    await resetApp();
 
     // Cleanup all test data
     await prisma.organizationInvite.deleteMany({
@@ -276,6 +276,7 @@ describe.skip("Organization Invites Integration", () => {
 
   describe("createInviteRequest", () => {
     describe("when member requests invitation with ADMIN role", () => {
+      /** @scenario "Member cannot request invitation with ADMIN role" */
       it("fails with validation error", async () => {
         await expect(
           memberCaller.organization.createInviteRequest({
@@ -305,6 +306,7 @@ describe.skip("Organization Invites Integration", () => {
         expect(results[0]!.invite.status).toBe("WAITING_APPROVAL");
       });
 
+      /** @scenario "Member request sets requestedBy to the requesting user" */
       it("sets requestedBy to the requesting user's ID", async () => {
         const results = await memberCaller.organization.createInviteRequest({
           organizationId,
@@ -316,6 +318,7 @@ describe.skip("Organization Invites Integration", () => {
         expect(results[0]!.invite.requestedBy).toBe(memberUserId);
       });
 
+      /** @scenario "Invitation request has no expiration while awaiting approval" */
       it("creates invitation with null expiration", async () => {
         const results = await memberCaller.organization.createInviteRequest({
           organizationId,
@@ -327,6 +330,7 @@ describe.skip("Organization Invites Integration", () => {
         expect(results[0]!.invite.expiration).toBeNull();
       });
 
+      /** @scenario "No email is sent when a member creates an invitation request" */
       it("does not send invitation email", async () => {
         await memberCaller.organization.createInviteRequest({
           organizationId,
@@ -386,6 +390,7 @@ describe.skip("Organization Invites Integration", () => {
     });
 
     describe("when duplicate invitation exists with WAITING_APPROVAL status", () => {
+      /** @scenario "Duplicate detection across PENDING and WAITING_APPROVAL statuses" */
       it("fails with duplicate invitation error", async () => {
         // Create initial WAITING_APPROVAL invite
         await memberCaller.organization.createInviteRequest({
@@ -421,6 +426,7 @@ describe.skip("Organization Invites Integration", () => {
 
   describe("approveInvite", () => {
     describe("when admin approves a WAITING_APPROVAL invitation", () => {
+      /** @scenario "Approving an invitation sets expiration and status" */
       it("transitions status to PENDING", async () => {
         // Create WAITING_APPROVAL invite
         const results =
@@ -463,6 +469,7 @@ describe.skip("Organization Invites Integration", () => {
         expect(expiration.getTime()).toBeLessThanOrEqual(expectedMax);
       });
 
+      /** @scenario "Email is sent when admin approves an invitation request" */
       it("sends invitation email", async () => {
         const results =
           await memberCaller.organization.createInviteRequest({
@@ -486,6 +493,7 @@ describe.skip("Organization Invites Integration", () => {
     });
 
     describe("when non-admin tries to approve an invitation", () => {
+      /** @scenario "Non-admin cannot approve invitations" */
       it("fails with permission error", async () => {
         // Create WAITING_APPROVAL invite directly in DB
         const invite = await prisma.organizationInvite.create({
@@ -560,6 +568,7 @@ describe.skip("Organization Invites Integration", () => {
 
   describe("deleteInvite", () => {
     describe("when admin deletes a WAITING_APPROVAL invitation", () => {
+      /** @scenario "Deleting a WAITING_APPROVAL invitation works the same as PENDING" */
       it("removes the invitation successfully", async () => {
         // Create WAITING_APPROVAL invite
         const invite = await prisma.organizationInvite.create({
@@ -667,6 +676,7 @@ describe.skip("Organization Invites Integration", () => {
 
   describe("createInvites (admin batch)", () => {
     describe("when admin invites multiple users in a single batch", () => {
+      /** @scenario "Admin batch invite creates all records before sending any emails" */
       it("creates all invite records before sending any emails", async () => {
         const callOrder: string[] = [];
 
@@ -749,6 +759,7 @@ describe.skip("Organization Invites Integration", () => {
 
   describe("approveInvite (email failure)", () => {
     describe("when email service is unavailable during approval", () => {
+      /** @scenario "Email failure during approval does not revert the approval" */
       it("still approves the invitation", async () => {
         // Create WAITING_APPROVAL invite
         const results =
@@ -845,6 +856,7 @@ describe.skip("Organization Invites Integration", () => {
     });
 
     describe("when WAITING_APPROVAL invites count toward member limits", () => {
+      /** @scenario "WAITING_APPROVAL invites count toward license member limits" */
       it("rejects new invite when limit is reached", async () => {
         // Override the subscription handler to set a low limit
         const limitedPlan = makeTestPlan({ maxMembers: 3 });

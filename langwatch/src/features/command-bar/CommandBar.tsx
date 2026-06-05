@@ -7,7 +7,7 @@ import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
 import { useSession } from "~/utils/auth-client";
-import { copyToClipboard } from "~/utils/clipboard";
+import { copyTextToClipboard } from "~/utils/clipboard";
 import type { NextRouter } from "~/utils/compat/next-router";
 import { useRouter } from "~/utils/compat/next-router";
 import { useCommandBar } from "./CommandBarContext";
@@ -324,7 +324,7 @@ export function CommandBar() {
 
     if (path) {
       const url = `${window.location.origin}${path}`;
-      void copyToClipboard(url);
+      void copyTextToClipboard(url);
     }
   }, [allItems, selectedIndex, project?.slug]);
 
@@ -346,6 +346,7 @@ export function CommandBar() {
       motionPreset="slide-in-top"
     >
       <Dialog.Content
+        bg="bg"
         width={COMMAND_BAR_MAX_WIDTH}
         maxWidth="90vw"
         marginTop={COMMAND_BAR_TOP_MARGIN}

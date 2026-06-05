@@ -108,12 +108,17 @@ Feature: Archived Dependency Exclusion from Suite Runs
     Given a suite with two scenarios that are both archived
     When the active scenarios are resolved
     Then an empty list is returned
+    # Distinct from "Suite run fails when all scenarios are archived" (which
+    # asserts AllScenariosArchivedError). Needs a dedicated test that exercises
+    # a list-only resolution path returning an empty array.
 
   @unit @unimplemented
   Scenario: Returns all scenarios when none are archived
     Given a suite with two scenarios that are both active
     When the active scenarios are resolved
     Then both scenarios are returned
+    # Distinct from "passes only active scenario IDs" (which mixes archived +
+    # active). Needs a dedicated test with no archived scenarios.
 
   @unit @unimplemented
   Scenario: Filters out archived targets from a reference list

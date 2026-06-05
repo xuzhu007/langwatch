@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -30,6 +32,11 @@ import (
 type BifrostRouter struct {
 	bf     *bifrost.Bifrost
 	logger *zap.Logger
+	// voyageClient is the single HTTP client reused for every direct
+	// Voyage request so connection pooling actually works. Building a
+	// new http.Client per request would defeat keep-alive and risk
+	// port exhaustion under embedding throughput.
+	voyageClient *http.Client
 }
 
 // BifrostOptions configures the bifrost router.
@@ -52,7 +59,11 @@ func NewBifrostRouter(ctx context.Context, opts BifrostOptions) (*BifrostRouter,
 	if err != nil {
 		return nil, fmt.Errorf("bifrost init: %w", err)
 	}
-	return &BifrostRouter{bf: bf, logger: opts.Logger}, nil
+	return &BifrostRouter{
+		bf:           bf,
+		logger:       opts.Logger,
+		voyageClient: &http.Client{Timeout: 60 * time.Second},
+	}, nil
 }
 
 // Close releases the underlying Bifrost connection pool. Safe to call
@@ -81,18 +92,50 @@ func (r *BifrostRouter) Close() {
 // to an Anthropic-family provider; sending it to OpenAI is a caller
 // error and Bifrost/OpenAI will reject accordingly.
 func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred domain.Credential) (*domain.Response, error) {
-	provider := mapProvider(cred.ProviderID)
 	model := req.Model
 	if req.Resolved != nil {
 		model = req.Resolved.ModelID
 	}
 
+	// Voyage is not a Bifrost ModelProvider (its enum doesn't include
+	// Voyage). The gateway proxies directly to api.voyageai.com — wire
+	// format is OpenAI-compatible so no body translation is required.
+	// Voyage ships embeddings only; any other request type lands on a
+	// clean unsupported-type error.
+	if cred.ProviderID == domain.ProviderVoyage {
+		return r.dispatchVoyageDirect(ctx, req, model, cred)
+	}
+
+	provider := mapProvider(cred.ProviderID)
+
 	if req.Type == domain.RequestTypeResponses {
 		return r.dispatchResponses(ctx, req, provider, model, cred)
 	}
 
+	if req.Type == domain.RequestTypeEmbeddings {
+		return r.dispatchEmbeddings(ctx, req, provider, model, cred)
+	}
+
 	if req.Type == domain.RequestTypePassthrough {
 		return r.dispatchPassthrough(ctx, req, provider, model, cred)
+	}
+
+	// Managed-Bedrock with a per-request runtime endpoint (the customer's
+	// VPC endpoint) dispatches through the official AWS SDK bedrockruntime
+	// client with BaseEndpoint pinned to that VPCE, so the request is
+	// SigV4-signed for and sent to that host instead of the public AWS
+	// endpoint. Without this, the customer's VPCE-conditioned IAM policy
+	// rejects the InvokeModel with a 403. Gated to RequestTypeChat only:
+	// /v1/messages must stay on the raw-forward path below (routing
+	// Anthropic-native bodies through Converse would drop messages-only
+	// fields like `thinking`); embeddings/responses/passthrough are handled
+	// above. A no-op for Bedrock credentials without a runtime endpoint.
+	if req.Type == domain.RequestTypeChat {
+		if endpoint, err := bedrockVPCEEndpoint(cred); err != nil {
+			return nil, err
+		} else if endpoint != "" {
+			return r.dispatchBedrockVPCE(ctx, req, provider, model, cred, endpoint)
+		}
 	}
 
 	bfReq, dispatchCtx, err := buildChatRequest(ctx, req, provider, model)
@@ -114,9 +157,10 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 			return &domain.Response{
 				Body:       rawBody,
 				StatusCode: status,
+				Headers:    forwardableUpstreamHeaders(bifrostResponseHeaders(bfCtx)),
 			}, nil
 		}
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 
 	// /v1/messages callers (Anthropic SDK, claude-code, ...) expect the
@@ -173,9 +217,10 @@ func (r *BifrostRouter) dispatchResponses(
 			return &domain.Response{
 				Body:       rawBody,
 				StatusCode: status,
+				Headers:    forwardableUpstreamHeaders(bifrostResponseHeaders(bfCtx)),
 			}, nil
 		}
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 
 	// Prefer the provider's native response bytes so /v1/responses
@@ -195,6 +240,130 @@ func (r *BifrostRouter) dispatchResponses(
 		Body:       body,
 		StatusCode: http.StatusOK,
 		Usage:      extractResponsesUsage(resp),
+	}, nil
+}
+
+// dispatchEmbeddings routes /v1/embeddings traffic through Bifrost's
+// EmbeddingRequest endpoint. The inbound body is OpenAI-shape
+// ({"model": "...", "input": "..."}); we parse it into Bifrost's
+// EmbeddingInput one-of (Text / Texts / Embedding / Embeddings) and
+// Bifrost translates to the provider's native wire format for
+// OpenAI / Gemini / Cohere etc.
+//
+// Anthropic ships no embeddings API; if a caller routes embeddings to
+// an Anthropic credential we let Bifrost surface the provider's reject
+// directly (no special-casing here keeps the error surface honest).
+func (r *BifrostRouter) dispatchEmbeddings(
+	ctx context.Context,
+	req *domain.Request,
+	provider bfschemas.ModelProvider,
+	model string,
+	cred domain.Credential,
+) (*domain.Response, error) {
+	bfReq, err := buildEmbeddingRequest(req, provider, model)
+	if err != nil {
+		return nil, herr.New(ctx, domain.ErrBadRequest, herr.M{"reason": err.Error()})
+	}
+	bfCtx := bfschemas.NewBifrostContext(withCredential(ctx, cred), time.Time{})
+
+	resp, berr := r.bf.EmbeddingRequest(bfCtx, bfReq)
+	if berr != nil {
+		if rawBody, status, ok := rawResponseFromBifrostError(berr); ok {
+			return &domain.Response{
+				Body:       rawBody,
+				StatusCode: status,
+				Headers:    forwardableUpstreamHeaders(bifrostResponseHeaders(bfCtx)),
+			}, nil
+		}
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
+	}
+
+	body, _ := sonic.Marshal(resp)
+	return &domain.Response{
+		Body:       body,
+		StatusCode: http.StatusOK,
+		Usage:      extractEmbeddingUsage(resp),
+	}, nil
+}
+
+// dispatchVoyageDirect proxies an embedding request directly to
+// api.voyageai.com. Voyage isn't in Bifrost's ModelProvider enum, so
+// the gateway bypasses Bifrost for Voyage-credentialed traffic. The
+// Voyage wire format is OpenAI-compatible (same `{"input": ..., "model": ...}`
+// shape, same `{"data": [{"embedding": [...]}], "usage": {...}}`
+// response), so the gateway forwards the body verbatim and surfaces
+// the upstream response as-is.
+//
+// Non-embedding request types fail cleanly here. Voyage ships no
+// chat/messages/responses APIs.
+func (r *BifrostRouter) dispatchVoyageDirect(
+	ctx context.Context,
+	req *domain.Request,
+	model string,
+	cred domain.Credential,
+) (*domain.Response, error) {
+	if req.Type != domain.RequestTypeEmbeddings {
+		return nil, herr.New(ctx, domain.ErrBadRequest, herr.M{
+			"reason": fmt.Sprintf("voyage credentials only accept embedding requests; got %s", req.Type),
+		})
+	}
+
+	// Voyage accepts the OpenAI shape verbatim. If the model id in the
+	// resolved cred is provider-prefixed (`voyage/voyage-3.5`), strip
+	// the prefix — Voyage's API just wants the bare model name.
+	bodyBytes := req.Body
+	if model != "" {
+		stripped := strings.TrimPrefix(model, "voyage/")
+		// Rewrite the model field on the JSON body to the bare name —
+		// keeps the gateway in control of which model lands at the
+		// provider regardless of what the caller put in the body.
+		var err error
+		bodyBytes, err = sjson.SetBytes(bodyBytes, "model", stripped)
+		if err != nil {
+			return nil, herr.New(ctx, domain.ErrBadRequest, herr.M{"reason": fmt.Sprintf("rewrite model on body: %v", err)})
+		}
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"https://api.voyageai.com/v1/embeddings",
+		bytes.NewReader(bodyBytes),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("voyage direct request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+cred.APIKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.voyageClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("voyage direct dispatch: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("voyage direct read body: %w", err)
+	}
+
+	// Pull usage off the response for the gateway's cost-accounting
+	// pipeline. Voyage returns `usage: {total_tokens: N}` (no separate
+	// prompt/completion split — embedding endpoints only consume
+	// prompt tokens).
+	usage := domain.Usage{}
+	if resp.StatusCode == http.StatusOK {
+		total := int(gjson.GetBytes(raw, "usage.total_tokens").Int())
+		usage = domain.Usage{
+			PromptTokens:     total,
+			CompletionTokens: 0,
+			TotalTokens:      total,
+		}
+	}
+
+	return &domain.Response{
+		Body:       raw,
+		StatusCode: resp.StatusCode,
+		Usage:      usage,
 	}, nil
 }
 
@@ -219,6 +388,19 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 		return r.dispatchPassthroughStream(ctx, req, provider, model, cred)
 	}
 
+	// Managed-Bedrock with a per-request runtime endpoint streams through the
+	// official Bedrock ConverseStream API over the customer's VPC endpoint —
+	// same rationale as the non-streaming Dispatch intercept above, and gated
+	// to RequestTypeChat for the same reason (/v1/messages stays raw-forward).
+	// A no-op for Bedrock credentials without a runtime endpoint.
+	if req.Type == domain.RequestTypeChat {
+		if endpoint, err := bedrockVPCEEndpoint(cred); err != nil {
+			return nil, err
+		} else if endpoint != "" {
+			return r.dispatchBedrockVPCEStream(ctx, req, provider, model, cred, endpoint)
+		}
+	}
+
 	if req.Type == domain.RequestTypeChat && isOpenAICompatibleProvider(provider) {
 		req.Body = ensureStreamIncludeUsage(req.Body)
 	}
@@ -232,7 +414,7 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 
 	ch, berr := r.bf.ChatCompletionStreamRequest(bfCtx, bfReq)
 	if berr != nil {
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 
 	return &bifrostStreamIterator{ch: ch}, nil
@@ -265,7 +447,7 @@ func (r *BifrostRouter) dispatchResponsesStream(
 
 	ch, berr := r.bf.ResponsesStreamRequest(bfCtx, bfReq)
 	if berr != nil {
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 	return &bifrostStreamIterator{ch: ch}, nil
 }
@@ -292,9 +474,10 @@ func (r *BifrostRouter) dispatchPassthrough(
 			return &domain.Response{
 				Body:       rawBody,
 				StatusCode: status,
+				Headers:    forwardableUpstreamHeaders(bifrostResponseHeaders(bfCtx)),
 			}, nil
 		}
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 
 	status := resp.StatusCode
@@ -335,7 +518,7 @@ func (r *BifrostRouter) dispatchPassthroughStream(
 
 	ch, berr := r.bf.PassthroughStream(bfCtx, provider, bfReq)
 	if berr != nil {
-		return nil, classifyBifrostError(ctx, berr)
+		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 	return &bifrostStreamIterator{ch: ch, rawFraming: true}, nil
 }
@@ -541,16 +724,21 @@ func credentialToBifrostKey(cred domain.Credential, provider bfschemas.ModelProv
 		k.AzureKeyConfig = cfg
 
 	case bfschemas.Bedrock:
+		// Two nlpgo routes feed Bedrock creds under different key names: the
+		// dispatcheradapter (Studio / workflows) translates to the canonical
+		// access_key / secret_key / session_token / region, while the
+		// gatewayproxy (/go/proxy) keeps the litellm aws_* names. Accept both
+		// so neither route lands here with empty credentials.
 		cfg := &bfschemas.BedrockKeyConfig{
-			AccessKey:   envVar(cred.Extra["access_key"]),
-			SecretKey:   envVar(cred.Extra["secret_key"]),
+			AccessKey:   envVar(credExtra(cred, "access_key", "aws_access_key_id")),
+			SecretKey:   envVar(credExtra(cred, "secret_key", "aws_secret_access_key")),
 			Deployments: cred.DeploymentMap,
 		}
-		if st, ok := cred.Extra["session_token"]; ok && st != "" {
+		if st := credExtra(cred, "session_token", "aws_session_token"); st != "" {
 			v := envVar(st)
 			cfg.SessionToken = &v
 		}
-		if region, ok := cred.Extra["region"]; ok && region != "" {
+		if region := credExtra(cred, "region", "aws_region_name"); region != "" {
 			v := envVar(region)
 			cfg.Region = &v
 		}
@@ -597,6 +785,75 @@ func mapProvider(id domain.ProviderID) bfschemas.ModelProvider {
 
 // --- Error classification ---
 
+// errFromBifrost turns a Bifrost dispatch error into the error the gateway
+// surfaces to the client. When the provider returned a real HTTP status, that
+// status (and the provider's native error body when Bifrost captured it) is
+// forwarded verbatim via UpstreamError — so a terminal upstream 4xx reaches
+// the client as that 4xx instead of a retryable 502, and the client can tell
+// terminal from retryable correctly. A zero status means there was no upstream
+// response (transport failure / timeout) — fall back to classification, which
+// maps it to provider_timeout / the gateway's own error taxonomy.
+//
+// This is the streaming-path counterpart to the non-stream
+// rawResponseFromBifrostError branch: streaming dispatch can only return an
+// error, so the upstream status + body ride on UpstreamError instead of a
+// *domain.Response.
+func errFromBifrost(ctx context.Context, berr *bfschemas.BifrostError, respHeaders map[string]string) error {
+	status := 0
+	if berr.StatusCode != nil {
+		status = *berr.StatusCode
+	}
+	if status <= 0 {
+		return classifyBifrostError(ctx, berr)
+	}
+	body, _ := extractRawResponseBytes(berr.ExtraFields.RawResponse)
+	return &domain.UpstreamError{
+		StatusCode: status,
+		Body:       body,
+		Message:    bfErrorMsg(berr),
+		Headers:    forwardableUpstreamHeaders(respHeaders),
+	}
+}
+
+// bifrostResponseHeaders reads the provider's HTTP response headers that
+// Bifrost stashes on the dispatch context (provider handlers call
+// ctx.SetValue(BifrostContextKeyProviderResponseHeaders, ...) before returning,
+// including on the non-2xx error path). Returns nil when absent.
+func bifrostResponseHeaders(bfCtx *bfschemas.BifrostContext) map[string]string {
+	if bfCtx == nil {
+		return nil
+	}
+	if v, ok := bfCtx.Value(bfschemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+		return v
+	}
+	return nil
+}
+
+// forwardableUpstreamHeaders selects the upstream response headers that are
+// safe and useful to forward to the client on an error: the retry-signaling
+// headers Retry-After (backoff hint on 429/503) and x-should-retry (the
+// provider's canonical terminal-vs-retryable signal). Everything else
+// (transport headers, content-length, auth echoes) is dropped. Match is
+// case-insensitive; output uses canonical names.
+func forwardableUpstreamHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, 2)
+	for k, v := range in {
+		switch strings.ToLower(k) {
+		case "retry-after":
+			out["Retry-After"] = v
+		case "x-should-retry":
+			out["x-should-retry"] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func classifyBifrostError(ctx context.Context, berr *bfschemas.BifrostError) error {
 	status := 0
 	if berr.StatusCode != nil {
@@ -633,11 +890,16 @@ func extractUsage(resp *bfschemas.BifrostChatResponse) domain.Usage {
 	if resp == nil || resp.Usage == nil {
 		return domain.Usage{}
 	}
-	return domain.Usage{
+	u := domain.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
 		TotalTokens:      resp.Usage.TotalTokens,
 	}
+	if d := resp.Usage.PromptTokensDetails; d != nil {
+		u.CacheReadTokens = d.CachedReadTokens
+		u.CacheCreationTokens = d.CachedWriteTokens
+	}
+	return u
 }
 
 // extractResponsesUsage maps the Responses-API usage block onto the
@@ -648,9 +910,29 @@ func extractResponsesUsage(resp *bfschemas.BifrostResponsesResponse) domain.Usag
 	if resp == nil || resp.Usage == nil {
 		return domain.Usage{}
 	}
-	return domain.Usage{
+	u := domain.Usage{
 		PromptTokens:     resp.Usage.InputTokens,
 		CompletionTokens: resp.Usage.OutputTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+	if d := resp.Usage.InputTokensDetails; d != nil {
+		u.CacheReadTokens = d.CachedReadTokens
+		u.CacheCreationTokens = d.CachedWriteTokens
+	}
+	return u
+}
+
+// extractEmbeddingUsage maps Bifrost's embedding usage block. Embedding
+// endpoints only consume input tokens (no output text), so
+// CompletionTokens stays zero and the prompt total goes into both
+// PromptTokens and TotalTokens to keep the cost math simple downstream.
+func extractEmbeddingUsage(resp *bfschemas.BifrostEmbeddingResponse) domain.Usage {
+	if resp == nil || resp.Usage == nil {
+		return domain.Usage{}
+	}
+	return domain.Usage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: 0,
 		TotalTokens:      resp.Usage.TotalTokens,
 	}
 }
@@ -693,12 +975,7 @@ func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
 			data, _ := sonic.Marshal(chunk.BifrostChatResponse)
 			it.current = data
 			if chunk.BifrostChatResponse.Usage != nil {
-				u := chunk.BifrostChatResponse.Usage
-				it.usage = domain.Usage{
-					PromptTokens:     u.PromptTokens,
-					CompletionTokens: u.CompletionTokens,
-					TotalTokens:      u.TotalTokens,
-				}
+				it.usage = extractUsage(chunk.BifrostChatResponse)
 			}
 		} else if chunk.BifrostResponsesStreamResponse != nil {
 			// Responses API stream frames (response.created /
@@ -710,12 +987,7 @@ func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
 			it.current = data
 			//nolint:staticcheck // explicit embedded-field reference matches the parallel branches above for readability.
 			if resp := chunk.BifrostResponsesStreamResponse.Response; resp != nil && resp.Usage != nil {
-				u := resp.Usage
-				it.usage = domain.Usage{
-					PromptTokens:     u.InputTokens,
-					CompletionTokens: u.OutputTokens,
-					TotalTokens:      u.TotalTokens,
-				}
+				it.usage = extractResponsesUsage(resp)
 			}
 		} else if chunk.BifrostPassthroughResponse != nil {
 			// Passthrough stream chunks carry the raw upstream bytes
@@ -773,13 +1045,14 @@ func parseGeminiPassthroughUsage(body []byte) (domain.Usage, bool) {
 	if total == 0 {
 		total = prompt + completion
 	}
-	// Note: cachedContentTokenCount (when present) is folded into prompt
-	// tokens upstream by Gemini; the trace pipeline derives cache_read
-	// from a separate gen_ai.usage.cache_read attr, not from total.
+	// Gemini folds cachedContentTokenCount into promptTokenCount, so it rides
+	// inside PromptTokens; surfacing it as CacheReadTokens lets the span report
+	// the fresh input separately. Gemini bills no distinct cache-write tokens.
 	return domain.Usage{
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
 		TotalTokens:      total,
+		CacheReadTokens:  int(usage.Get("cachedContentTokenCount").Int()),
 	}, true
 }
 

@@ -39,6 +39,7 @@ export const spanInsertDataSchema = z.object({
   droppedAttributesCount: z.number(),
   droppedEventsCount: z.number(),
   droppedLinksCount: z.number(),
+  retentionDays: z.number().optional().default(0),
 });
 
 export type SpanInsertData = z.infer<typeof spanInsertDataSchema>;
@@ -81,25 +82,44 @@ export const traceSummaryDataSchema = z.object({
   subTopicId: z.string().nullable(),
   annotationIds: z.array(z.string()),
   attributes: z.record(z.string()),
-  scenarioRoleCosts: z.record(z.string(), z.number()).optional(),
-  scenarioRoleLatencies: z.record(z.string(), z.number()).optional(),
-  scenarioRoleSpans: z.record(z.string(), z.string()).optional(),
-  /** Per-span costs for retroactive role assignment when parent arrives after children. Internal bookkeeping. */
-  spanCosts: z.record(z.string(), z.number()).optional(),
   traceName: z.string(),
   /** Start time of the root span that set traceName, used for deterministic tie-breaking when multiple root spans exist. Internal bookkeeping. */
   rootSpanStartTimeMs: z.number().optional(),
-  /** LangWatch SDK events hoisted from spans during fold projection. */
-  events: z
-    .array(
-      z.object({
-        spanId: z.string(),
-        timestamp: z.number(),
-        name: z.string(),
-        attributes: z.record(z.string(), z.string()),
-      }),
-    )
-    .optional(),
+  /**
+   * When true the user has explicitly renamed the trace via
+   * `ChangeTraceNameCommand`, and the fold projection must NOT clobber
+   * `traceName` from a later root-span arrival. Without this latch, a
+   * delayed root span landing post-rename would wipe out the user's edit
+   * the next time the projection re-folds.
+   */
+  traceNameUserOverridden: z.boolean().optional(),
+  /**
+   * True when `traceName` came from the "no real root, fall back to
+   * earliest span" path rather than a span with `parentSpanId === null`.
+   * Customers occasionally emit the first span with a bogus
+   * `parent_span_id` that points to no span in the trace, so no real
+   * root ever exists and the trace would otherwise stay unnamed. The
+   * fallback lets it pick up a sensible name immediately; if a real
+   * root span arrives later the projection prefers it and clears this
+   * flag, since fold updates are incremental.
+   *
+   * Cleared by a user rename (TraceNameChanged event) — the rename is
+   * itself a higher-precedence source of the name, so the "is this
+   * still fallback-sourced?" question is meaningfully no.
+   * `rootMetadataFromFallback` continues to track the metadata
+   * provenance independently in that case.
+   */
+  traceNameFromFallback: z.boolean().optional(),
+  /**
+   * True when `rootSpanStartTimeMs` / `rootSpanType` were claimed via
+   * the fallback path (a non-root span used as a stand-in because no
+   * real root has arrived yet). Pairs with `traceNameFromFallback` but
+   * outlives a user rename — a user-supplied name disowns the fallback
+   * for *naming purposes* but the metadata itself is still a stand-in,
+   * so a real root arriving later must still be allowed to take it
+   * over.
+   */
+  rootMetadataFromFallback: z.boolean().optional(),
   occurredAt: z.number(),
   createdAt: z.number(),
   updatedAt: z.number(),

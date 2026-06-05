@@ -1,14 +1,15 @@
-import { Box, Flex, Icon } from "@chakra-ui/react";
+import { Box, chakra, Flex, Icon } from "@chakra-ui/react";
 import { Search } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import type React from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Kbd } from "~/components/ops/shared/Kbd";
 import { useModelProvidersSettings } from "~/hooks/useModelProvidersSettings";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { SEARCH_FIELDS } from "~/server/app-layer/traces/query-language/metadata";
-import { hasCrossFacetOR } from "~/server/app-layer/traces/query-language/queries";
 import { useTraceFacets } from "../../hooks/useTraceFacets";
+import { analyzeOrGroups } from "~/server/app-layer/traces/query-language/queries";
+import { useFacetHoverStore } from "../../stores/facetHoverStore";
 import { useFilterStore } from "../../stores/filterStore";
 import { AskAiButton } from "../ai/AskAiButton";
 import { ActiveSearchEditor } from "./ActiveSearchEditor";
@@ -22,7 +23,12 @@ import {
   statusBackgroundColor,
   statusBorderColor,
 } from "./SearchBarIndicators";
+import { SearchTipsPopover } from "./SearchTipsPopover";
 import { SyntaxHelpDrawerHost } from "./SyntaxHelpDrawer";
+import {
+  TokenValuePicker,
+  type TokenValuePickerAnchor,
+} from "./TokenValuePicker";
 import type { ValueResolver } from "./useFilterEditor";
 import { useFloatRect } from "./useFloatRect";
 import { useGlobalAiShortcut } from "./useGlobalAiShortcut";
@@ -59,20 +65,15 @@ export const SearchBar: React.FC = () => {
   const parseError = useFilterStore((s) => s.parseError);
   const applyQueryText = useFilterStore((s) => s.applyQueryText);
   const clearAll = useFilterStore((s) => s.clearAll);
-  const showCrossFacetWarning = useFilterStore((s) => hasCrossFacetOR(s.ast));
+  const lastAiTranslation = useFilterStore((s) => s.lastAiTranslation);
 
-  // Errors win over warnings — a query that doesn't parse already produces
-  // confusing facet behaviour, so the cross-facet OR warning is moot until
-  // the parse fixes itself.
+  // Cross-facet OR no longer triggers a warning chip: the sidebar now
+  // marks OR-grouped facets with a coloured "OR" pill + rail (see
+  // SidebarSection.orGroupId), so the situation reads honestly without
+  // a banner. Parse errors still win.
   const status: SearchBarStatus = parseError
     ? { kind: "error", message: parseError }
-    : showCrossFacetWarning
-      ? {
-          kind: "warning",
-          message:
-            "Query uses cross-facet OR — the sidebar may not fully reflect what you've searched for.",
-        }
-      : { kind: "ok" };
+    : { kind: "ok" };
 
   // Gate Ask AI on having at least one model provider configured. The
   // AI mode submits requests against the user's own keys; with none
@@ -90,6 +91,21 @@ export const SearchBar: React.FC = () => {
   const [editorMounted, setEditorMounted] = useState(false);
   const [editorHasContent, setEditorHasContent] = useState(false);
   const [aiMode, setAiMode] = useState(false);
+  const [suggestionOpen, setSuggestionOpen] = useState(false);
+  const [cursorAnchorX, setCursorAnchorX] = useState(0);
+  const [editorFocused, setEditorFocused] = useState(false);
+  // When the user fires ⌘+⏎ on a typed query, we punt the text into AI
+  // mode AND ask the composer to submit immediately. Tracked separately
+  // from `aiMode` because the same flag would otherwise re-fire on every
+  // subsequent AI-mode entry (e.g. clicking the Ask AI button to start
+  // fresh would auto-submit the now-applied filter as a prompt).
+  const [aiAutoSubmitSeed, setAiAutoSubmitSeed] = useState<string | null>(null);
+  // Anchor info for the click-a-chip-to-edit-value popover. Lifted to
+  // SearchBar so the popover can portal into document.body and share
+  // the same instance whether the click came from PlaceholderEditor or
+  // the live ProseMirror editor.
+  const [tokenAnchor, setTokenAnchor] =
+    useState<TokenValuePickerAnchor | null>(null);
 
   const requestEditor = useCallback(() => setEditorMounted(true), []);
 
@@ -108,6 +124,64 @@ export const SearchBar: React.FC = () => {
   const placeholderRef = useRef<HTMLDivElement>(null);
   const floatRect = useFloatRect(placeholderRef, aiMode);
 
+  // Delegate chip hover events on the search bar so both the cold-load
+  // PlaceholderEditor and the live ProseMirror editor's
+  // decoration-injected chips broadcast hover into the global
+  // `facetHoverStore`. The sidebar listens to that store and
+  // cross-highlights the matching row + any OR-group peers.
+  useEffect(() => {
+    // When the chip layer disappears (AI mode swap, unmount) no DOM
+    // mouseout fires for the removed chip nodes — clear up front so a
+    // mid-hover transition can't leave the sidebar latched on a chip
+    // that no longer exists.
+    if (aiMode) {
+      useFacetHoverStore.getState().clearHover();
+      return;
+    }
+    const root = placeholderRef.current;
+    if (!root) return;
+    const enter = (e: Event) => {
+      const target = (e.target as HTMLElement | null)?.closest(
+        "[data-filter-chip-field][data-filter-chip-value]",
+      ) as HTMLElement | null;
+      if (!target) return;
+      const field = target.dataset.filterChipField ?? "";
+      const value = target.dataset.filterChipValue ?? "";
+      if (!field || !value) return;
+      // Only broadcast the whole OR group when this exact (field,
+      // value) is one of its members. Sharing a field with a group
+      // member doesn't count — `origin:simulation` should not drag
+      // `origin:evaluation` and `origin:application` along just
+      // because they happen to be grouped under the same field.
+      const ast = useFilterStore.getState().ast;
+      const orAnalysis = analyzeOrGroups(ast);
+      const groupId = orAnalysis.memberToGroupId.get(`${field}|${value}`);
+      const group = groupId
+        ? orAnalysis.groups.find((g) => g.id === groupId)
+        : null;
+      if (group) {
+        useFacetHoverStore.getState().setHoveredGroup(group);
+      } else {
+        useFacetHoverStore.getState().setHoveredFacet({ field, value });
+      }
+    };
+    const leave = (e: Event) => {
+      const related = (e as MouseEvent).relatedTarget as HTMLElement | null;
+      // Don't clear if we're moving between two chips — the next chip's
+      // mouseenter will overwrite and we'd otherwise flicker the
+      // highlight off-then-on.
+      if (related?.closest("[data-filter-chip-field]")) return;
+      useFacetHoverStore.getState().clearHover();
+    };
+    root.addEventListener("mouseover", enter, true);
+    root.addEventListener("mouseout", leave, true);
+    return () => {
+      root.removeEventListener("mouseover", enter, true);
+      root.removeEventListener("mouseout", leave, true);
+      useFacetHoverStore.getState().clearHover();
+    };
+  }, [aiMode]);
+
   // ⌘I / Ctrl+I anywhere on the page enters AI mode. Gated through the
   // same provider-primer popover the button uses — pressing the shortcut
   // when no provider is configured shouldn't dump the user into a
@@ -119,6 +193,27 @@ export const SearchBar: React.FC = () => {
     setAiMode(true);
   }, [askAiNeedsProviderPrimer]);
   useGlobalAiShortcut(handleAiShortcut);
+
+  // ⌘+⏎ / Ctrl+⏎ from inside the editor: punt the typed text into AI
+  // mode and auto-submit it. Lets the operator triage "is this filter
+  // syntax or free text I want the AI to interpret?" without taking
+  // their hands off the keyboard.
+  const handleEditorAiShortcut = useCallback(
+    (currentText: string) => {
+      if (askAiNeedsProviderPrimer) return;
+      const trimmed = currentText.trim();
+      // Empty input still opens the composer (parity with the button),
+      // it just doesn't auto-submit a blank prompt.
+      setAiAutoSubmitSeed(trimmed.length > 0 ? trimmed : null);
+      setAiMode(true);
+    },
+    [askAiNeedsProviderPrimer],
+  );
+
+  const handleAiBarClose = useCallback(() => {
+    setAiMode(false);
+    setAiAutoSubmitSeed(null);
+  }, []);
 
   // Reuse the discover payload that already powers the facets sidebar — its
   // `topValues` is exactly the autocomplete pool for `model:`, `service:`,
@@ -161,7 +256,21 @@ export const SearchBar: React.FC = () => {
           <FloatingAiBar
             key="ai-bar"
             rect={floatRect}
-            onClose={() => setAiMode(false)}
+            onClose={handleAiBarClose}
+            // If the ⌘+⏎ shortcut seeded a specific prompt, that wins
+            // outright (and the composer auto-submits below). Otherwise
+            // fall through to the same "re-show last natural-language
+            // prompt vs current query" logic the Ask AI button uses.
+            initialPrompt={
+              aiAutoSubmitSeed !== null
+                ? aiAutoSubmitSeed
+                : lastAiTranslation &&
+                    lastAiTranslation.projectId === project?.id &&
+                    lastAiTranslation.query === queryText
+                  ? lastAiTranslation.prompt
+                  : queryText
+            }
+            autoSubmit={aiAutoSubmitSeed !== null}
           />
         )}
       </AnimatePresence>
@@ -196,24 +305,75 @@ export const SearchBar: React.FC = () => {
                 autoFocus
                 onHasContentChange={setEditorHasContent}
                 valueResolver={valueResolver}
+                onTokenClick={setTokenAnchor}
+                onAiShortcut={handleEditorAiShortcut}
+                onSuggestionOpenChange={setSuggestionOpen}
+                onCursorAnchorChange={setCursorAnchorX}
+                onFocusChange={setEditorFocused}
               />
             ) : (
               <PlaceholderEditor
                 queryText={queryText}
                 onActivate={requestEditor}
                 onApplyQueryText={applyQueryText}
+                onTokenClick={setTokenAnchor}
               />
             )}
+            {hasContent &&
+              editorFocused &&
+              !suggestionOpen &&
+              !askAiNeedsProviderPrimer && (
+                <SearchSubmitHint anchorX={cursorAnchorX} />
+              )}
           </Box>
 
           <StatusBadge status={status} />
+          <SearchTipsPopover />
           {hasContent ? (
             <ClearButton onClear={handleClear} />
           ) : (
             <Kbd>{"/"}</Kbd>
           )}
+          <TokenValuePicker
+            anchor={tokenAnchor}
+            onClose={() => setTokenAnchor(null)}
+          />
         </Flex>
       )}
     </Box>
   );
 };
+
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const MOD_KEY_SYMBOL = IS_MAC ? "⌘" : "Ctrl";
+
+/**
+ * Plain one-liner hint that floats just after the typed content.
+ * Pure UTF-8 text — no Kbd chips, no clickable fragments. The whole
+ * thing reads as a single faint hint and never competes with the
+ * input for attention.
+ */
+const SearchSubmitHint: React.FC<{ anchorX: number }> = ({ anchorX }) => (
+  <chakra.span
+    position="absolute"
+    // Bigger gap (24px) so the hint doesn't crowd the last typed glyph.
+    left={`${anchorX + 24}px`}
+    // Pixel-nudge up (~1px from geometric center) — the hint text and
+    // the editor text use different font stacks, and Chakra's exact
+    // 50% transform leaves the hint baseline sitting visibly below
+    // the editor's typing line on light mode.
+    top="calc(50% - 1px)"
+    transform="translateY(-50%)"
+    color={{ base: "gray.400", _dark: "gray.500" }}
+    fontSize="xs"
+    fontWeight="normal"
+    whiteSpace="nowrap"
+    overflow="hidden"
+    textOverflow="ellipsis"
+    pointerEvents="none"
+    userSelect="none"
+  >
+    {`Press ${MOD_KEY_SYMBOL} + Enter to Ask AI`}
+  </chakra.span>
+);
