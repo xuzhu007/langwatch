@@ -51,6 +51,7 @@ RUN cd langwatch && pnpm prisma generate
 FROM node:24-alpine
 RUN apk --no-cache add curl openssl bash
 RUN npm install -g pnpm@10.24.0
+RUN npm install -g concurrently --registry http://repos.hikvision.com/nexus/repository/npm/
 
 COPY --from=builder /usr/local/bin/goose /usr/local/bin/goose
 
