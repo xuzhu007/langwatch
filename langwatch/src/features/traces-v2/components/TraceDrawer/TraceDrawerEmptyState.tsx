@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 
 interface TraceDrawerEmptyStateProps {
   /**
@@ -91,7 +92,7 @@ export function TraceDrawerEmptyState({
 
   const handleCopy = () => {
     if (!traceId) return;
-    void navigator.clipboard.writeText(traceId).then(() => {
+    void copyToClipboard(traceId).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });

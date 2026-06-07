@@ -7,6 +7,7 @@ import {
   LuSparkles,
 } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
 import { Chip } from "../Chip";
 import { TooltipRow } from "./TooltipRow";
@@ -58,7 +59,7 @@ export function PinnedMetricPill({
 
   const handleCopy = useCallback(() => {
     if (value == null) return;
-    void navigator.clipboard.writeText(value);
+    void copyToClipboard(value);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }, [value]);

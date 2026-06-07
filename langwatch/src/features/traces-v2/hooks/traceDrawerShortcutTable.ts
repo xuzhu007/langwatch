@@ -2,6 +2,7 @@ import type {
   SpanTreeNode,
   TraceHeader,
 } from "~/server/api/routers/tracesV2.schemas";
+import { copyToClipboard } from "~/utils/clipboard";
 import type { useDrawerStore } from "../stores/drawerStore";
 import type { useTraceDrawerNavigation } from "./useTraceDrawerNavigation";
 
@@ -218,7 +219,7 @@ export const TRACE_DRAWER_SHORTCUTS: ShortcutEntry[] = [
     group: "Actions",
     description: "Copy trace ID",
     run: ({ trace }) => {
-      void navigator.clipboard.writeText(trace.traceId);
+      void copyToClipboard(trace.traceId);
     },
   },
 ];

@@ -24,6 +24,7 @@ import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { PersonalFeatureGateDialog } from "~/components/me/PersonalFeatureGateDialog";
 import { usePersonalFeatureGate } from "~/components/me/usePersonalFeatureGate";
 import { useGoToSpanInPlaygroundTabUrlBuilder } from "~/prompts/prompt-playground/hooks/useLoadSpanIntoPromptPlayground";
+import { copyToClipboard } from "~/utils/clipboard";
 import { AnnotationPopover } from "./conversationView/AnnotationPopover";
 import { IOViewerBody } from "./IOViewerBody";
 import { safePrettyJson } from "./JsonHighlight";
@@ -184,7 +185,7 @@ function CopyButton({ text }: { text: string }) {
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(text);
+    void copyToClipboard(text);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   };

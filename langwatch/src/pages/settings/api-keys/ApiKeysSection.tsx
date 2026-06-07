@@ -26,6 +26,7 @@ import { ScopeFilter as ScopeFilterComponent } from "~/components/settings/Scope
 import { useAvailableScopes } from "~/hooks/useAvailableScopes";
 import { useUrlScopeFilter } from "~/hooks/useUrlScopeFilter";
 import { filterProvidersByScope } from "~/utils/filterProvidersByScope";
+import { copyToClipboard } from "~/utils/clipboard";
 import { CreateApiKeyDrawer, type CreateApiKeyInput } from "./CreateApiKeyDrawer";
 import { EditApiKeyDrawer } from "./EditApiKeyDrawer";
 import { RevokeConfirmDialog } from "./RevokeConfirmDialog";
@@ -40,7 +41,7 @@ function ProjectKeyActions({ apiKey }: { apiKey: string }) {
       variant="ghost"
       aria-label="Copy secret key"
       onClick={() => {
-        void navigator.clipboard.writeText(apiKey);
+        void copyToClipboard(apiKey);
         toaster.create({
           title: "API key copied to clipboard",
           type: "success",

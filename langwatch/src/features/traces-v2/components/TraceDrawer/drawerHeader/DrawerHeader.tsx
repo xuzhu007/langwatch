@@ -32,6 +32,7 @@ import { useDejaViewLink } from "~/hooks/useDejaViewLink";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import type { TraceHeader } from "~/server/api/routers/tracesV2.schemas";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useConversationContext } from "../../../hooks/useConversationContext";
 import { usePinnedAttributes } from "../../../hooks/usePinnedAttributes";
 import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
@@ -112,7 +113,7 @@ function TraceIdChip({ traceId }: { traceId: string }) {
         typeof navigator !== "undefined" &&
         navigator.clipboard?.writeText
       ) {
-        await navigator.clipboard.writeText(traceId);
+        await copyToClipboard(traceId);
         toaster.create({
           title: "Trace ID copied",
           // Show the full id so the operator can verify what landed on
@@ -722,7 +723,7 @@ export const DrawerHeader = memo(function DrawerHeader({
   ]);
 
   const handleCopyTraceId = () => {
-    void navigator.clipboard.writeText(trace.traceId);
+    void copyToClipboard(trace.traceId);
   };
 
   const [rawOpen, setRawOpen] = useState(false);

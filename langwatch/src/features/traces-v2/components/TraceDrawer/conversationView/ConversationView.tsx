@@ -14,6 +14,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { type RouterOutputs } from "~/utils/api";
 import { useAnnotationsByTraceIds } from "~/hooks/useAnnotationsByTraceIds";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useConversationTurns } from "../../../hooks/useConversationTurns";
 import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
 import type { TraceListItem } from "../../../types/trace";
@@ -485,7 +486,7 @@ const MarkdownConversationView: React.FC<{
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(joinConversationMarkdown(chunks));
+    void copyToClipboard(joinConversationMarkdown(chunks));
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }, [chunks]);

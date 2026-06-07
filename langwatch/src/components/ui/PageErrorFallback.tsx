@@ -12,6 +12,7 @@ import {
 import { AlertTriangle, Copy, Check, RotateCcw, Home } from "lucide-react";
 import { useRouter } from "~/utils/compat/next-router";
 import { captureException } from "~/utils/posthogErrorCapture";
+import { copyToClipboard } from "~/utils/clipboard";
 
 export function PageErrorFallback({
   error,
@@ -79,7 +80,7 @@ export function PageErrorFallback({
                 color="fg.muted"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(stack ?? message);
+                    await copyToClipboard(stack ?? message);
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
                   } catch {

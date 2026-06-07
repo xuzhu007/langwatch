@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { generateUUID } from "~/utils/generateUUID";
 import type { RowKind } from "../components/TraceTable/registry";
 import {
   LENS_CAPABILITIES,
@@ -379,13 +380,7 @@ const defaultColumnOrder: string[] = [
 ];
 
 function generateId(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `custom-${crypto.randomUUID()}`;
-  }
-  return `custom-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `custom-${generateUUID()}`;
 }
 
 function setDraft(

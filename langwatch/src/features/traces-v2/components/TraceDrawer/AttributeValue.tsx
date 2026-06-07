@@ -20,6 +20,7 @@ import {
 } from "react-icons/lu";
 import { Popover } from "~/components/ui/popover";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 import {
   type AttributeFormat,
   buildInlineDescriptor,
@@ -365,7 +366,7 @@ function ChatRow({ message }: { message: ChatMessage }) {
 function CopyButton({ payload }: { payload: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = useCallback(() => {
-    void navigator.clipboard.writeText(payload);
+    void copyToClipboard(payload);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   }, [payload]);

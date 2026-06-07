@@ -3,6 +3,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { LuCheck, LuCopy, LuPin, LuPinOff } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { copyToClipboard } from "~/utils/clipboard";
 import { usePinnedAttributes } from "../../hooks/usePinnedAttributes";
 import type { PinnedAttributeSource } from "../../stores/pinnedAttributesStore";
 import { AttributeValue } from "./AttributeValue";
@@ -277,7 +278,7 @@ function PinToggle({
 function CopyAllButton({ payload }: { payload: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = () => {
-    void navigator.clipboard.writeText(payload);
+    void copyToClipboard(payload);
     setCopied(true);
     setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   };
@@ -377,7 +378,7 @@ function FlatRow({
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => void navigator.clipboard.writeText(display)}
+        onClick={() => void copyToClipboard(display)}
         aria-label={`Copy ${attrKey}`}
         padding={0}
         minWidth="auto"

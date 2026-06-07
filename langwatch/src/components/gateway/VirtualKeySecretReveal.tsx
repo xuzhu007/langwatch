@@ -13,6 +13,7 @@ import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 
 import { Dialog } from "~/components/ui/dialog";
+import { copyToClipboard } from "~/utils/clipboard";
 import { VirtualKeyUsageSnippet } from "./VirtualKeyUsageSnippet";
 
 type VirtualKeySecretRevealProps = {
@@ -43,7 +44,7 @@ export function VirtualKeySecretReveal({
   const [confirmed, setConfirmed] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(secret);
+    await copyToClipboard(secret);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };

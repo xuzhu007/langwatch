@@ -10,6 +10,7 @@ import { Check, Copy, Eye, EyeOff, WandSparkles } from "lucide-react";
 import type React from "react";
 import { useMemo, useState } from "react";
 import type { HighlighterGeneric } from "shiki";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useColorMode } from "../../../../../components/ui/color-mode";
 import { toaster } from "../../../../../components/ui/toaster";
 import { Tooltip } from "../../../../../components/ui/tooltip";
@@ -82,7 +83,7 @@ export function CodePreview({
     if (!llmPrompt) return;
 
     try {
-      await navigator.clipboard.writeText(llmPrompt);
+      await copyToClipboard(llmPrompt);
       toaster.create({
         title: "Copied LLM prompt",
         description: "Integration prompt copied to clipboard",

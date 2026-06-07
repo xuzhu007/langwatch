@@ -13,6 +13,7 @@ import { format } from "date-fns";
 import { Check, Clock, Copy } from "lucide-react";
 import type React from "react";
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { copyToClipboard } from "~/utils/clipboard";
 import { Popover } from "../../../../components/ui/popover";
 import { Tooltip } from "../../../../components/ui/tooltip";
 import type { TimeRange } from "../../stores/filterStore";
@@ -227,7 +228,7 @@ const Footer: React.FC<{ range: TimeRange }> = ({ range }) => {
   }, [copied]);
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(formatCopyText(range));
+    void copyToClipboard(formatCopyText(range));
     setCopied(true);
   };
 

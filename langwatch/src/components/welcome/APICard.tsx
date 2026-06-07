@@ -9,6 +9,7 @@ import {
 } from "@chakra-ui/react";
 import type React from "react";
 import { LuCheckCheck, LuExternalLink } from "react-icons/lu";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useOrganizationTeamProject } from "../../hooks/useOrganizationTeamProject";
 import { usePublicEnv } from "../../hooks/usePublicEnv";
 import { trackEvent } from "../../utils/tracking";
@@ -34,7 +35,7 @@ const APICard: React.FC = () => {
   }): Promise<void> {
     trackEvent("api_key_copy", { project_id: project?.id });
     try {
-      await navigator.clipboard.writeText(
+      await copyToClipboard(
         withBashPrefix
           ? `LANGWATCH_API_KEY=${effectiveApiKey}`
           : effectiveApiKey,
@@ -62,7 +63,7 @@ const APICard: React.FC = () => {
   }): Promise<void> {
     trackEvent("endpoint_copy", { project_id: project?.id });
     try {
-      await navigator.clipboard.writeText(
+      await copyToClipboard(
         withBashPrefix
           ? `LANGWATCH_ENDPOINT=${effectiveEndpoint}`
           : effectiveEndpoint,

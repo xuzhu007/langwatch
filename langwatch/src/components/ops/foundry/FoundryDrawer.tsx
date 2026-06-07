@@ -4,6 +4,7 @@ import { Play, RotateCcw } from "lucide-react";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { useDrawer } from "~/hooks/useDrawer";
 import { Drawer } from "~/components/ui/drawer";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useTraceStore } from "./traceStore";
 import { useExecutionStore } from "./executionStore";
 import { usePresetStore } from "./presetStore";
@@ -197,7 +198,7 @@ export function FoundryDrawer() {
                       _hover={{ bg: copied ? "green.950/30" : "bg.muted" }}
                       _active={{ bg: "green.950/40" }}
                       onClick={() => {
-                        void navigator.clipboard.writeText(lastTraceId);
+                        void copyToClipboard(lastTraceId);
                         setCopied(true);
                         setTimeout(() => setCopied(false), 2000);
                       }}

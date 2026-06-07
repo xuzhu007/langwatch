@@ -12,6 +12,7 @@ import { LuCheck, LuCopy, LuFilter } from "react-icons/lu";
 import { Kbd } from "~/components/ops/shared/Kbd";
 import { Popover } from "~/components/ui/popover";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 
 interface ThreadProgressIndicatorProps {
   position: number;
@@ -47,7 +48,7 @@ export function ThreadProgressIndicator({
 
   const handleCopy = useCallback(() => {
     if (!conversationId) return;
-    void navigator.clipboard.writeText(conversationId);
+    void copyToClipboard(conversationId);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }, [conversationId]);

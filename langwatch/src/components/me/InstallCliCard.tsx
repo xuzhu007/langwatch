@@ -14,6 +14,7 @@ import { useState } from "react";
 import { Link } from "~/components/ui/link";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
 import { docsUrl } from "~/utils/docsUrl";
+import { copyToClipboard } from "~/utils/clipboard";
 
 /**
  * Empty-state install affordance for the LangWatch CLI.
@@ -150,7 +151,7 @@ function CommandRow({
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
-    void navigator.clipboard.writeText(command);
+    void copyToClipboard(command);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

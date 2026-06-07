@@ -11,6 +11,7 @@ import { Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { Dialog } from "~/components/ui/dialog";
+import { copyToClipboard } from "~/utils/clipboard";
 
 import { InstallCliCard } from "../InstallCliCard";
 import { TileIcon } from "./TileIcon";
@@ -34,7 +35,7 @@ export function CodingAssistantTile({
   const [setupOpen, setSetupOpen] = useState(false);
 
   const onCopy = () => {
-    void navigator.clipboard.writeText(config.setupCommand);
+    void copyToClipboard(config.setupCommand);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

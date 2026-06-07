@@ -20,6 +20,7 @@ import { useState } from "react";
 
 import { Link } from "~/components/ui/link";
 import { api } from "~/utils/api";
+import { copyToClipboard } from "~/utils/clipboard";
 
 import { TileIcon } from "./TileIcon";
 import type { ModelProviderConfig } from "./types";
@@ -141,7 +142,7 @@ export function ModelProviderTile({
 
   const onCopySecret = () => {
     if (!issued) return;
-    void navigator.clipboard.writeText(issued.secret);
+    void copyToClipboard(issued.secret);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

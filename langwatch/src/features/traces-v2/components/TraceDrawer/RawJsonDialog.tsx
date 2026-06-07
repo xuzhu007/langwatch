@@ -21,6 +21,7 @@ import { useColorMode } from "~/components/ui/color-mode";
 import { Dialog } from "~/components/ui/dialog";
 import { Tooltip } from "~/components/ui/tooltip";
 import type { TraceHeader } from "~/server/api/routers/tracesV2.schemas";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useSpansFull } from "../../hooks/useSpansFull";
 import { ShikiCodeBlock } from "./markdownView";
 import { SegmentedToggle } from "./SegmentedToggle";
@@ -360,7 +361,7 @@ function CopyButton({
       // Optimistic "Copied" was misleading on permission-denied (Safari
       // private mode, secure context failures) — users saw the
       // confirmation even when nothing reached the clipboard.
-      await navigator.clipboard.writeText(payload);
+      await copyToClipboard(payload);
       setCopied(true);
       setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
     } catch {
