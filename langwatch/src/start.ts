@@ -156,6 +156,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
 
   // In production, resolve the built client assets directory
   const clientDistDir = dev ? null : path.join(dir, "dist/client");
+  const disableHttpsHeaders = process.env.DISABLE_HTTPS_HEADERS === "true";
 
   // Security headers (migrated from next.config.mjs)
   const cspHeader = [
@@ -168,7 +169,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
-    ...(!dev ? ["upgrade-insecure-requests"] : []),
+    ...(!dev && !disableHttpsHeaders ? ["upgrade-insecure-requests"] : []),
     "worker-src 'self' blob:",
     "connect-src 'self' https://*.posthog.com https://*.pendo.io wss://*.pendo.io wss://client.relay.crisp.chat https://client.crisp.chat https://*.googletagmanager.com https://analytics.google.com https://stats.g.doubleclick.net https://*.google-analytics.com https://www.google.com https://*.reo.dev",
     "frame-src 'self' https://*.posthog.com https://*.pendo.io https://www.youtube.com https://get.langwatch.ai https://*.googletagmanager.com https://www.google.com https://*.reo.dev",
@@ -179,7 +180,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
     "X-Content-Type-Options": "nosniff",
     // CSP only in production — dev needs inline scripts for Vite HMR
     ...(!dev ? { "Content-Security-Policy": cspHeader } : {}),
-    ...(!dev ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
+    ...(!dev && !disableHttpsHeaders ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
   };
 
   // Optional HTTPS + HTTP/2 path for local dev. Set

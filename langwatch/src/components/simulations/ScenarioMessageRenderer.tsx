@@ -3,6 +3,7 @@ import { useMemo, useRef, useEffect } from "react";
 import { Settings } from "react-feather";
 import type { StreamingMessage } from "~/hooks/useSimulationStreamingState";
 import type { ScenarioMessageSnapshotEvent } from "~/server/scenarios/scenario-event.types";
+import { generateUUID } from "~/utils/generateUUID";
 import { coerceContentToArray } from "~/server/stored-objects/coerce-content-to-array";
 import { visitContentPart } from "~/server/stored-objects/visit-content-part";
 import { TraceMessage } from "../copilot-kit/TraceMessage";
@@ -247,7 +248,7 @@ function flattenMessages(
     } else if (msg.role === "tool") {
       items.push({
         kind: "tool_result",
-        id: msg.id ?? crypto.randomUUID(),
+        id: msg.id ?? generateUUID(),
         result: safeJsonParseOrStringFallback(
           typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? {}),
         ),
@@ -275,7 +276,7 @@ function flattenContent(msg: RawMessage): DisplayItem[] {
   const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? {});
 
   if (msg.content && msg.content !== "None") {
-    return [{ kind: "text", id: msg.id ?? crypto.randomUUID(), role: msg.role ?? "assistant", content: raw, traceId: msg.trace_id }];
+    return [{ kind: "text", id: msg.id ?? generateUUID(), role: msg.role ?? "assistant", content: raw, traceId: msg.trace_id }];
   }
   return [];
 }

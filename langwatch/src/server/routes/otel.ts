@@ -152,83 +152,8 @@ async function authenticate(c: RouteContext, logger: ReturnType<typeof createLog
 }
 
 /**
- * Checks usage limits for the project and returns a 429 result if exceeded.
- * Logs `Project has reached plan limit` with `customerTraceIds` so a
- * customer-supplied trace_id can be matched to the rejection. The check
- * itself is wrapped in try/catch — on lookup failure we log and let the
- * request through (same behaviour as before).
- */
-async function enforcePlanLimit(
-  project: { id: string; teamId: string; team: { organizationId: string } },
-  customerTraceIds: string[],
-  logger: ReturnType<typeof createLogger>,
-) {
-  try {
-    const limitResult = await getApp().usage.checkLimit({
-      teamId: project.teamId,
-    });
-
-    if (!limitResult.exceeded) return null;
-
-    try {
-      const activePlan = await getApp().planProvider.getActivePlan({
-        organizationId: project.team.organizationId,
-      });
-      getApp()
-        .usageLimits.notifyPlanLimitReached({
-          organizationId: project.team.organizationId,
-          planName: activePlan.name ?? "free",
-        })
-        .catch((error: unknown) => {
-          logger.error(
-            { error, projectId: project.id },
-            "Error sending plan limit notification",
-          );
-        });
-    } catch (error) {
-      logger.error(
-        { error, projectId: project.id },
-        "Error getting active plan information",
-      );
-    }
-
-    logger.info(
-      {
-        projectId: project.id,
-        currentMonthMessagesCount: limitResult.count,
-        activePlanName: limitResult.planName,
-        maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
-        customerTraceIds,
-      },
-      "Project has reached plan limit",
-    );
-
-    return {
-      error: `ERR_PLAN_LIMIT: ${limitResult.message}`,
-      status: 429 as const,
-    };
-  } catch (error) {
-    logger.error(
-      { error, projectId: project.id, customerTraceIds },
-      "Error checking trace limit",
-    );
-    captureException(error as Error, {
-      extra: { projectId: project.id },
-    });
-    return null;
-  }
-}
-
-/**
- * Best-effort extraction of customer trace_ids from an OTLP traces body.
- * Returns up to `max` unique hex-encoded trace_ids. Never throws — if the
- * body is empty, malformed, or unparsable, returns an empty array. Used to
- * tag error logs (plan-limit, parse failure) so a customer who reports
- * "I sent trace_id X but it didn't appear" can be matched to the rejection.
- *
- * JSON-OTLP serialises trace_id as base64 strings; protobuf-OTLP decodes
- * them as Uint8Array. `decodeBase64OpenTelemetryId` handles both — output
- * is always lowercase hex, the same shape the rest of the platform uses.
+ * 从 OTLP traces 请求体中尽力提取客户侧 trace_id。
+ * 失败时返回空数组，用于解析错误日志关联客户反馈。
  */
 export function peekCustomerTraceIds(
   body: ArrayBuffer,
@@ -296,22 +221,6 @@ secured.access(handlerManagedAuth(AUTH_REASON)).post("/traces", async (c) => {
         span.setAttribute(
           "langwatch.otel.customer_trace_ids",
           customerTraceIds.join(","),
-        );
-      }
-
-      const limitFailure = await enforcePlanLimit(
-        project,
-        customerTraceIds,
-        loggerTraces,
-      );
-      if (limitFailure) {
-        span.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: limitFailure.error,
-        });
-        return c.json(
-          { message: limitFailure.error },
-          { status: limitFailure.status },
         );
       }
 
@@ -408,18 +317,6 @@ secured.access(handlerManagedAuth(AUTH_REASON)).post("/logs", async (c) => {
       const { project, resolved } = authResult;
       span.setAttribute("langwatch.project.id", project.id);
 
-      const limitFailure = await enforcePlanLimit(project, [], loggerLogs);
-      if (limitFailure) {
-        span.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: limitFailure.error,
-        });
-        return c.json(
-          { message: limitFailure.error },
-          { status: limitFailure.status },
-        );
-      }
-
       const body = await readOtlpBody(c.req.raw);
       const parsed = parseOtlpLogs(body, c.req.header("content-type"));
       if (!parsed.ok) {
@@ -486,18 +383,6 @@ secured.access(handlerManagedAuth(AUTH_REASON)).post("/metrics", async (c) => {
 
       const { project, resolved } = authResult;
       span.setAttribute("langwatch.project.id", project.id);
-
-      const limitFailure = await enforcePlanLimit(project, [], loggerMetrics);
-      if (limitFailure) {
-        span.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: limitFailure.error,
-        });
-        return c.json(
-          { message: limitFailure.error },
-          { status: limitFailure.status },
-        );
-      }
 
       const body = await readOtlpBody(c.req.raw);
       const parsed = parseOtlpMetrics(body, c.req.header("content-type"));

@@ -60,7 +60,7 @@ secured.access(handlerManagedAuth("ingestion API key resolved in-handler")).post
     }
 
     const contentType = c.req.header("content-type");
-    if (!contentType || !contentType.includes("application/json")) {
+    if (!contentType?.includes("application/json")) {
       logger.error("collector request body is not json");
 
       return c.json({ message: "Invalid body, expecting json" }, 400);
@@ -116,53 +116,6 @@ secured.access(handlerManagedAuth("ingestion API key resolved in-handler")).post
       { projectId: project.id },
       "collector request being processed",
     );
-
-    try {
-      const limitResult = await getApp().usage.checkLimit({
-        teamId: project.teamId,
-      });
-
-      if (limitResult.exceeded) {
-        try {
-          const activePlan = await getApp().planProvider.getActivePlan({
-            organizationId: project.team.organizationId,
-          });
-          await getApp().usageLimits.notifyPlanLimitReached({
-            organizationId: project.team.organizationId,
-            planName: activePlan.name ?? "free",
-          });
-        } catch (error) {
-          logger.error(
-            { error, projectId: project.id },
-            "Error sending plan limit notification",
-          );
-        }
-        logger.info(
-          {
-            projectId: project.id,
-            currentMonthMessagesCount: limitResult.count,
-            activePlanName: limitResult.planName,
-            maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
-          },
-          "Project has reached plan limit",
-        );
-
-        return c.json(
-          {
-            message: `ERR_PLAN_LIMIT: ${limitResult.message}`,
-          },
-          429,
-        );
-      }
-    } catch (error) {
-      logger.error(
-        { error, projectId: project.id },
-        "Error checking trace limit",
-      );
-      captureException(new Error("Error checking trace limit"), {
-        extra: { projectId: project.id, error },
-      });
-    }
 
     // We migrated those keys to inside metadata, but we still want to support them for retrocompatibility for a while
     if (!("metadata" in body) || !body.metadata) {

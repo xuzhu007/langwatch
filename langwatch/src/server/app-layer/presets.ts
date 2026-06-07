@@ -83,7 +83,7 @@ import { InviteService } from "../invites/invite.service";
 import { env } from "~/env.mjs";
 import { getPostHogInstance } from "~/server/posthog";
 import { getLicenseHandler } from "../subscriptionHandler";
-import { FREE_PLAN } from "../../../ee/licensing/constants";
+import { FREE_PLAN, UNLIMITED_PLAN } from "../../../ee/licensing/constants";
 import { createStripeClient } from "../../../ee/billing/stripe/stripeClient";
 import { createSeatEventSubscriptionFns } from "../../../ee/billing/services/seatEventSubscription";
 import * as subscriptionItemCalculator from "../../../ee/billing/services/subscriptionItemCalculator";
@@ -316,13 +316,13 @@ export function initializeDefaultApp(options?: { processRole?: ProcessRole }): A
         }),
       )
     : PlanProviderService.create({
-        getActivePlan: async ({ organizationId }) => {
-          const plan = await getLicenseHandler().getActivePlan(organizationId);
-          return {
-            ...plan,
-            planSource: plan.free ? ("free" as const) : ("license" as const),
-          };
-        },
+        getActivePlan: async () => ({
+          ...UNLIMITED_PLAN,
+          type: "ENTERPRISE" as const,
+          name: "Enterprise (Self-Hosted)",
+          free: false,
+          planSource: "license" as const,
+        }),
       });
 
   let subscription: SubscriptionService | undefined;

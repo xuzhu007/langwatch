@@ -20,6 +20,7 @@ import {
 import { Tooltip } from "~/components/ui/tooltip";
 import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import type { FieldMapping as UIFieldMapping } from "~/components/variables";
+import { copyToClipboard } from "~/utils/clipboard";
 import { parseLLMError } from "~/utils/formatLLMError";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
 import { setFlowCallbacks, useDrawer } from "~/hooks/useDrawer";
@@ -469,7 +470,7 @@ export function TargetCellContent({
   // Copy output to clipboard with feedback
   const handleCopyOutput = useCallback(() => {
     if (rawOutput) {
-      navigator.clipboard.writeText(rawOutput);
+      void copyToClipboard(rawOutput);
       setHasCopied(true);
       setTimeout(() => setHasCopied(false), 2000);
     }
