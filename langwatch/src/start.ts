@@ -157,6 +157,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
 
   // In production, resolve the built client assets directory
   const clientDistDir = dev ? null : path.join(dir, "dist/client");
+  const disableHttpsHeaders = process.env.DISABLE_HTTPS_HEADERS === "true";
 
   // Security headers (migrated from next.config.mjs)
   const cspHeader = [
@@ -169,7 +170,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
-    ...(!dev ? ["upgrade-insecure-requests"] : []),
+    ...(!dev && !disableHttpsHeaders ? ["upgrade-insecure-requests"] : []),
     "worker-src 'self' blob:",
     // ADR-032: allow the browser's presigned PUT to object storage (derived
     // from the same env the S3 client uses) — without it the CSP blocks the
@@ -191,7 +192,7 @@ export const startApp = async (dir = path.dirname(__dirname)) => {
     "X-Content-Type-Options": "nosniff",
     // CSP only in production — dev needs inline scripts for Vite HMR
     ...(!dev ? { "Content-Security-Policy": cspHeader } : {}),
-    ...(!dev ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
+    ...(!dev && !disableHttpsHeaders ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
   };
 
   // Optional HTTPS + HTTP/2 path for local dev. Set

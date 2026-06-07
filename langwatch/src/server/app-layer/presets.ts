@@ -34,7 +34,7 @@ import {
 } from "../../../ee/billing/services/webhookService";
 import { createStripeClient } from "../../../ee/billing/stripe/stripeClient";
 import { meters } from "../../../ee/billing/stripe/stripePriceCatalog";
-import { FREE_PLAN } from "../../../ee/licensing/constants";
+import { FREE_PLAN, UNLIMITED_PLAN } from "../../../ee/licensing/constants";
 import { StorageMeterService } from "../data-retention/metering/storageMeter.service";
 import { PinnedTraceRepository } from "../data-retention/pinning/pinnedTrace.repository";
 import { PinnedTraceService } from "../data-retention/pinning/pinnedTrace.service";
@@ -390,13 +390,13 @@ export function initializeDefaultApp(options?: {
         }),
       )
     : PlanProviderService.create({
-        getActivePlan: async ({ organizationId }) => {
-          const plan = await getLicenseHandler().getActivePlan(organizationId);
-          return {
-            ...plan,
-            planSource: plan.free ? ("free" as const) : ("license" as const),
-          };
-        },
+        getActivePlan: async () => ({
+          ...UNLIMITED_PLAN,
+          type: "ENTERPRISE" as const,
+          name: "Enterprise (Self-Hosted)",
+          free: false,
+          planSource: "license" as const,
+        }),
       });
 
   let subscription: SubscriptionService | undefined;

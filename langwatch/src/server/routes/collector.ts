@@ -16,7 +16,6 @@ import {
   extractCredentials,
 } from "../api-key/auth-middleware";
 import { TokenResolver } from "../api-key/token-resolver";
-import { getApp } from "../app-layer/app";
 import { evaluationNameAutoslug } from "../background/workers/collector/evaluationNameAutoslug";
 import { maybeAddIdsToContextList } from "../background/workers/collector/rag";
 import { fetchExistingMD5s } from "../background/workers/collectorWorker";
@@ -127,53 +126,6 @@ secured
         { projectId: project.id },
         "collector request being processed",
       );
-
-      try {
-        const limitResult = await getApp().usage.checkLimit({
-          teamId: project.teamId,
-        });
-
-        if (limitResult.exceeded) {
-          try {
-            const activePlan = await getApp().planProvider.getActivePlan({
-              organizationId: project.team.organizationId,
-            });
-            await getApp().usageLimits.notifyPlanLimitReached({
-              organizationId: project.team.organizationId,
-              planName: activePlan.name ?? "free",
-            });
-          } catch (error) {
-            logger.error(
-              { error, projectId: project.id },
-              "Error sending plan limit notification",
-            );
-          }
-          logger.info(
-            {
-              projectId: project.id,
-              currentMonthMessagesCount: limitResult.count,
-              activePlanName: limitResult.planName,
-              maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
-            },
-            "Project has reached plan limit",
-          );
-
-          return c.json(
-            {
-              message: `ERR_PLAN_LIMIT: ${limitResult.message}`,
-            },
-            429,
-          );
-        }
-      } catch (error) {
-        logger.error(
-          { error, projectId: project.id },
-          "Error checking trace limit",
-        );
-        captureException(new Error("Error checking trace limit"), {
-          extra: { projectId: project.id, error },
-        });
-      }
 
       // We migrated those keys to inside metadata, but we still want to support them for retrocompatibility for a while
       if (!("metadata" in body) || !body.metadata) {

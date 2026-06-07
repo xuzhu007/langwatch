@@ -20,6 +20,7 @@ import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer } from "~/components/ui/drawer";
 import { type MemberType } from "~/server/license-enforcement/member-classification";
+import { generateUUID } from "~/utils/generateUUID";
 import { type Currency, type BillingInterval, formatPrice } from "./billing-plans";
 import {
   type PlannedUser,
@@ -102,7 +103,7 @@ export function UserManagementDrawer({
 
   const handleAddSeat = () => {
     const newPlannedUser: PlannedUser = {
-      id: `planned-${crypto.randomUUID()}`,
+      id: `planned-${generateUUID()}`,
       email: "",
       memberType: "FullMember",
     };

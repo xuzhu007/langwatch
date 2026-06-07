@@ -35,6 +35,7 @@ import {
 import { useLicenseEnforcement } from "~/hooks/useLicenseEnforcement";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { api } from "~/utils/api";
+import { generateUUID } from "~/utils/generateUUID";
 import { isHandledByGlobalHandler } from "~/utils/trpcError";
 import { AgentHttpEditorDrawer } from "../agents/AgentHttpEditorDrawer";
 import { ScenarioFormDrawer } from "../scenarios/ScenarioFormDrawer";
@@ -73,7 +74,7 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
   const { closeDrawer, drawerOpen, openDrawer } = useDrawer();
   const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false);
   const [agentHttpEditorOpen, setAgentHttpEditorOpen] = useState(false);
-  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [idempotencyKey] = useState(() => generateUUID());
   /** Tracks whether the current save is a "save and run" flow.
    *  When true, the mutation-level onSuccess skips its normal
    *  close/toast behavior — the per-call onSuccess handles it. */

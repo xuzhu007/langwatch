@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Tooltip } from "~/components/ui/tooltip";
+import { copyToClipboard } from "~/utils/clipboard";
 import {
   messagesToJson,
   type TestMessage,
@@ -105,7 +106,7 @@ function CopyButton({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(text);
+    await copyToClipboard(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

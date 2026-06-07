@@ -27,6 +27,7 @@ import {
 import { Tooltip } from "~/components/ui/tooltip";
 import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import { useDrawer } from "~/hooks/useDrawer";
+import { copyToClipboard } from "~/utils/clipboard";
 import { parseEvaluationResult } from "~/utils/evaluationResults";
 import { parseLLMError } from "~/utils/formatLLMError";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
@@ -425,7 +426,7 @@ export function TargetCellContent({
   // Copy output to clipboard with feedback
   const handleCopyOutput = useCallback(() => {
     if (rawOutput) {
-      navigator.clipboard.writeText(rawOutput);
+      void copyToClipboard(rawOutput);
       setHasCopied(true);
       setTimeout(() => setHasCopied(false), 2000);
     }

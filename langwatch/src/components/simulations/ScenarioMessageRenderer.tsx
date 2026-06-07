@@ -5,6 +5,7 @@ import type { StreamingMessage } from "~/hooks/useSimulationStreamingState";
 import type { ScenarioMessageSnapshotEvent } from "~/server/scenarios/scenario-event.types";
 import { coerceContentToArray } from "~/server/stored-objects/coerce-content-to-array";
 import { visitContentPart } from "~/server/stored-objects/visit-content-part";
+import { generateUUID } from "~/utils/generateUUID";
 import { TraceMessage } from "../copilot-kit/TraceMessage";
 import { Markdown } from "../Markdown";
 import { RenderInputOutput } from "../traces/RenderInputOutput";
@@ -340,7 +341,7 @@ function flattenMessages(
     } else if (msg.role === "tool") {
       items.push({
         kind: "tool_result",
-        id: msg.id ?? crypto.randomUUID(),
+        id: msg.id ?? generateUUID(),
         result: safeJsonParseOrStringFallback(
           typeof msg.content === "string"
             ? msg.content
@@ -381,7 +382,7 @@ function flattenContent(msg: RawMessage): DisplayItem[] {
     return [
       {
         kind: "text",
-        id: msg.id ?? crypto.randomUUID(),
+        id: msg.id ?? generateUUID(),
         role: msg.role ?? "assistant",
         content: raw,
         traceId: msg.trace_id,

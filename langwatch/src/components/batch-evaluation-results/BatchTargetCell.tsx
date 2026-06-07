@@ -13,6 +13,7 @@ import { formatLatency } from "~/components/shared/formatters";
 import { Tooltip } from "~/components/ui/tooltip";
 import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import { useDrawer } from "~/hooks/useDrawer";
+import { copyToClipboard } from "~/utils/clipboard";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
 import { isTextLikelyOverflowing } from "~/utils/textOverflowHeuristic";
 import type { BatchEvaluatorResult, BatchTargetOutput } from "./types";
@@ -92,7 +93,7 @@ export function BatchTargetCell({
   // Copy output to clipboard
   const handleCopyOutput = useCallback(() => {
     if (rawOutput) {
-      void navigator.clipboard.writeText(rawOutput);
+      void copyToClipboard(rawOutput);
       setHasCopied(true);
       setTimeout(() => setHasCopied(false), 2000);
     }
