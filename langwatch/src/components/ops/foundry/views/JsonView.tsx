@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from "react";
 import { Copy, Check, RotateCcw, WrapText } from "lucide-react";
 import { useTraceStore } from "../traceStore";
 import { useColorMode } from "~/components/ui/color-mode";
+import { copyToClipboard } from "~/utils/clipboard";
 import { traceConfigJsonSchema } from "./traceConfigSchema";
 import type { SpanConfig } from "../types";
 
@@ -51,7 +52,7 @@ export function JsonView() {
 
   function handleCopy() {
     const value = editorRef.current?.getValue() ?? jsonString;
-    void navigator.clipboard.writeText(value);
+    void copyToClipboard(value);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }

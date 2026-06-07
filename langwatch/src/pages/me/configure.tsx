@@ -29,6 +29,7 @@ import {
 } from "~/components/me/usePersonalContext";
 import { toaster } from "~/components/ui/toaster";
 import { api } from "~/utils/api";
+import { copyToClipboard } from "~/utils/clipboard";
 
 const fmtRelative = (iso: string | null): string => {
   if (!iso) return "Never";
@@ -604,7 +605,7 @@ function RevealedSecretBanner({
             size="xs"
             variant="ghost"
             onClick={() => {
-              void navigator.clipboard.writeText(secret.secret);
+              void copyToClipboard(secret.secret);
               toaster.create({
                 title: "Secret copied to clipboard",
                 type: "success",

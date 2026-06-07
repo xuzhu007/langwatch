@@ -17,6 +17,7 @@ import { isHandledByGlobalHandler } from "~/utils/trpcError";
 import { toaster } from "../ui/toaster";
 import { Radio, RadioGroup } from "~/components/ui/radio";
 import { Select } from "~/components/ui/select";
+import { copyToClipboard } from "~/utils/clipboard";
 import { ENTERPRISE_TEMPLATE } from "../../../ee/licensing/planTemplates";
 import { getPlanDefaults, type PlanType } from "./planFormDefaults";
 import { formatFileSize } from "./licenseStatusUtils";
@@ -266,7 +267,7 @@ export const LicenseGeneratorForm = forwardRef<LicenseGeneratorFormRef, LicenseG
 
     const handleCopy = async () => {
       try {
-        await navigator.clipboard.writeText(generatedLicense);
+        await copyToClipboard(generatedLicense);
         toaster.create({
           title: "License copied to clipboard",
           type: "success",

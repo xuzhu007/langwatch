@@ -1,6 +1,7 @@
 import { Badge, Box, HStack, IconButton, Spacer } from "@chakra-ui/react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
+import { copyToClipboard } from "~/utils/clipboard";
 import { toaster } from "../../../components/ui/toaster";
 
 /**
@@ -42,7 +43,7 @@ export function CodeBlock({
       });
       return;
     }
-    void navigator.clipboard.writeText(copyValue).then(() => {
+    void copyToClipboard(copyValue).then(() => {
       toaster.create({
         title: copyToastTitle ?? "Copied to clipboard",
         type: "success",

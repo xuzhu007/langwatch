@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Box, Flex, Text, Input, Button, VStack } from "@chakra-ui/react";
 import { Play } from "lucide-react";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useTraceStore } from "./traceStore";
 import { useExecutionStore } from "./executionStore";
 import { useFoundryProjectStore } from "./foundryProjectStore";
@@ -101,7 +102,7 @@ function LogEntry({ entry }: { entry: { id: string; traceId: string; status: str
       transition="background 0.15s"
       onClick={() => {
         if (!canCopy) return;
-        void navigator.clipboard.writeText(entry.traceId);
+        void copyToClipboard(entry.traceId);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }}

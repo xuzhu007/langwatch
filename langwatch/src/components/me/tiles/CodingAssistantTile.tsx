@@ -12,6 +12,7 @@ import { useState } from "react";
 
 import { Dialog } from "~/components/ui/dialog";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { copyToClipboard } from "~/utils/clipboard";
 
 import { InstallCliCard } from "../InstallCliCard";
 import { TileIcon } from "./TileIcon";
@@ -126,7 +127,7 @@ export function CodingAssistantTile({
 function CommandRow({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
-    void navigator.clipboard.writeText(command);
+    void copyToClipboard(command);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

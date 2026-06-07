@@ -1,6 +1,7 @@
 import { Input } from "@chakra-ui/react";
 import { useState } from "react";
 import { FiCopy, FiEye, FiEyeOff } from "react-icons/fi";
+import { copyToClipboard } from "~/utils/clipboard";
 import { toaster } from "../components/ui/toaster";
 import { InputGroup, type InputGroupProps } from "./ui/input-group";
 
@@ -44,7 +45,7 @@ export function CopyInput(
         }
 
         void (async () => {
-          await navigator.clipboard.writeText(props.value);
+          await copyToClipboard(props.value);
           toaster.create({
             title: `${props.label} copied to your clipboard`,
             type: "success",

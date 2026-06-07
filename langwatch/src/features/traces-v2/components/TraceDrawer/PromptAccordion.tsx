@@ -17,6 +17,7 @@ import { useDrawer } from "~/hooks/useDrawer";
 import { Link } from "~/components/ui/link";
 import { useGoToSpanInPlaygroundTabUrlBuilder } from "~/prompts/prompt-playground/hooks/useLoadSpanIntoPromptPlayground";
 import type { SpanDetail } from "~/server/api/routers/tracesV2.schemas";
+import { copyToClipboard } from "~/utils/clipboard";
 import {
   extractPromptReference,
   hasPromptMetadata,
@@ -166,7 +167,7 @@ export function PromptAccordion({ span }: PromptAccordionProps) {
                 <Button
                   size="xs"
                   variant="ghost"
-                  onClick={() => void navigator.clipboard.writeText(val)}
+                  onClick={() => void copyToClipboard(val)}
                   aria-label={`Copy ${key}`}
                   padding={0}
                   minWidth="auto"

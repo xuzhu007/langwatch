@@ -21,6 +21,7 @@ import {
   DrawerTitle,
 } from "~/components/ui/drawer";
 import { toaster } from "~/components/ui/toaster";
+import { copyToClipboard } from "~/utils/clipboard";
 
 const SECRET_MASK = "•".repeat(48);
 
@@ -202,7 +203,7 @@ export function IngestionTemplateInstallDrawer({
   const [showSecret, setShowSecret] = useState(false);
 
   const copy = (value: string, label: string) => {
-    void navigator.clipboard.writeText(value);
+    void copyToClipboard(value);
     toaster.create({ title: `${label} copied to clipboard`, type: "success" });
   };
 

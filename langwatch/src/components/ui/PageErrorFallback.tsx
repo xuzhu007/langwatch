@@ -10,6 +10,7 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { AlertTriangle, Copy, Check, RotateCcw, Home } from "lucide-react";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useRouter } from "~/utils/compat/next-router";
 import { captureException, toError } from "~/utils/posthogErrorCapture";
 
@@ -78,12 +79,9 @@ export function PageErrorFallback({
                 variant="ghost"
                 color="fg.muted"
                 onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(stack ?? message);
+                  if (await copyToClipboard(stack ?? message)) {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
-                  } catch {
-                    // Clipboard API unavailable or denied
                   }
                 }}
               >

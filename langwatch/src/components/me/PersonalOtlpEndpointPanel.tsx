@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Button } from "@chakra-ui/react";
 import { toaster } from "~/components/ui/toaster";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
+import { copyToClipboard } from "~/utils/clipboard";
 
 const SECRET_MASK = "•".repeat(36);
 
@@ -22,7 +23,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${
     : "";
 
   const copy = (value: string, label: string) => {
-    void navigator.clipboard.writeText(value);
+    void copyToClipboard(value);
     toaster.create({ title: `${label} copied to clipboard`, type: "success" });
   };
 

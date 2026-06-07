@@ -12,6 +12,7 @@ import { Tooltip } from "~/components/ui/tooltip";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import type { RestrictedAttribute } from "~/server/api/routers/tracesV2.schemas";
 import { compileAttributePattern } from "~/server/data-privacy/attributePatternMatcher";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { usePinnedAttributes } from "../../hooks/usePinnedAttributes";
 import type { PinnedAttributeSource } from "../../stores/pinnedAttributesStore";
@@ -486,7 +487,7 @@ function FlatRow({
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => void navigator.clipboard.writeText(display)}
+        onClick={() => void copyToClipboard(display)}
         aria-label={`Copy ${attrKey}`}
         padding={0}
         minWidth="auto"

@@ -32,6 +32,7 @@ import { useDejaViewLink } from "~/hooks/useDejaViewLink";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import type { TraceHeader } from "~/server/api/routers/tracesV2.schemas";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useConversationContext } from "../../../hooks/useConversationContext";
 import { usePinnedAttributes } from "../../../hooks/usePinnedAttributes";
 import { useSpanTree } from "../../../hooks/useSpanTree";
@@ -106,38 +107,29 @@ interface DrawerHeaderProps {
 function TraceIdChip({ traceId }: { traceId: string }) {
   const short = traceId.slice(0, 8);
   const handleCopy = async () => {
-    // navigator.clipboard requires a secure context (https or localhost).
-    // Surface a friendly hint when it fails so users running LangWatch on
-    // a plain-http internal domain understand what went wrong instead of
-    // seeing a silent no-op.
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(traceId);
-        toaster.create({
-          title: "Trace ID copied",
-          // Show the full id so the operator can verify what landed on
-          // their clipboard at a glance. The chip shows a short id by
-          // design (git-SHA convention) but the toast has the real
-          // estate — operator report: the previous "<8 chars>…" felt
-          // truncated for no benefit.
-          description: traceId,
-          type: "success",
-          duration: 2500,
-          meta: { closable: true },
-        });
-        return;
-      }
-      throw new Error("clipboard unavailable");
-    } catch {
+    if (await copyToClipboard(traceId)) {
       toaster.create({
-        title: "Couldn't copy trace ID",
-        description:
-          "Clipboard access is restricted. This can happen on non-HTTPS domains. Copy the ID manually from the URL.",
-        type: "error",
-        duration: 6000,
+        title: "Trace ID copied",
+        // Show the full id so the operator can verify what landed on
+        // their clipboard at a glance. The chip shows a short id by
+        // design (git-SHA convention) but the toast has the real
+        // estate — operator report: the previous "<8 chars>…" felt
+        // truncated for no benefit.
+        description: traceId,
+        type: "success",
+        duration: 2500,
         meta: { closable: true },
       });
+      return;
     }
+    toaster.create({
+      title: "Couldn't copy trace ID",
+      description:
+        "Clipboard access is restricted. This can happen on non-HTTPS domains. Copy the ID manually from the URL.",
+      type: "error",
+      duration: 6000,
+      meta: { closable: true },
+    });
   };
   const value = (
     <Box
@@ -786,7 +778,7 @@ export const DrawerHeader = memo(function DrawerHeader({
   ]);
 
   const handleCopyTraceId = () => {
-    void navigator.clipboard.writeText(trace.traceId);
+    void copyToClipboard(trace.traceId);
   };
 
   const [rawOpen, setRawOpen] = useState(false);

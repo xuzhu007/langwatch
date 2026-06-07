@@ -1,5 +1,6 @@
 import { Button, type ButtonProps } from "@chakra-ui/react";
 import { CopyIcon } from "lucide-react";
+import { copyToClipboard } from "~/utils/clipboard";
 import { toaster } from "./ui/toaster";
 
 interface CopyButtonProps extends Omit<
@@ -36,7 +37,7 @@ export function CopyButton(props: CopyButtonProps) {
         }
 
         void (async () => {
-          await navigator.clipboard.writeText(value);
+          await copyToClipboard(value);
           toaster.create({
             title: `${label} copied to your clipboard`,
             type: "success",
