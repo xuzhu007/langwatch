@@ -50,10 +50,6 @@ function isBareAnthropicModelId(modelId: string): boolean {
   return /^claude-/i.test(modelId);
 }
 
-function isBareAnthropicModelId(modelId: string): boolean {
-  return /^claude-/i.test(modelId);
-}
-
 /**
  * Translates a model ID for use with LiteLLM.
  *

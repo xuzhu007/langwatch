@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CustomModelEntry } from "../server/modelProviders/customModel.schema";
 import {
-  modelProviders as modelProvidersRegistry,
   type MaybeStoredModelProvider,
+  modelProviders as modelProvidersRegistry,
 } from "../server/modelProviders/registry";
 
 // Mirrors the server's deriveDefaultName. Kept here so the drawer can
@@ -15,6 +15,7 @@ function humanizeProviderName(providerKey: string): string {
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
 import { useCredentialKeys } from "./useCredentialKeys";
 import { useCustomModels } from "./useCustomModels";
 import { useDefaultProviderSelection } from "./useDefaultProviderSelection";
@@ -24,13 +25,6 @@ import {
   type FormSnapshot,
   useProviderFormSubmit,
 } from "./useProviderFormSubmit";
-
-export type ModelProviderScopeType = "ORGANIZATION" | "TEAM" | "PROJECT";
-
-export type ScopeSelection = {
-  scopeType: ModelProviderScopeType;
-  scopeId: string;
-};
 
 export type ModelProviderScopeType = "ORGANIZATION" | "TEAM" | "PROJECT";
 
@@ -194,7 +188,7 @@ export function useModelProviderForm(
     ? "PROJECT"
     : scopes.some((s) => s.scopeType === "TEAM")
       ? "TEAM"
-      : scopes[0]?.scopeType ?? defaultNewScope;
+      : (scopes[0]?.scopeType ?? defaultNewScope);
 
   const scopeId =
     scopes.find((s) => s.scopeType === scopeType)?.scopeId ?? undefined;
