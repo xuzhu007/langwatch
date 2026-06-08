@@ -141,7 +141,7 @@ var ErrMissingProvider = errors.New("gatewayproxy: missing provider — supply x
 func inferProvider(model, customProvider string) (domain.ProviderID, bool) {
 	if customProvider != "" {
 		switch customProvider {
-		case "openai":
+		case "openai", "custom":
 			return domain.ProviderOpenAI, true
 		case "anthropic":
 			return domain.ProviderAnthropic, true
@@ -166,7 +166,7 @@ func inferProvider(model, customProvider string) (domain.ProviderID, bool) {
 
 func providerForPrefix(prefix string) (domain.ProviderID, bool) {
 	switch prefix {
-	case "openai":
+	case "openai", "custom":
 		return domain.ProviderOpenAI, true
 	case "anthropic":
 		return domain.ProviderAnthropic, true

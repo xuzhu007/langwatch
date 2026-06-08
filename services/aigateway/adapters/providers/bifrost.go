@@ -5,13 +5,16 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +107,12 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 	// clean unsupported-type error.
 	if cred.ProviderID == domain.ProviderVoyage {
 		return r.dispatchVoyageDirect(ctx, req, model, cred)
+	}
+	if baseURL := openAICompatibleBaseURL(cred); baseURL != "" {
+		switch req.Type {
+		case domain.RequestTypeChat, domain.RequestTypeEmbeddings, domain.RequestTypeResponses:
+			return r.dispatchOpenAICompatibleDirect(ctx, req, model, cred, baseURL)
+		}
 	}
 
 	provider := mapProvider(cred.ProviderID)
@@ -367,6 +376,337 @@ func (r *BifrostRouter) dispatchVoyageDirect(
 	}, nil
 }
 
+func (r *BifrostRouter) dispatchOpenAICompatibleDirect(
+	ctx context.Context,
+	req *domain.Request,
+	model string,
+	cred domain.Credential,
+	baseURL string,
+) (*domain.Response, error) {
+	endpoint, err := openAICompatibleEndpoint(baseURL, req.Type)
+	if err != nil {
+		return nil, err
+	}
+	bodyBytes, err := openAICompatibleBody(req.Body, model)
+	if err != nil {
+		return nil, herr.New(ctx, domain.ErrBadRequest, herr.M{"reason": fmt.Sprintf("rewrite model on body: %v", err)})
+	}
+	callCtx, cancel := openAICompatibleContext(ctx, cred)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("openai-compatible direct request: %w", err)
+	}
+	addOpenAICompatibleHeaders(httpReq, cred, false)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai-compatible direct dispatch: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openai-compatible direct read body: %w", err)
+	}
+	return &domain.Response{
+		Body:       raw,
+		StatusCode: resp.StatusCode,
+		Usage:      parseOpenAICompatibleUsage(raw),
+		Headers:    passthroughResponseHeaders(headerMap(resp.Header)),
+	}, nil
+}
+
+func (r *BifrostRouter) dispatchOpenAICompatibleDirectStream(
+	ctx context.Context,
+	req *domain.Request,
+	model string,
+	cred domain.Credential,
+	baseURL string,
+) (domain.StreamIterator, error) {
+	endpoint, err := openAICompatibleEndpoint(baseURL, req.Type)
+	if err != nil {
+		return nil, err
+	}
+	body := req.Body
+	if req.Type == domain.RequestTypeChat {
+		body = ensureStreamIncludeUsage(body)
+	}
+	bodyBytes, err := openAICompatibleBody(body, model)
+	if err != nil {
+		return nil, herr.New(ctx, domain.ErrBadRequest, herr.M{"reason": fmt.Sprintf("rewrite model on body: %v", err)})
+	}
+	callCtx, cancel := openAICompatibleContext(ctx, cred)
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("openai-compatible direct stream request: %w", err)
+	}
+	addOpenAICompatibleHeaders(httpReq, cred, true)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("openai-compatible direct stream dispatch: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		defer cancel()
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, &domain.UpstreamError{
+			StatusCode: resp.StatusCode,
+			Body:       raw,
+			Message:    fmt.Sprintf("openai-compatible upstream returned status %d", resp.StatusCode),
+			Headers:    forwardableUpstreamHeaders(headerMap(resp.Header)),
+		}
+	}
+	return &openAICompatibleStreamIterator{
+		body:   resp.Body,
+		reader: bufio.NewReader(resp.Body),
+		cancel: cancel,
+	}, nil
+}
+
+func openAICompatibleBaseURL(cred domain.Credential) string {
+	if cred.ProviderID != domain.ProviderOpenAI {
+		return ""
+	}
+	return strings.TrimSpace(credExtra(cred, "api_base", "base_url"))
+}
+
+func openAICompatibleEndpoint(baseURL string, typ domain.RequestType) (string, error) {
+	path := ""
+	switch typ {
+	case domain.RequestTypeChat:
+		path = "/chat/completions"
+	case domain.RequestTypeEmbeddings:
+		path = "/embeddings"
+	case domain.RequestTypeResponses:
+		path = "/responses"
+	default:
+		return "", fmt.Errorf("openai-compatible direct unsupported request type %s", typ)
+	}
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("openai-compatible base url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("openai-compatible base url scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("openai-compatible base url has no host")
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	basePath := strings.TrimRight(u.Path, "/")
+	if !strings.HasSuffix(basePath, "/v1") {
+		basePath += "/v1"
+	}
+	u.Path = basePath + path
+	return u.String(), nil
+}
+
+func openAICompatibleBody(body []byte, model string) ([]byte, error) {
+	if model == "" {
+		return body, nil
+	}
+	bare := model
+	if i := strings.LastIndexByte(bare, '/'); i >= 0 {
+		bare = bare[i+1:]
+	}
+	return sjson.SetBytes(body, "model", bare)
+}
+
+func openAICompatibleContext(ctx context.Context, cred domain.Credential) (context.Context, context.CancelFunc) {
+	timeout := openAICompatibleTimeout(cred)
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func openAICompatibleTimeout(cred domain.Credential) time.Duration {
+	for _, key := range []string{"default_request_timeout_in_seconds", "request_timeout_seconds"} {
+		if d := secondsStringDuration(cred.Extra[key]); d > 0 {
+			return d
+		}
+	}
+	if raw := cred.Extra["network_config"]; raw != "" {
+		if d := secondsStringDuration(gjson.Get(raw, "default_request_timeout_in_seconds").String()); d > 0 {
+			return d
+		}
+	}
+	return 30 * time.Second
+}
+
+func secondsStringDuration(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 {
+		return 0
+	}
+	return time.Duration(f * float64(time.Second))
+}
+
+func addOpenAICompatibleHeaders(req *http.Request, cred domain.Credential, stream bool) {
+	for k, v := range openAICompatibleExtraHeaders(cred) {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	if cred.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+	}
+	if org := cred.Extra["organization"]; org != "" {
+		req.Header.Set("OpenAI-Organization", org)
+	}
+}
+
+func openAICompatibleExtraHeaders(cred domain.Credential) map[string]string {
+	raw := credExtra(cred, "extra_headers")
+	if raw == "" {
+		return nil
+	}
+	var m map[string]any
+	if err := sonic.Unmarshal([]byte(raw), &m); err == nil {
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			switch x := v.(type) {
+			case string:
+				out[k] = x
+			case float64, bool:
+				out[k] = fmt.Sprintf("%v", x)
+			}
+		}
+		return out
+	}
+	var pairs []map[string]any
+	if err := sonic.Unmarshal([]byte(raw), &pairs); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		key, _ := p["key"].(string)
+		value, _ := p["value"].(string)
+		if key != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func headerMap(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, vals := range h {
+		if len(vals) > 0 {
+			out[k] = vals[0]
+		}
+	}
+	return out
+}
+
+func parseOpenAICompatibleUsage(body []byte) domain.Usage {
+	usage := gjson.GetBytes(body, "usage")
+	if !usage.Exists() {
+		return domain.Usage{}
+	}
+	prompt := int(usage.Get("prompt_tokens").Int())
+	if prompt == 0 {
+		prompt = int(usage.Get("input_tokens").Int())
+	}
+	completion := int(usage.Get("completion_tokens").Int())
+	if completion == 0 {
+		completion = int(usage.Get("output_tokens").Int())
+	}
+	total := int(usage.Get("total_tokens").Int())
+	if total == 0 {
+		total = prompt + completion
+	}
+	return domain.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
+		CacheReadTokens:  int(usage.Get("prompt_tokens_details.cached_tokens").Int()),
+	}
+}
+
+type openAICompatibleStreamIterator struct {
+	body    io.ReadCloser
+	reader  *bufio.Reader
+	current []byte
+	usage   domain.Usage
+	err     error
+	done    bool
+	cancel  context.CancelFunc
+}
+
+func (it *openAICompatibleStreamIterator) Next(ctx context.Context) bool {
+	if it.done {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		it.err = ctx.Err()
+		it.done = true
+		_ = it.body.Close()
+		it.cancel()
+		return false
+	default:
+	}
+	line, err := it.reader.ReadBytes('\n')
+	if len(line) > 0 {
+		it.current = line
+		if u, ok := parseOpenAICompatibleSSEUsage(line); ok {
+			it.usage = u
+		}
+		return true
+	}
+	if err != nil {
+		if err != io.EOF {
+			it.err = err
+		}
+		it.done = true
+		_ = it.body.Close()
+		it.cancel()
+	}
+	return false
+}
+
+func (it *openAICompatibleStreamIterator) RawFraming() bool    { return true }
+func (it *openAICompatibleStreamIterator) Chunk() []byte       { return it.current }
+func (it *openAICompatibleStreamIterator) Usage() domain.Usage { return it.usage }
+func (it *openAICompatibleStreamIterator) Err() error          { return it.err }
+func (it *openAICompatibleStreamIterator) Close() error {
+	it.done = true
+	it.cancel()
+	return it.body.Close()
+}
+
+func parseOpenAICompatibleSSEUsage(body []byte) (domain.Usage, bool) {
+	for _, line := range bytes.Split(body, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		usage := parseOpenAICompatibleUsage(data)
+		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
+			return usage, true
+		}
+	}
+	return domain.Usage{}, false
+}
+
 // DispatchStream sends a streaming request through bifrost. Routing
 // semantics match Dispatch:
 //
@@ -388,6 +728,12 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 	model := req.Model
 	if req.Resolved != nil {
 		model = req.Resolved.ModelID
+	}
+	if baseURL := openAICompatibleBaseURL(cred); baseURL != "" {
+		switch req.Type {
+		case domain.RequestTypeChat, domain.RequestTypeResponses:
+			return r.dispatchOpenAICompatibleDirectStream(ctx, req, model, cred, baseURL)
+		}
 	}
 
 	if req.Type == domain.RequestTypeResponses {
