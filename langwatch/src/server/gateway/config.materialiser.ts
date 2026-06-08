@@ -486,7 +486,12 @@ function buildProviderSlot(mp: ModelProvider, index: number): ProviderSlot {
   const credentials = buildCredentials(mp);
   const customKeys = decryptCustomKeys(mp.customKeys);
   const baseURL =
-    pickString(customKeys, "base_url") ?? pickString(customKeys, "BASE_URL");
+    pickString(customKeys, "base_url") ??
+    pickString(customKeys, "BASE_URL") ??
+    pickString(customKeys, "CUSTOM_BASE_URL") ??
+    pickString(customKeys, "OPENAI_BASE_URL") ??
+    pickString(customKeys, "OPENAI_API_BASE") ??
+    pickString(customKeys, "API_BASE");
   const region = pickString(credentials, "region");
   const deploymentMap = mp.deploymentMapping
     ? (mp.deploymentMapping as Record<string, string>)

@@ -130,3 +130,29 @@ func TestBuildPolicyRules_Models(t *testing.T) {
 	assert.Contains(t, modelRules, domain.PolicyRule{Pattern: "^gpt-4.*", Type: domain.PolicyDeny, Target: domain.PolicyTargetModel})
 	assert.Contains(t, modelRules, domain.PolicyRule{Pattern: "^claude-.*", Type: domain.PolicyAllow, Target: domain.PolicyTargetModel})
 }
+
+func TestProviderSlotToCredential_CustomOpenAICompatible(t *testing.T) {
+	cred := providerSlotToCredential(providerSlotWire{
+		ID:      "mp-custom",
+		Type:    "custom",
+		BaseURL: "http://internal-models.local/v1",
+		Credentials: map[string]interface{}{
+			"api_key": "internal-key",
+		},
+		Config: map[string]interface{}{
+			"extra_headers": []interface{}{
+				map[string]interface{}{"key": "X-Internal-Model", "value": "hikvision"},
+			},
+			"network_config": map[string]interface{}{
+				"default_request_timeout_in_seconds": float64(120),
+			},
+		},
+	})
+
+	assert.Equal(t, domain.ProviderOpenAI, cred.ProviderID)
+	assert.Equal(t, "internal-key", cred.APIKey)
+	assert.Equal(t, "http://internal-models.local/v1", cred.Extra["base_url"])
+	assert.Equal(t, "120", cred.Extra["default_request_timeout_in_seconds"])
+	assert.JSONEq(t, `[{"key":"X-Internal-Model","value":"hikvision"}]`, cred.Extra["extra_headers"])
+	assert.JSONEq(t, `{"default_request_timeout_in_seconds":120}`, cred.Extra["network_config"])
+}

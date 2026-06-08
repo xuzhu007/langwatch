@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
@@ -37,6 +38,62 @@ func TestExtractRawResponseBytes_EmptyRawMessage(t *testing.T) {
 	raw := json.RawMessage(nil)
 	if _, ok := extractRawResponseBytes(raw); ok {
 		t.Fatalf("empty json.RawMessage should return ok=false")
+	}
+}
+
+func TestDispatchOpenAICompatibleDirectUsesCustomBaseURL(t *testing.T) {
+	var seenPath string
+	var seenAuth string
+	var seenExtra string
+	var seenModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAuth = r.Header.Get("Authorization")
+		seenExtra = r.Header.Get("X-Internal-Model")
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		seenModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`))
+	}))
+	defer upstream.Close()
+
+	router := &BifrostRouter{}
+	resp, err := router.Dispatch(context.Background(), &domain.Request{
+		Type:  domain.RequestTypeChat,
+		Model: "custom/internal-chat",
+		Body:  []byte(`{"model":"custom/internal-chat","messages":[{"role":"user","content":"hi"}]}`),
+	}, domain.Credential{
+		ID:         "custom-openai-compatible",
+		ProviderID: domain.ProviderOpenAI,
+		APIKey:     "internal-key",
+		Extra: map[string]string{
+			"api_base":      upstream.URL + "/v1",
+			"extra_headers": `{"X-Internal-Model":"hikvision"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if seenPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path = %q, want /v1/chat/completions", seenPath)
+	}
+	if seenAuth != "Bearer internal-key" {
+		t.Fatalf("Authorization = %q, want Bearer internal-key", seenAuth)
+	}
+	if seenExtra != "hikvision" {
+		t.Fatalf("X-Internal-Model = %q, want hikvision", seenExtra)
+	}
+	if seenModel != "internal-chat" {
+		t.Fatalf("model = %q, want internal-chat", seenModel)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if resp.Usage.TotalTokens != 7 || resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 4 {
+		t.Fatalf("usage not parsed: %+v", resp.Usage)
 	}
 }
 

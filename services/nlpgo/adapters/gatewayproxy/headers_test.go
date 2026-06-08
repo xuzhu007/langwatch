@@ -40,6 +40,26 @@ func TestParseCredentialFromHeaders_OpenAI(t *testing.T) {
 	}
 }
 
+func TestParseCredentialFromHeaders_CustomOpenAICompatible(t *testing.T) {
+	cred, err := gatewayproxy.ParseCredentialFromHeaders(mkHeader(
+		"x-litellm-model", "custom/internal-chat",
+		"x-litellm-api_key", "internal-key",
+		"x-litellm-api_base", "http://internal-models.local/v1",
+	))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if cred.ProviderID != domain.ProviderOpenAI {
+		t.Errorf("ProviderID = %q, want openai", cred.ProviderID)
+	}
+	if cred.APIKey != "internal-key" {
+		t.Errorf("APIKey = %q", cred.APIKey)
+	}
+	if cred.Extra["api_base"] != "http://internal-models.local/v1" {
+		t.Errorf("api_base = %q", cred.Extra["api_base"])
+	}
+}
+
 func TestParseCredentialFromHeaders_Anthropic(t *testing.T) {
 	cred, err := gatewayproxy.ParseCredentialFromHeaders(mkHeader(
 		"x-litellm-model", "anthropic/claude-sonnet-4-20250514",
