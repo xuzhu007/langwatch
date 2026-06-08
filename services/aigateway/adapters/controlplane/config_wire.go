@@ -1,6 +1,12 @@
 package controlplane
 
-import "github.com/langwatch/langwatch/services/aigateway/domain"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/langwatch/langwatch/services/aigateway/domain"
+)
 
 // configWire matches the JSON shape returned by GET /api/internal/gateway/config/:vk_id.
 type configWire struct {
@@ -25,6 +31,8 @@ type providerSlotWire struct {
 	ID          string                 `json:"id"`
 	Type        string                 `json:"type"`
 	Credentials map[string]interface{} `json:"credentials"`
+	BaseURL     string                 `json:"base_url,omitempty"`
+	Config      map[string]interface{} `json:"config,omitempty"`
 	// DeploymentMap maps public model ids to provider-native deployment
 	// names (Azure routes on deployment, Bedrock on inference profile,
 	// etc.). Emitted by the control-plane materialiser as a top-level
@@ -284,6 +292,7 @@ func providerSlotToCredential(p providerSlotWire) domain.Credential {
 	cred := domain.Credential{
 		ID:         p.ID,
 		ProviderID: normalizeProviderType(p.Type),
+		Extra:      map[string]string{},
 	}
 
 	getString := func(key string) string {
@@ -327,12 +336,70 @@ func providerSlotToCredential(p providerSlotWire) domain.Credential {
 	default:
 		cred.APIKey = getString("api_key")
 	}
+	mergeProviderSlotExtras(&cred, p)
 
 	return cred
 }
 
+func mergeProviderSlotExtras(cred *domain.Credential, p providerSlotWire) {
+	if cred.Extra == nil {
+		cred.Extra = map[string]string{}
+	}
+	if p.BaseURL != "" {
+		cred.Extra["base_url"] = p.BaseURL
+	}
+	if len(p.Config) == 0 {
+		return
+	}
+	if s := wireString(p.Config["extra_headers"]); s != "" {
+		cred.Extra["extra_headers"] = s
+	}
+	if s := wireString(p.Config["network_config"]); s != "" {
+		cred.Extra["network_config"] = s
+	}
+	if network, ok := p.Config["network_config"].(map[string]interface{}); ok {
+		if s := primitiveWireString(network["default_request_timeout_in_seconds"]); s != "" {
+			cred.Extra["default_request_timeout_in_seconds"] = s
+		}
+	}
+	if s := primitiveWireString(p.Config["default_request_timeout_in_seconds"]); s != "" {
+		cred.Extra["default_request_timeout_in_seconds"] = s
+	}
+}
+
+func wireString(v interface{}) string {
+	if s := primitiveWireString(v); s != "" {
+		return s
+	}
+	switch v.(type) {
+	case map[string]interface{}, []interface{}:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	default:
+		return ""
+	}
+}
+
+func primitiveWireString(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		return fmt.Sprintf("%t", x)
+	default:
+		return ""
+	}
+}
+
 func normalizeProviderType(t string) domain.ProviderID {
 	switch t {
+	case "custom":
+		return domain.ProviderOpenAI
 	case "azure":
 		return domain.ProviderAzure
 	case "bedrock", "aws_bedrock":
