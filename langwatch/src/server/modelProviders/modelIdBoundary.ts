@@ -22,14 +22,14 @@ const MODEL_ALIASES: Record<string, string> = {
   "anthropic/claude-sonnet-4": "anthropic/claude-sonnet-4-20250514",
   "anthropic/claude-opus-4": "anthropic/claude-opus-4-20250514",
   "anthropic/claude-3.5-haiku": "anthropic/claude-3-5-haiku-20241022",
-  "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620"
+  "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620",
 };
 
 /**
  * Providers that need dot-to-dash translation for their model IDs.
  * Anthropic models use dots in llmModels.json but LiteLLM expects dashes.
  */
-const PROVIDERS_NEEDING_TRANSLATION = ["anthropic", "custom"];
+const PROVIDERS_NEEDING_TRANSLATION = ["anthropic"];
 
 /**
  * Extracts the provider from a model ID string.
@@ -44,11 +44,15 @@ function getProvider(modelId: string): string {
   return modelId.slice(0, slashIndex).toLowerCase();
 }
 
+function isBareAnthropicModel(modelId: string): boolean {
+  return !modelId.includes("/") && modelId.toLowerCase().startsWith("claude-");
+}
+
 /**
  * Translates a model ID for use with LiteLLM.
  *
  * First checks for exact alias matches that need expansion to dated versions.
- * Then converts dots to dashes in model IDs for providers that need it (Anthropic, custom).
+ * Then converts dots to dashes in model IDs for providers that need it (Anthropic).
  * Other providers (OpenAI, Gemini, etc.) are returned unchanged.
  *
  * @param modelId - The model ID from llmModels.json (e.g., "anthropic/claude-opus-4.5")
@@ -67,10 +71,9 @@ export function translateModelIdForLitellm(modelId: string): string {
   const provider = getProvider(modelId);
 
   // Only translate providers that need it
-  // Models without a provider prefix are treated as needing translation
-  // (they could be Anthropic models referenced without the prefix)
   const needsTranslation =
-    provider === "" || PROVIDERS_NEEDING_TRANSLATION.includes(provider);
+    PROVIDERS_NEEDING_TRANSLATION.includes(provider) ||
+    (provider === "" && isBareAnthropicModel(modelId));
 
   if (!needsTranslation) {
     return modelId;

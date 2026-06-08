@@ -24,12 +24,15 @@ var modelAliases = map[string]string{
 	"anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620",
 }
 
+func isBareAnthropicModel(modelID string) bool {
+	return !strings.Contains(modelID, "/") && strings.HasPrefix(strings.ToLower(modelID), "claude-")
+}
+
 // providersNeedingDotToDash is the allowlist for the dot→dash rewrite. Only
 // these providers get their model ids transformed — applying it to OpenAI's
-// `gpt-3.5-turbo` would break that model name.
+// `gpt-3.5-turbo` or OpenAI-compatible custom ids would break that model name.
 var providersNeedingDotToDash = map[string]bool{
 	"anthropic": true,
-	"custom":    true,
 }
 
 // reasoningModelPattern catches the reasoning-class models that pin
@@ -72,10 +75,7 @@ func TranslateModelID(modelID string) string {
 		return expanded
 	}
 	provider, _ := SplitProviderModel(modelID)
-	// An empty-provider id (e.g. bare "claude-3.5-sonnet") gets treated as
-	// possibly anthropic. The TS source applies dot→dash in that case for
-	// safety; mirror it.
-	if provider != "" && !providersNeedingDotToDash[provider] {
+	if !providersNeedingDotToDash[provider] && !(provider == "" && isBareAnthropicModel(modelID)) {
 		return modelID
 	}
 	return strings.ReplaceAll(modelID, ".", "-")
