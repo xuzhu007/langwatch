@@ -80,9 +80,14 @@ describe("translateModelIdForLitellm", () => {
   });
 
   describe("Custom provider prefix", () => {
-    it("translates custom/claude-opus-4.5 to custom/claude-opus-4-5", () => {
+    it("preserves custom/claude-opus-4.5 unchanged", () => {
       const result = translateModelIdForLitellm("custom/claude-opus-4.5");
-      expect(result).toBe("custom/claude-opus-4-5");
+      expect(result).toBe("custom/claude-opus-4.5");
+    });
+
+    it("preserves custom OpenAI-compatible model IDs with dots", () => {
+      const result = translateModelIdForLitellm("custom/Qwen3.5-9B");
+      expect(result).toBe("custom/Qwen3.5-9B");
     });
   });
 
@@ -104,9 +109,19 @@ describe("translateModelIdForLitellm", () => {
       expect(result).toBe("");
     });
 
-    it("handles model without provider prefix", () => {
+    it("translates bare Anthropic model without provider prefix", () => {
       const result = translateModelIdForLitellm("claude-3.5-sonnet");
       expect(result).toBe("claude-3-5-sonnet");
+    });
+
+    it("preserves bare non-Anthropic model IDs with dots", () => {
+      const result = translateModelIdForLitellm("Qwen3.5-9B");
+      expect(result).toBe("Qwen3.5-9B");
+    });
+
+    it("preserves bare OpenAI model IDs with dots", () => {
+      const result = translateModelIdForLitellm("gpt-3.5-turbo");
+      expect(result).toBe("gpt-3.5-turbo");
     });
   });
 });
