@@ -1,6 +1,7 @@
 package nlpgo
 
 import (
+	"context"
 	"testing"
 )
 
@@ -36,6 +37,34 @@ func TestEngineDefaults(t *testing.T) {
 	if cfg.Engine.StreamHeartbeatSeconds != 15 {
 		t.Errorf("Engine.StreamHeartbeatSeconds = %d; want 15 to match contract.md §6",
 			cfg.Engine.StreamHeartbeatSeconds)
+	}
+}
+
+func TestLoadConfig_AllowedProxyHostsFallsBackToLegacyEnv(t *testing.T) {
+	t.Setenv("ALLOWED_PROXY_HOSTS", "hichat-test.hikvision.com.cn:443")
+	t.Setenv("NLPGO_ENGINE_ALLOWED_PROXY_HOSTS", "")
+
+	cfg, err := LoadConfig(context.Background())
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if cfg.Engine.AllowedProxyHosts != "hichat-test.hikvision.com.cn:443" {
+		t.Errorf("Engine.AllowedProxyHosts = %q; want legacy ALLOWED_PROXY_HOSTS value", cfg.Engine.AllowedProxyHosts)
+	}
+}
+
+func TestLoadConfig_NestedAllowedProxyHostsWins(t *testing.T) {
+	t.Setenv("ALLOWED_PROXY_HOSTS", "legacy.example.com")
+	t.Setenv("NLPGO_ENGINE_ALLOWED_PROXY_HOSTS", "nested.example.com")
+
+	cfg, err := LoadConfig(context.Background())
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if cfg.Engine.AllowedProxyHosts != "nested.example.com" {
+		t.Errorf("Engine.AllowedProxyHosts = %q; want nested env value to win", cfg.Engine.AllowedProxyHosts)
 	}
 }
 
