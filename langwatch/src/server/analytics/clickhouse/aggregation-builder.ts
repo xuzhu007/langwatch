@@ -2342,7 +2342,6 @@ export function buildDataForFilterQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
-  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
@@ -2351,7 +2350,7 @@ export function buildDataForFilterQuery(
   // Translate filters if provided
   const filterTranslation = translateAllFilters(
     filters ?? {},
-    negateFilters,
+    false,
     SPAN_TIME_FILTER_START_END,
   );
   const filterWhere =

@@ -552,7 +552,8 @@ export const clickHouseFilters: Record<
     extractResults: extractStandardResults,
   },
 
-  // Event filters - using stored_spans table with span attributes
+  // Events - using stored_spans event arrays (Events.Name), matching the
+  // events.event_type filter condition and the search-bar event facet.
   // Note: stored_spans filters require a join with trace_summaries for scope conditions
   "events.event_type": {
     tableName: "stored_spans",
@@ -563,16 +564,20 @@ export const clickHouseFilters: Record<
         : "";
       return `
         SELECT
-          SpanAttributes['event.type'] as field,
-          SpanAttributes['event.type'] as label,
+          name as field,
+          name as label,
           count() as count
-        FROM stored_spans
-        WHERE ${buildStoredSpansConditions(params)}
-          AND SpanAttributes['event.type'] != ''
-          ${params.query ? `AND lower(SpanAttributes['event.type']) LIKE lower(concat({query:String}, '%'))` : ""}
-          ${scopeJoin}
-        GROUP BY field
-        ORDER BY field ASC
+        FROM (
+          SELECT arrayJoin(\`Events.Name\`) as name
+          FROM stored_spans
+          WHERE ${buildStoredSpansConditions(params)}
+            AND length(\`Events.Name\`) > 0
+            ${scopeJoin}
+        )
+        WHERE name != ''
+          ${params.query ? `AND lower(name) LIKE lower(concat({query:String}, '%'))` : ""}
+        GROUP BY name
+        ORDER BY name ASC
         LIMIT 10000
       `;
     },
