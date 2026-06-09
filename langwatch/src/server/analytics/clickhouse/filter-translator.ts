@@ -768,6 +768,7 @@ function translateAnnotationFilter(values: string[]): FilterTranslation {
  */
 export function combineFilters(
   translations: FilterTranslation[],
+  negateFilters = false,
 ): FilterTranslation {
   const nonTrivial = translations.filter((t) => t.whereClause !== "1=1");
 
@@ -775,7 +776,9 @@ export function combineFilters(
     return { whereClause: "1=1", requiredJoins: [], params: {} };
   }
 
-  const whereClauses = nonTrivial.map((t) => `(${t.whereClause})`);
+  const whereClauses = nonTrivial.map((t) =>
+    negateFilters ? `(NOT (${t.whereClause}))` : `(${t.whereClause})`,
+  );
   const allJoins = new Set<CHTable>();
   const allParams: Record<string, unknown> = {};
 
@@ -805,6 +808,7 @@ export function translateAllFilters(
       | Record<string, Record<string, string[]>>
     >
   >,
+  negateFilters = false,
   spanTimePredicate?: string,
 ): FilterTranslation {
   const translations: FilterTranslation[] = [];
@@ -858,5 +862,5 @@ export function translateAllFilters(
     }
   }
 
-  return combineFilters(translations);
+  return combineFilters(translations, negateFilters);
 }

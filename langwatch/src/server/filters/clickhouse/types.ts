@@ -19,6 +19,7 @@ export type ClickHouseFilterQueryParams = {
   endDate: number;
   /** Optional filters for scoping results to a subset of traces */
   scopeFilters?: Partial<Record<FilterField, FilterParam>>;
+  negateFilters?: boolean;
 };
 
 export type FilterOption = {

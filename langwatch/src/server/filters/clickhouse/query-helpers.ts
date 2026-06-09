@@ -91,13 +91,20 @@ export function extractStandardResults(rows: unknown[]): FilterOption[] {
  */
 export function buildScopeConditions(
   params: ClickHouseFilterQueryParams,
-  scopeParamPrefix: string = "scope",
+  scopeParamPrefix = "scope",
 ): { sql: string; params: Record<string, unknown> } {
   if (!params.scopeFilters || Object.keys(params.scopeFilters).length === 0) {
     return { sql: "", params: {} };
   }
 
-  const result = generateClickHouseFilterConditions(params.scopeFilters);
+  const result = generateClickHouseFilterConditions(
+    params.scopeFilters,
+    params.negateFilters ?? false,
+    {
+      startDate: params.startDate,
+      endDate: params.endDate,
+    },
+  );
 
   if (result.conditions.length === 0) {
     return { sql: "", params: {} };

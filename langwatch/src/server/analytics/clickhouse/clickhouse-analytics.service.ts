@@ -125,6 +125,7 @@ export class ClickHouseAnalyticsService {
           previousPeriodStartDate,
           series: input.series,
           filters: input.filters,
+          negateFilters: input.negateFilters,
           groupBy: input.groupBy,
           groupByKey: input.groupByKey,
           timeScale: adjustedTimeScale,
@@ -498,6 +499,7 @@ export class ClickHouseAnalyticsService {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters = false,
   ): Promise<TopDocumentsResult> {
     return this.tracer.withActiveSpan(
       "ClickHouseAnalyticsService.getTopUsedDocuments",
@@ -513,6 +515,7 @@ export class ClickHouseAnalyticsService {
           new Date(startDate),
           new Date(endDate),
           filters,
+          negateFilters,
         );
 
         this.logger.debug({ sql, params }, "Executing topDocuments query");
@@ -598,6 +601,7 @@ export class ClickHouseAnalyticsService {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters = false,
   ): Promise<FeedbacksResult> {
     return this.tracer.withActiveSpan(
       "ClickHouseAnalyticsService.getFeedbacks",
@@ -613,6 +617,7 @@ export class ClickHouseAnalyticsService {
           new Date(startDate),
           new Date(endDate),
           filters,
+          negateFilters,
         );
 
         this.logger.debug({ sql, params }, "Executing feedbacks query");

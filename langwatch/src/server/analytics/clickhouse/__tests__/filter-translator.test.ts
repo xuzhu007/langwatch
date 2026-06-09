@@ -442,6 +442,18 @@ describe("filter-translator", () => {
       expect(result.params).toEqual({ a: 1, b: 2 });
     });
 
+    it("negates each non-trivial filter translation with AND", () => {
+      const filters: FilterTranslation[] = [
+        { whereClause: "a = 1", requiredJoins: [], params: { a: 1 } },
+        { whereClause: "1=1", requiredJoins: [], params: {} },
+        { whereClause: "b = 2", requiredJoins: [], params: { b: 2 } },
+      ];
+      const result = combineFilters(filters, true);
+
+      expect(result.whereClause).toBe("(NOT (a = 1)) AND (NOT (b = 2))");
+      expect(result.params).toEqual({ a: 1, b: 2 });
+    });
+
     it("skips trivial filters (1=1)", () => {
       const filters: FilterTranslation[] = [
         { whereClause: "a = 1", requiredJoins: [], params: { a: 1 } },
@@ -495,6 +507,25 @@ describe("filter-translator", () => {
       expect(result.whereClause).toContain("ts.TopicId");
       expect(result.whereClause).toContain(" AND ");
       expect(result.params).toHaveProperty("topicIds_0", ["topic-1"]);
+    });
+
+    it("translates negated filters", () => {
+      const filters = {
+        "topics.topics": ["topic-1"],
+        "spans.model": ["gpt-4"],
+      };
+      const result = translateAllFilters(filters, true);
+
+      expect(result.whereClause).toContain(
+        "(NOT (ts.TopicId IN ({topicIds_0:Array(String)})))",
+      );
+      expect(result.whereClause).toContain("NOT (ts.TraceId IN");
+      expect(result.whereClause).toContain(
+        "SpanAttributes['gen_ai.request.model'] IN ({models_1:Array(String)})",
+      );
+      expect(result.whereClause).toContain(" AND ");
+      expect(result.params).toHaveProperty("topicIds_0", ["topic-1"]);
+      expect(result.params).toHaveProperty("models_1", ["gpt-4"]);
     });
 
     it("translates nested filters with key and params", () => {

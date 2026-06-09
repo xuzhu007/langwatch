@@ -737,10 +737,14 @@ export class ClickHouseTraceService {
             conditions: filterConditions,
             params: filterParams,
             hasUnsupportedFilters,
-          } = generateClickHouseFilterConditions(input.filters ?? {}, {
-            startDate: input.startDate,
-            endDate: input.endDate,
-          });
+          } = generateClickHouseFilterConditions(
+            input.filters ?? {},
+            input.negateFilters ?? false,
+            {
+              startDate: input.startDate,
+              endDate: input.endDate,
+            },
+          );
 
           if (hasUnsupportedFilters) {
             throw new Error(

@@ -276,13 +276,13 @@ export const clickHouseFilterConditions: Record<
     };
   },
 
-  // Events - using stored_spans table with span attributes
+  // Events - using stored_spans event arrays
   "events.event_type": (values, paramId, _key, _subkey, options) => ({
     sql: `EXISTS (
       SELECT 1 FROM stored_spans sp
       WHERE sp.TenantId = ts.TenantId
         AND sp.TraceId = ts.TraceId${options?.spanTimeBound ?? ""}
-        AND sp.SpanAttributes['event.type'] IN ({${paramId}_values:Array(String)})
+        AND hasAny(sp."Events.Name", {${paramId}_values:Array(String)})
     )`,
     params: { [`${paramId}_values`]: values },
   }),
@@ -486,22 +486,33 @@ function buildSpanTimeBound(timeWindow?: {
  * Returns SQL condition strings and aggregated parameters for parameterized queries.
  *
  * @param filters - The filter parameters from the request
+ * @param negateFiltersOrTimeWindow - Optional negation flag or legacy dashboard
+ *   time window argument.
  * @param timeWindow - Optional dashboard time window. When provided, span/event
  *   filters that probe `stored_spans` via an EXISTS subquery are bounded to this
  *   window so they prune partitions instead of cold-scanning every weekly
  *   partition (including S3-tiered ones).
  * @returns Object with conditions array, aggregated params, and unsupported filter flag
  */
+type FilterConditionTimeWindow = { startDate?: number; endDate?: number };
 export function generateClickHouseFilterConditions(
   filters: Partial<Record<FilterField, FilterParam>>,
-  timeWindow?: { startDate?: number; endDate?: number },
+  negateFiltersOrTimeWindow: boolean | FilterConditionTimeWindow = false,
+  timeWindow?: FilterConditionTimeWindow,
 ): GenerateFilterConditionsResult {
   const conditions: string[] = [];
   const allParams: Record<string, unknown> = {};
   const paramCounter = { value: 0 };
   let hasUnsupportedFilters = false;
-
-  const spanBound = buildSpanTimeBound(timeWindow);
+  const negateFilters =
+    typeof negateFiltersOrTimeWindow === "boolean"
+      ? negateFiltersOrTimeWindow
+      : false;
+  const resolvedTimeWindow =
+    typeof negateFiltersOrTimeWindow === "object"
+      ? negateFiltersOrTimeWindow
+      : timeWindow;
+  const spanBound = buildSpanTimeBound(resolvedTimeWindow);
   const options: FilterConditionOptions = { spanTimeBound: spanBound.sql };
   Object.assign(allParams, spanBound.params);
 
@@ -539,5 +550,9 @@ export function generateClickHouseFilterConditions(
     conditions.push(...result.conditions);
   }
 
-  return { conditions, params: allParams, hasUnsupportedFilters };
+  const finalConditions = negateFilters
+    ? conditions.map((condition) => `NOT (${condition})`)
+    : conditions;
+
+  return { conditions: finalConditions, params: allParams, hasUnsupportedFilters };
 }

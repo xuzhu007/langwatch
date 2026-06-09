@@ -215,6 +215,23 @@ describe("clickHouseFilterConditions", () => {
     });
   });
 
+  describe("events.event_type", () => {
+    it("uses stored_spans Events.Name array", () => {
+      const builder = clickHouseFilterConditions["events.event_type"];
+      expect(builder).not.toBeNull();
+      const result = builder!(["thumbs_up_down", "feedback"], "f0");
+      expect(result.sql).toContain("EXISTS (");
+      expect(result.sql).toContain("stored_spans sp");
+      expect(result.sql).toContain(
+        'hasAny(sp."Events.Name", {f0_values:Array(String)})',
+      );
+      expect(result.sql).not.toContain("SpanAttributes['event.type']");
+      expect(result.params).toEqual({
+        f0_values: ["thumbs_up_down", "feedback"],
+      });
+    });
+  });
+
   describe("evaluations.evaluator_id.has_passed", () => {
     it("generates EXISTS subquery filtering on Passed IS NOT NULL", () => {
       const builder =
@@ -432,6 +449,21 @@ describe("generateClickHouseFilterConditions", () => {
     const result = generateClickHouseFilterConditions(filters);
     expect(result.conditions.length).toBe(2);
     expect(result.hasUnsupportedFilters).toBe(false);
+  });
+
+  it("negates each filter independently", () => {
+    const filters: Partial<Record<FilterField, FilterParam>> = {
+      "topics.topics": ["topic1"],
+      "spans.model": ["gpt-4"],
+    };
+    const result = generateClickHouseFilterConditions(filters, true);
+
+    expect(result.conditions).toEqual([
+      "NOT (ts.TopicId IN ({f0_values:Array(String)}))",
+      "NOT (hasAny(ts.Models, {f1_values:Array(String)}))",
+    ]);
+    expect(result.params).toHaveProperty("f0_values", ["topic1"]);
+    expect(result.params).toHaveProperty("f1_values", ["gpt-4"]);
   });
 
   it("generates conditions for metadata.key filter", () => {

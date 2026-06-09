@@ -26,6 +26,7 @@ export type GetFilterOptionsInput = {
   pivotIndexConditions: any;
   /** Optional filters for scoping ClickHouse results to a subset of traces */
   scopeFilters?: Partial<Record<FilterField, FilterParam>>;
+  negateFilters?: boolean;
 };
 
 /**
