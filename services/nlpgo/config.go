@@ -7,6 +7,7 @@ package nlpgo
 
 import (
 	"context"
+	"os"
 
 	"github.com/langwatch/langwatch/pkg/clog"
 	"github.com/langwatch/langwatch/pkg/config"
@@ -77,6 +78,7 @@ func LoadConfig(ctx context.Context) (Config, error) {
 	if err := config.Hydrate(&cfg); err != nil {
 		return Config{}, err
 	}
+	applyLegacyEnvFallbacks(&cfg, os.Getenv)
 	if cfg.OTel.SampleRatio == 1.0 && cfg.Environment != "local" {
 		cfg.OTel.SampleRatio = 0.1
 	}
@@ -87,6 +89,12 @@ func LoadConfig(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func applyLegacyEnvFallbacks(cfg *Config, getenv func(string) string) {
+	if cfg.Engine.AllowedProxyHosts == "" {
+		cfg.Engine.AllowedProxyHosts = getenv("ALLOWED_PROXY_HOSTS")
+	}
 }
 
 func validateRequired(_ Config) error {
