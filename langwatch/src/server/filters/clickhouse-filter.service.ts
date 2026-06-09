@@ -85,6 +85,7 @@ export class ClickHouseFilterService {
       startDate: number;
       endDate: number;
       scopeFilters?: Partial<Record<FilterField, FilterParam>>;
+      negateFilters?: boolean;
     },
   ): Promise<FilterOption[]> {
     return await this.tracer.withActiveSpan(
@@ -124,6 +125,7 @@ export class ClickHouseFilterService {
             startDate: options.startDate,
             endDate: options.endDate,
             scopeFilters: options.scopeFilters,
+            negateFilters: options.negateFilters,
           };
 
           const sqlQuery = filterDef.buildQuery(queryParams);

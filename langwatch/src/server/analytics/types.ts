@@ -222,6 +222,7 @@ export interface AnalyticsBackend {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters?: boolean,
   ): Promise<TopDocumentsResult>;
   getFeedbacks(
     projectId: string,
@@ -235,6 +236,7 @@ export interface AnalyticsBackend {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters?: boolean,
   ): Promise<FeedbacksResult>;
   isAvailable(): boolean;
 }

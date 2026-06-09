@@ -544,7 +544,10 @@ export class ClickHouseTraceService {
             conditions: filterConditions,
             params: filterParams,
             hasUnsupportedFilters,
-          } = generateClickHouseFilterConditions(input.filters ?? {});
+          } = generateClickHouseFilterConditions(
+            input.filters ?? {},
+            input.negateFilters,
+          );
 
           if (hasUnsupportedFilters) {
             throw new Error(

@@ -338,6 +338,7 @@ export interface TimeseriesQueryInput {
       | Record<string, Record<string, string[]>>
     >
   >;
+  negateFilters?: boolean;
   groupBy?: string;
   groupByKey?: string;
   timeScale?: number | "full";
@@ -494,7 +495,10 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
   }
 
   // Translate filters
-  const filterTranslation = translateAllFilters(input.filters ?? {});
+  const filterTranslation = translateAllFilters(
+    input.filters ?? {},
+    input.negateFilters,
+  );
   for (const join of filterTranslation.requiredJoins) {
     allJoins.add(join);
   }
@@ -1321,7 +1325,12 @@ function buildArrayJoinTimeseriesQuery(
   // Add a group_key restriction in the outer query to show only the filtered values.
   let groupKeyFilter = "";
   const groupKeyFilterParams: Record<string, unknown> = {};
-  if (input.groupBy && input.filters && groupByColumn.includes("arrayJoin")) {
+  if (
+    input.groupBy &&
+    input.filters &&
+    !input.negateFilters &&
+    groupByColumn.includes("arrayJoin")
+  ) {
     const filterValues = input.filters[input.groupBy as keyof typeof input.filters];
     if (Array.isArray(filterValues) && filterValues.length > 0) {
       const paramName = "groupByFilterValues";
@@ -1828,7 +1837,10 @@ function buildDateBucketedPipelineQuery({
     // Include filter joins by re-translating (idempotent, no side effects
     // that affect query correctness — param names are already in filterParams)
     if (input.filters) {
-      const filterJoins = translateAllFilters(input.filters).requiredJoins;
+      const filterJoins = translateAllFilters(
+        input.filters,
+        input.negateFilters,
+      ).requiredJoins;
       for (const j of filterJoins) simpleJoins.add(j);
     }
     const allSimpleExprs = [
@@ -2227,13 +2239,14 @@ export function buildDataForFilterQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
+  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
   const es = tableAliases.evaluation_runs;
 
   // Translate filters if provided
-  const filterTranslation = translateAllFilters(filters ?? {});
+  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
@@ -2449,12 +2462,13 @@ export function buildTopDocumentsQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
+  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
 
   // Translate filters
-  const filterTranslation = translateAllFilters(filters ?? {});
+  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
@@ -2540,12 +2554,13 @@ export function buildFeedbacksQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
+  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
 
   // Translate filters
-  const filterTranslation = translateAllFilters(filters ?? {});
+  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
