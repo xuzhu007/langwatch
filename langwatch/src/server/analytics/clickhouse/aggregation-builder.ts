@@ -2239,14 +2239,13 @@ export function buildDataForFilterQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
-  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
   const es = tableAliases.evaluation_runs;
 
   // Translate filters if provided
-  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
+  const filterTranslation = translateAllFilters(filters ?? {});
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
