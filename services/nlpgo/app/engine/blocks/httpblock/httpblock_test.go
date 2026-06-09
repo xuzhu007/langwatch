@@ -118,6 +118,43 @@ func TestSSRF_AllowList(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestSSRF_AllowListSupportsHostPort(t *testing.T) {
+	resolver := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+
+	err := httpblock.CheckURL("http://service.internal:9001/x", httpblock.SSRFOptions{
+		AllowedHosts: []string{"service.internal:9001"},
+		Resolver:     resolver,
+	})
+	assert.NoError(t, err)
+}
+
+func TestSSRF_AllowListHostPortMatchesDefaultHTTPSPort(t *testing.T) {
+	resolver := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+
+	err := httpblock.CheckURL("https://service.internal/x", httpblock.SSRFOptions{
+		AllowedHosts: []string{"service.internal:443"},
+		Resolver:     resolver,
+	})
+	assert.NoError(t, err)
+}
+
+func TestSSRF_AllowListHostPortRequiresMatchingPort(t *testing.T) {
+	resolver := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+
+	err := httpblock.CheckURL("http://service.internal:9002/x", httpblock.SSRFOptions{
+		AllowedHosts: []string{"service.internal:9001"},
+		Resolver:     resolver,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, httpblock.ErrSSRFBlocked)
+}
+
 func TestSSRF_AlwaysBlocksMetadataEvenIfAllowed(t *testing.T) {
 	err := httpblock.CheckURL("http://169.254.169.254/x", httpblock.SSRFOptions{
 		AllowedHosts: []string{"169.254.169.254"},
