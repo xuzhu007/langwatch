@@ -1,8 +1,9 @@
 import type { PrismaClient, Project } from "@prisma/client";
-import type { Session } from "~/server/auth";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { env } from "~/env.mjs";
+import type { Session } from "~/server/auth";
+import { isManagedProvider } from "../../../ee/managed-providers/managedBedrockConfig";
 import { KEY_CHECK, MASKED_KEY_PLACEHOLDER } from "../../utils/constants";
 import type { CustomModelsInput } from "./customModel.schema";
 import { toLegacyCompatibleCustomModels } from "./customModel.schema";
@@ -21,7 +22,6 @@ import {
   modelProviders,
 } from "./registry";
 import { seedOnboardingDefaultsForProvider } from "./seedOnboardingDefaults";
-import { isManagedProvider } from "../../../ee/managed-providers/managedBedrockConfig";
 
 /**
  * Minimal ctx slice this service uses to authorize scope-level writes.
@@ -676,9 +676,14 @@ export class ModelProviderService {
     const { id, projectId, provider } = input;
 
     if (ctx) {
-      const existing = id
-        ? await this.repository.findById(id, projectId)
-        : await this.repository.findByProvider(provider, projectId);
+      const organizationId =
+        await this.resolveProjectOrganizationId(projectId);
+      const existing =
+        id && organizationId
+          ? await this.repository.findByIdForOrganization(id, organizationId)
+          : id
+            ? await this.repository.findById(id, projectId)
+            : await this.repository.findByProvider(provider, projectId);
       if (!existing) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -699,6 +704,16 @@ export class ModelProviderService {
     } else {
       return await this.repository.deleteByProvider(provider, projectId);
     }
+  }
+
+  private async resolveProjectOrganizationId(
+    projectId: string,
+  ): Promise<string | null> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { team: { select: { organizationId: true } } },
+    });
+    return project?.team?.organizationId ?? null;
   }
 
   /**

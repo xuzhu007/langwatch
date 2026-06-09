@@ -1,8 +1,8 @@
+import { generate } from "@langwatch/ksuid";
 import type { ModelProvider, ModelProviderScope, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { generate } from "@langwatch/ksuid";
 import { KSUID_RESOURCES } from "../../utils/constants";
-import { encrypt, decrypt } from "../../utils/encryption";
+import { decrypt, encrypt } from "../../utils/encryption";
 import { resolveSingleOrganizationForScopes } from "../scopes/resolveOrganizationForScope";
 import { resolveScopeChain } from "../scopes/resolveScopeChain";
 import type { CustomModelsInput } from "./customModel.schema";
@@ -62,6 +62,23 @@ export class ModelProviderRepository {
         provider,
         scopes: { some: { scopeType: "PROJECT", scopeId: projectId } },
       },
+      include: { scopes: true },
+    });
+    return result ? this.withDecryptedKeys(result) : null;
+  }
+
+  /**
+   * 按组织锚定查找任意 scope 上的 ModelProvider。
+   * 删除前仍会对每个已保存 scope 做 manage 权限校验。
+   */
+  async findByIdForOrganization(
+    id: string,
+    organizationId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<ModelProviderWithScopes | null> {
+    const client = tx ?? this.prisma;
+    const result = await client.modelProvider.findFirst({
+      where: { id, organizationId },
       include: { scopes: true },
     });
     return result ? this.withDecryptedKeys(result) : null;
