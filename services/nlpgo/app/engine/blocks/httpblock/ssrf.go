@@ -53,7 +53,7 @@ func CheckURL(raw string, opts SSRFOptions) error {
 	if host == "" {
 		return ErrSSRFBlocked
 	}
-	allow, deny := hostPolicy(host, opts)
+	allow, deny := hostPolicy(host, effectivePort(u), opts)
 	if deny {
 		return ErrSSRFBlocked
 	}
@@ -99,7 +99,7 @@ func SafeDialer(opts SSRFOptions) func(ctx context.Context, network, addr string
 			return nil, err
 		}
 		host = strings.ToLower(host)
-		allow, deny := hostPolicy(host, opts)
+		allow, deny := hostPolicy(host, port, opts)
 		if deny {
 			return nil, ErrSSRFBlocked
 		}
@@ -136,7 +136,7 @@ var ErrSSRFBlocked = errors.New("ssrf_blocked")
 // hostPolicy classifies a hostname against the static deny/allow
 // lists. Returns (allow, deny) — both false means "needs IP-level
 // check". Pulled out so CheckURL and SafeDialer apply the same rules.
-func hostPolicy(host string, opts SSRFOptions) (allow, deny bool) {
+func hostPolicy(host string, port string, opts SSRFOptions) (allow, deny bool) {
 	if host == "" {
 		return false, true
 	}
@@ -144,7 +144,7 @@ func hostPolicy(host string, opts SSRFOptions) (allow, deny bool) {
 		return false, true
 	}
 	for _, allowed := range opts.AllowedHosts {
-		if strings.EqualFold(host, allowed) {
+		if allowListMatches(host, port, allowed) {
 			return true, false
 		}
 	}
@@ -152,6 +152,35 @@ func hostPolicy(host string, opts SSRFOptions) (allow, deny bool) {
 		return false, true
 	}
 	return false, false
+}
+
+func allowListMatches(host string, port string, allowed string) bool {
+	allowed = strings.TrimSpace(strings.ToLower(allowed))
+	if allowed == "" {
+		return false
+	}
+	if allowed == host {
+		return true
+	}
+	allowedHost, allowedPort, err := net.SplitHostPort(allowed)
+	if err != nil {
+		return false
+	}
+	return allowedPort == port && strings.EqualFold(allowedHost, host)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 // ipBlocked is the unified IP-level deny check.
