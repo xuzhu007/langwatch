@@ -61,6 +61,7 @@ export const dataForFilter = protectedProcedure
       endDate: input.endDate,
       pivotIndexConditions,
       scopeFilters,
+      negateFilters: input.negateFilters,
     });
 
     return { options: results };

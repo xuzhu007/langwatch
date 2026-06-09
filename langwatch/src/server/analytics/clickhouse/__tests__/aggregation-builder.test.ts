@@ -427,6 +427,29 @@ describe("aggregation-builder", () => {
       expect(result.params.groupByFilterValues).toEqual(["populator", "conversation"]);
     });
 
+    it("does not restrict arrayJoin group_key to filtered values when filters are negated", () => {
+      const input = {
+        ...baseInput,
+        groupBy: "metadata.labels" as const,
+        negateFilters: true,
+        filters: {
+          "metadata.labels": ["populator", "conversation"],
+        },
+        series: [
+          {
+            metric: "metadata.trace_id" as FlattenAnalyticsMetricsEnum,
+            aggregation: "cardinality" as const,
+            pipeline: { field: "trace_id" as const, aggregation: "sum" as const },
+          },
+        ],
+      };
+      const result = buildTimeseriesQuery(input);
+
+      expect(result.sql).toContain("NOT (hasAny");
+      expect(result.sql).not.toContain("group_key IN");
+      expect(result.params).not.toHaveProperty("groupByFilterValues");
+    });
+
     it("does not JOIN stored_spans when metadata.span_type uses cardinality alongside trace-level metrics", () => {
       const input = {
         ...baseInput,
@@ -475,6 +498,22 @@ describe("aggregation-builder", () => {
       expect(result.sql).toContain("ts.TopicId IN");
       expect(result.sql).toContain("{topicIds_0:Array(String)}");
       expect(result.params).toHaveProperty("topicIds_0", ["topic-1", "topic-2"]);
+    });
+
+    it("adds negated filters to WHERE clause", () => {
+      const input = {
+        ...baseInput,
+        negateFilters: true,
+        filters: {
+          "topics.topics": ["topic-1"],
+        },
+      };
+      const result = buildTimeseriesQuery(input);
+
+      expect(result.sql).toContain(
+        "AND (NOT (ts.TopicId IN ({topicIds_0:Array(String)})))",
+      );
+      expect(result.params).toHaveProperty("topicIds_0", ["topic-1"]);
     });
 
     it("handles groupBy parameter", () => {

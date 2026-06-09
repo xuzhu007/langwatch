@@ -140,6 +140,7 @@ export class AnalyticsService {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters = false,
   ): Promise<TopDocumentsResult> {
     return this.executeWithRouting(
       "getTopUsedDocuments",
@@ -150,6 +151,7 @@ export class AnalyticsService {
           startDate,
           endDate,
           filters,
+          negateFilters,
         ),
     );
   }
@@ -169,11 +171,19 @@ export class AnalyticsService {
         | Record<string, Record<string, string[]>>
       >
     >,
+    negateFilters = false,
   ): Promise<FeedbacksResult> {
     return this.executeWithRouting(
       "getFeedbacks",
       projectId,
-      () => this.chService.getFeedbacks(projectId, startDate, endDate, filters),
+      () =>
+        this.chService.getFeedbacks(
+          projectId,
+          startDate,
+          endDate,
+          filters,
+          negateFilters,
+        ),
     );
   }
 }

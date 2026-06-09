@@ -75,6 +75,7 @@ export class FilterServiceFacade {
             startDate: input.startDate,
             endDate: input.endDate,
             scopeFilters: input.scopeFilters,
+            negateFilters: input.negateFilters,
           },
         );
       },

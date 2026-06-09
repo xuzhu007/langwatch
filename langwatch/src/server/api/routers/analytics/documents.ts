@@ -13,5 +13,6 @@ export const topUsedDocuments = protectedProcedure
       input.startDate,
       input.endDate,
       input.filters,
+      input.negateFilters,
     );
   });

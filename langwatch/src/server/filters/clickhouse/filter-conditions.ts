@@ -268,13 +268,12 @@ export const clickHouseFilterConditions: Record<
     };
   },
 
-  // Events - using stored_spans table with span attributes
+  // Events - using stored_spans event arrays
   "events.event_type": (values, paramId) => ({
-    sql: `EXISTS (
-      SELECT 1 FROM stored_spans sp
-      WHERE sp.TenantId = ts.TenantId
-        AND sp.TraceId = ts.TraceId
-        AND sp.SpanAttributes['event.type'] IN ({${paramId}_values:Array(String)})
+    sql: `ts.TraceId IN (
+      SELECT TraceId FROM stored_spans
+      WHERE TenantId = {tenantId:String}
+        AND hasAny("Events.Name", {${paramId}_values:Array(String)})
     )`,
     params: { [`${paramId}_values`]: values },
   }),
@@ -442,6 +441,7 @@ function collectClickHouseConditions(
  */
 export function generateClickHouseFilterConditions(
   filters: Partial<Record<FilterField, FilterParam>>,
+  negateFilters = false,
 ): GenerateFilterConditionsResult {
   const conditions: string[] = [];
   const allParams: Record<string, unknown> = {};
@@ -481,5 +481,9 @@ export function generateClickHouseFilterConditions(
     conditions.push(...result.conditions);
   }
 
-  return { conditions, params: allParams, hasUnsupportedFilters };
+  const finalConditions = negateFilters
+    ? conditions.map((condition) => `NOT (${condition})`)
+    : conditions;
+
+  return { conditions: finalConditions, params: allParams, hasUnsupportedFilters };
 }
