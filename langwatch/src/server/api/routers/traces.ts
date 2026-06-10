@@ -255,10 +255,22 @@ export const tracesRouter = createTRPCRouter({
     }),
 
   getTracesWithSpans: protectedProcedure
-    .input(z.object({ projectId: z.string(), traceIds: z.array(z.string()) }))
+    .input(
+      z.object({
+        projectId: z.string(),
+        traceIds: z.array(z.string()),
+        timeRange: z
+          .object({
+            from: z.number(),
+            to: z.number(),
+            live: z.boolean().optional(),
+          })
+          .optional(),
+      }),
+    )
     .use(checkProjectPermission("traces:view"))
     .query(async ({ input, ctx }) => {
-      const { projectId, traceIds } = input;
+      const { projectId, traceIds, timeRange } = input;
       const protections = await getUserProtectionsForProject(ctx, {
         projectId: input.projectId,
       });
@@ -271,7 +283,7 @@ export const tracesRouter = createTRPCRouter({
         projectId,
         traceIds,
         protections,
-        undefined,
+        timeRange ? { from: timeRange.from, to: timeRange.to } : undefined,
         { full: true },
       );
     }),

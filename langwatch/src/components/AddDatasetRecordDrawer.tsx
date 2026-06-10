@@ -36,7 +36,22 @@ interface AddDatasetDrawerProps {
   /** ID of the trace to add */
   traceId?: string;
   /** Array of trace IDs to add */
-  selectedTraceIds?: string[];
+  selectedTraceIds?: string[] | string;
+  /** Time window the selected traces came from, used to bound ClickHouse reads. */
+  selectedTraceTimeRange?: {
+    from: number;
+    to: number;
+    live?: boolean;
+  };
+  /** Non-URL payload for bulk selections; avoids very long drawer URLs. */
+  selectedTraceSelection?: {
+    traceIds: string[];
+    timeRange?: {
+      from: number;
+      to: number;
+      live?: boolean;
+    };
+  };
 }
 
 /**
@@ -75,6 +90,8 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
     { projectId: project?.id ?? "" },
     { enabled: !!project, refetchOnWindowFocus: false },
   );
+  const selectedTraceTimeRange =
+    props.selectedTraceSelection?.timeRange ?? props.selectedTraceTimeRange;
 
   const selectedDataset = datasets.data?.find(
     (dataset) => dataset.id === datasetId,
@@ -84,12 +101,17 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
   const traceIds = useMemo(
     () =>
       [
+        ...(props.selectedTraceSelection?.traceIds ?? []),
         ...(Array.isArray(props.selectedTraceIds)
           ? props.selectedTraceIds
           : [props.selectedTraceIds]),
         props?.traceId ?? "",
       ].filter(Boolean) as string[],
-    [props.selectedTraceIds, props.traceId],
+    [
+      props.selectedTraceIds,
+      props.selectedTraceSelection?.traceIds,
+      props.traceId,
+    ],
   );
 
   // Fetch traces with spans data
@@ -97,9 +119,10 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
     {
       projectId: project?.id ?? "",
       traceIds: traceIds,
+      timeRange: selectedTraceTimeRange,
     },
     {
-      enabled: !!project,
+      enabled: !!project && traceIds.length > 0,
       refetchOnWindowFocus: false,
     },
   );

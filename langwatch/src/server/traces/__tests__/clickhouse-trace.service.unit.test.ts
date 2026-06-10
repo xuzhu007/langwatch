@@ -122,6 +122,87 @@ describe("ClickHouseTraceService", () => {
     const mod = await import("../clickhouse-trace.service");
     ClickHouseTraceService = mod.ClickHouseTraceService;
   });
+  describe("getTracesWithSpans()", () => {
+    it("uses the provided time range to bound the trace summary lookup", async () => {
+      const startDate = Date.now() - 3600000;
+      const endDate = Date.now();
+      const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+      const summaryRow = makeSummaryRow("trace-1");
+      const spanRow = makeSpanRow("trace-1", "span-1");
+
+      mockClickHouseQuery
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve([summaryRow]),
+        })
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve([spanRow]),
+        });
+
+      const service = new ClickHouseTraceService({
+        project: { findUnique: mockPrismaFindUnique },
+      } as never);
+
+      const result = await service.getTracesWithSpans(
+        "proj_123",
+        ["trace-1"],
+        protections,
+        { from: startDate, to: endDate },
+      );
+
+      expect(result).not.toBeNull();
+      expect(result).toHaveLength(1);
+
+      const summaryCall = mockClickHouseQuery.mock.calls[0]![0];
+      expect(summaryCall.query).toContain(
+        "t.OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64})",
+      );
+      expect(summaryCall.query).toContain(
+        "t.OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})",
+      );
+      expect(summaryCall.query).toContain(
+        "OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64})",
+      );
+      expect(summaryCall.query).toContain(
+        "OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})",
+      );
+      expect(summaryCall.query_params.sumFromMs).toBe(startDate - twoDaysMs);
+      expect(summaryCall.query_params.sumToMs).toBe(endDate + twoDaysMs);
+    });
+
+    it("fetches all selected trace IDs when the query fits", async () => {
+      const traceIds = Array.from({ length: 26 }, (_, i) => `trace-${i}`);
+      const summaryRows = traceIds.map((id) => makeSummaryRow(id));
+      const spanRows = traceIds.map((id, i) => makeSpanRow(id, `span-${i}`));
+
+      mockClickHouseQuery
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve(summaryRows),
+        })
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve(spanRows),
+        });
+
+      const service = new ClickHouseTraceService({
+        project: { findUnique: mockPrismaFindUnique },
+      } as never);
+
+      const result = await service.getTracesWithSpans(
+        "proj_123",
+        traceIds,
+        protections,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result).toHaveLength(26);
+
+      expect(
+        mockClickHouseQuery.mock.calls[0]![0].query_params.traceIds,
+      ).toHaveLength(26);
+      expect(
+        mockClickHouseQuery.mock.calls[1]![0].query_params.traceIds,
+      ).toHaveLength(26);
+    });
+  });
 
   describe("getAllTracesForProject()", () => {
     // Helper: set up the standard 4-mock sequence for fetchTracesWithPagination

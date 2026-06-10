@@ -399,6 +399,7 @@ FilterAside.displayName = "FilterAside";
 
 const ResultsPane: React.FC = React.memo(() => {
   const { data, totalHits } = useTraceListQuery();
+  const timeRange = useFilterStore((s) => s.debouncedTimeRange);
   const pageTraceIds = useMemo(() => data.map((t) => t.traceId), [data]);
   const selectionMode = useSelectionStore((s) => s.mode);
   const explicitCount = useSelectionStore((s) => s.traceIds.size);
@@ -489,6 +490,11 @@ const ResultsPane: React.FC = React.memo(() => {
       <BulkActionBar
         totalHits={totalHits}
         pageTraceIds={pageTraceIds}
+        traceTimeRange={{
+          from: timeRange.from,
+          to: timeRange.to,
+          live: !!timeRange.label,
+        }}
         onExportSelected={(ids) => {
           // In all-matching mode, omit traceIds so the export reuses filters.
           openExportDialog(
