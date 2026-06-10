@@ -173,7 +173,7 @@ export const clickHouseFilterConditions: Record<
     return { sql: "1=0", params: {} };
   },
 
-  // Evaluations - using evaluation_runs table with EXISTS subquery
+  // Evaluations - using evaluation_runs table subqueries
   "evaluations.evaluator_id": buildEvaluatorExistsCondition(""),
 
   "evaluations.evaluator_id.guardrails_only": buildEvaluatorExistsCondition(
@@ -261,13 +261,14 @@ export const clickHouseFilterConditions: Record<
   "evaluations.label": (values, paramId, key) => {
     if (!key) return { sql: "1=0", params: {} };
     return {
-      sql: `EXISTS (
-        SELECT 1 FROM evaluation_runs es
-        WHERE es.TenantId = ts.TenantId
-          AND es.TraceId IS NOT NULL
-          AND assumeNotNull(es.TraceId) = ts.TraceId
-          AND es.EvaluatorId = {${paramId}_key:String}
-          AND es.Label IN ({${paramId}_values:Array(String)})
+      sql: `ts.TraceId IN (
+        SELECT assumeNotNull(TraceId)
+        FROM evaluation_runs
+        WHERE TenantId = {tenantId:String}
+          AND TraceId IS NOT NULL
+          AND EvaluatorId = {${paramId}_key:String}
+          AND Label IS NOT NULL
+          AND assumeNotNull(Label) IN ({${paramId}_values:Array(String)})
       )`,
       params: {
         [`${paramId}_key`]: key,
@@ -554,5 +555,9 @@ export function generateClickHouseFilterConditions(
     ? conditions.map((condition) => `NOT (${condition})`)
     : conditions;
 
-  return { conditions: finalConditions, params: allParams, hasUnsupportedFilters };
+  return {
+    conditions: finalConditions,
+    params: allParams,
+    hasUnsupportedFilters,
+  };
 }

@@ -413,12 +413,29 @@ describe("clickHouseFilterConditions", () => {
   });
 
   describe("evaluations.label", () => {
-    it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
+    it("returns 1=0 when key is missing", () => {
+      const builder = clickHouseFilterConditions["evaluations.label"];
+      const result = builder!(["positive"], "f0");
+      expect(result.sql).toBe("1=0");
+    });
+
+    it("generates a non-correlated TraceId IN subquery for labels", () => {
       const builder = clickHouseFilterConditions["evaluations.label"];
       const result = builder!(["positive"], "f0", "eval-1");
-      expect(result.sql).toContain("es.TraceId IS NOT NULL");
-      expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
-      expect(result.sql).not.toMatch(/es\.TraceId = ts\.TraceId/);
+      expect(result.sql).toContain("ts.TraceId IN (");
+      expect(result.sql).toContain("SELECT assumeNotNull(TraceId)");
+      expect(result.sql).toContain("WHERE TenantId = {tenantId:String}");
+      expect(result.sql).toContain("TraceId IS NOT NULL");
+      expect(result.sql).toContain("EvaluatorId = {f0_key:String}");
+      expect(result.sql).toContain("Label IS NOT NULL");
+      expect(result.sql).toContain(
+        "assumeNotNull(Label) IN ({f0_values:Array(String)})",
+      );
+      expect(result.sql).not.toContain("EXISTS");
+      expect(result.params).toEqual({
+        f0_key: "eval-1",
+        f0_values: ["positive"],
+      });
     });
   });
 });
@@ -494,6 +511,30 @@ describe("generateClickHouseFilterConditions", () => {
     expect(result.conditions.length).toBe(1);
     expect(result.conditions[0]).toContain(" OR ");
     expect(Object.keys(result.params).length).toBeGreaterThan(0);
+  });
+
+  it("handles nested evaluation label filters from trace and analytics requests", () => {
+    const filters: Partial<Record<FilterField, FilterParam>> = {
+      "traces.origin": ["web_sps", "moa"],
+      "evaluations.label": {
+        monitor_0004R4NvlJn9YEQKsvSjpdQAUjLA8: ["解决方案"],
+      },
+    };
+
+    const result = generateClickHouseFilterConditions(filters);
+
+    expect(result.conditions).toHaveLength(2);
+    expect(result.conditions[1]).toContain("ts.TraceId IN (");
+    expect(result.conditions[1]).toContain("EvaluatorId = {f1_key:String}");
+    expect(result.conditions[1]).toContain(
+      "assumeNotNull(Label) IN ({f1_values:Array(String)})",
+    );
+    expect(result.params).toMatchObject({
+      f0_values: ["web_sps", "moa"],
+      f1_key: "monitor_0004R4NvlJn9YEQKsvSjpdQAUjLA8",
+      f1_values: ["解决方案"],
+    });
+    expect(result.hasUnsupportedFilters).toBe(false);
   });
 
   it("generates unique parameter names for multiple filters", () => {
