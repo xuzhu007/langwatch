@@ -1,9 +1,16 @@
-import { Box, Flex, HStack, useBreakpointValue, VStack } from "@chakra-ui/react";
+import {
+  Box,
+  Flex,
+  HStack,
+  useBreakpointValue,
+  VStack,
+} from "@chakra-ui/react";
 import React, { useMemo } from "react";
 import { ExportConfigDialog } from "~/components/messages/ExportConfigDialog";
 import { ExportProgress } from "~/components/messages/ExportProgress";
 import { useTracesV2Presence } from "~/features/presence/hooks/useTracesV2Presence";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { analyzeOrGroups } from "~/server/app-layer/traces/query-language/queries";
 import { useLensFilterDirtySync } from "../../hooks/useLensFilterDirtySync";
 import { useLensSync } from "../../hooks/useLensSync";
 import { useProjectHasTraces } from "../../hooks/useProjectHasTraces";
@@ -14,25 +21,24 @@ import { useTraceFreshness } from "../../hooks/useTraceFreshness";
 import { useTraceListExport } from "../../hooks/useTraceListExport";
 import { useTraceListQuery } from "../../hooks/useTraceListQuery";
 import { useURLSync } from "../../hooks/useURLSync";
-import { useDrawerStore } from "../../stores/drawerStore";
-import { TraceV2DrawerShell } from "../TraceDrawer";
 import { OnboardingHost } from "../../onboarding";
 import { useOnboardingStore } from "../../onboarding/store/onboardingStore";
+import { useDrawerStore } from "../../stores/drawerStore";
+import { useFilterStore } from "../../stores/filterStore";
 import {
   SELECT_ALL_MATCHING_CAP,
   useSelectionStore,
 } from "../../stores/selectionStore";
-import { useFilterStore } from "../../stores/filterStore";
 import { useUIStore } from "../../stores/uiStore";
-import { analyzeOrGroups } from "~/server/app-layer/traces/query-language/queries";
 import { DensityProvider } from "../DensityProvider";
 import { FilterSidebar } from "../FilterSidebar/FilterSidebar";
-import { SidebarResizeHandle } from "../FilterSidebar/SidebarResizeHandle";
 import { ConnectorLaneWidth } from "../FilterSidebar/OrConnectorOverlay";
+import { SidebarResizeHandle } from "../FilterSidebar/SidebarResizeHandle";
 import { FindBar } from "../FindBar";
 import { SearchBar } from "../SearchBar/SearchBar";
 import { BulkActionBar } from "../Toolbar/BulkActionBar";
 import { Toolbar } from "../Toolbar/Toolbar";
+import { TraceV2DrawerShell } from "../TraceDrawer";
 import { TraceTable } from "../TraceTable/TraceTable";
 import { EmptyResultsPane } from "./EmptyResultsPane";
 import { PageKeyboardShortcuts } from "./PageKeyboardShortcuts";
@@ -297,6 +303,7 @@ FilterAside.displayName = "FilterAside";
 
 const ResultsPane: React.FC = React.memo(() => {
   const { data, totalHits } = useTraceListQuery();
+  const timeRange = useFilterStore((s) => s.debouncedTimeRange);
   const pageTraceIds = useMemo(() => data.map((t) => t.traceId), [data]);
   const selectionMode = useSelectionStore((s) => s.mode);
   const explicitCount = useSelectionStore((s) => s.traceIds.size);
@@ -334,6 +341,11 @@ const ResultsPane: React.FC = React.memo(() => {
       <BulkActionBar
         totalHits={totalHits}
         pageTraceIds={pageTraceIds}
+        traceTimeRange={{
+          from: timeRange.from,
+          to: timeRange.to,
+          live: !!timeRange.label,
+        }}
         onExportSelected={(ids) => {
           // In all-matching mode, omit traceIds so the export reuses filters.
           openExportDialog(
