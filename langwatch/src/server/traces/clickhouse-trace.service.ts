@@ -2,14 +2,15 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import type { PrismaClient } from "@prisma/client";
 import { getLangWatchTracer } from "langwatch";
 import type { TraceWithGuardrail } from "~/components/messages/MessageCard";
+import { LLM_PARAMETER_MAP } from "~/prompts/prompt-playground/llmParameterMap";
 import type { TraceSummaryData } from "~/server/app-layer/traces/types";
 import { getClickHouseClientForProject } from "~/server/clickhouse/clickhouseClient";
 import { prisma as defaultPrisma } from "~/server/db";
 import type { Protections } from "~/server/elasticsearch/protections";
 import {
+  type ClickHouseEvaluationRunRow,
   mapClickHouseEvaluationToTraceEvaluation,
   mapTraceEvaluationsToLegacyEvaluations,
-  type ClickHouseEvaluationRunRow,
 } from "~/server/evaluations/evaluation-run.mappers";
 import type {
   NormalizedSpan,
@@ -18,14 +19,13 @@ import type {
 } from "~/server/event-sourcing/pipelines/trace-processing/schemas/spans";
 import { generateClickHouseFilterConditions } from "~/server/filters/clickhouse";
 import type { Span, Trace } from "~/server/tracer/types";
-import { LLM_PARAMETER_MAP } from "~/prompts/prompt-playground/llmParameterMap";
 import { createLogger } from "~/utils/logger/server";
+import { findPromptReferenceInAncestors } from "./findPromptReferenceInAncestors";
 import {
   applyTraceProtections,
   mapNormalizedSpansToSpans,
   mapTraceSummaryToTrace,
 } from "./mappers";
-import { findPromptReferenceInAncestors } from "./findPromptReferenceInAncestors";
 import { parseLLMSpanMessages } from "./parseLLMSpanMessages";
 import { parsePromptReference } from "./parsePromptReference";
 import type {
@@ -83,6 +83,7 @@ export class ClickHouseTraceService {
   private readonly tracer = getLangWatchTracer(
     "langwatch.traces.clickhouse-service",
   );
+  private static readonly TRACE_WITH_SPANS_BATCH_SIZE = 25;
   constructor(private readonly prisma: PrismaClient) {}
 
   /**
@@ -119,6 +120,10 @@ export class ClickHouseTraceService {
     projectId: string,
     traceIds: string[],
     protections: Protections,
+    options: {
+      startDate?: number;
+      endDate?: number;
+    } = {},
   ): Promise<Trace[] | null> {
     return await this.tracer.withActiveSpan(
       "ClickHouseTraceService.getTracesWithSpans",
@@ -135,20 +140,42 @@ export class ClickHouseTraceService {
           return [];
         }
 
+        const uniqueTraceIds = Array.from(new Set(traceIds.filter(Boolean)));
+        if (uniqueTraceIds.length === 0) {
+          return [];
+        }
+
         this.logger.debug(
-          { projectId, traceIdCount: traceIds.length },
+          { projectId, traceIdCount: uniqueTraceIds.length },
           "Fetching traces with spans from ClickHouse",
         );
 
         try {
-          // Fetch trace summaries with spans using JOIN
-          const tracesWithSpans = await this.fetchTracesWithSpansJoined(
-            projectId,
-            traceIds,
-          );
+          const tracesWithSpans = new Map<
+            string,
+            { summary: TraceSummaryData; spans: NormalizedSpan[] }
+          >();
+          for (
+            let i = 0;
+            i < uniqueTraceIds.length;
+            i += ClickHouseTraceService.TRACE_WITH_SPANS_BATCH_SIZE
+          ) {
+            const batch = uniqueTraceIds.slice(
+              i,
+              i + ClickHouseTraceService.TRACE_WITH_SPANS_BATCH_SIZE,
+            );
+            const batchTracesWithSpans = await this.fetchTracesWithSpansJoined(
+              projectId,
+              batch,
+              options,
+            );
+            for (const [traceId, traceData] of batchTracesWithSpans) {
+              tracesWithSpans.set(traceId, traceData);
+            }
+          }
 
           // Map to legacy Trace format and apply protections
-          const traces: Trace[] = [];
+          const tracesById = new Map<string, Trace>();
           for (const [_traceId, { summary, spans }] of tracesWithSpans) {
             const mappedSpans = mapNormalizedSpansToSpans(spans);
             const trace = mapTraceSummaryToTrace(
@@ -157,8 +184,15 @@ export class ClickHouseTraceService {
               projectId,
             );
             // Apply redaction protections
-            traces.push(applyTraceProtections(trace, protections));
+            tracesById.set(
+              trace.trace_id,
+              applyTraceProtections(trace, protections),
+            );
           }
+
+          const traces = uniqueTraceIds
+            .map((traceId) => tracesById.get(traceId))
+            .filter((trace): trace is Trace => !!trace);
 
           this.logger.debug(
             { projectId, traceCount: traces.length },
@@ -1788,6 +1822,10 @@ export class ClickHouseTraceService {
   private async fetchTracesWithSpansJoined(
     projectId: string,
     traceIds: string[],
+    options: {
+      startDate?: number;
+      endDate?: number;
+    } = {},
   ): Promise<
     Map<string, { summary: TraceSummaryData; spans: NormalizedSpan[] }>
   > {
@@ -1802,6 +1840,40 @@ export class ClickHouseTraceService {
           throw new Error("ClickHouse client not available");
         }
 
+        const summaryStartDate =
+          typeof options.startDate === "number" &&
+          Number.isFinite(options.startDate)
+            ? Math.max(0, Math.floor(options.startDate))
+            : undefined;
+        const summaryEndDate =
+          typeof options.endDate === "number" &&
+          Number.isFinite(options.endDate)
+            ? Math.max(0, Math.floor(options.endDate))
+            : undefined;
+        const summaryTimeFilters: string[] = [];
+        if (summaryStartDate !== undefined) {
+          summaryTimeFilters.push(
+            "t.OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
+          );
+        }
+        if (summaryEndDate !== undefined) {
+          summaryTimeFilters.push(
+            "t.OccurredAt <= fromUnixTimestamp64Milli({summaryEndDate:Int64})",
+          );
+        }
+        const summaryTimeFilter =
+          summaryTimeFilters.length > 0
+            ? `AND ${summaryTimeFilters.join(" AND ")}`
+            : "";
+        const summarySubqueryTimeFilter = summaryTimeFilter.replaceAll(
+          "t.OccurredAt",
+          "OccurredAt",
+        );
+        const summaryTimeParams = {
+          ...(summaryStartDate !== undefined ? { summaryStartDate } : {}),
+          ...(summaryEndDate !== undefined ? { summaryEndDate } : {}),
+        };
+
         // Summaries first (light, one row per trace): they carry OccurredAt,
         // which bounds the heavy stored_spans scan below to the traces' weekly
         // partitions instead of cold-scanning every partition on S3. A span's
@@ -1809,7 +1881,7 @@ export class ClickHouseTraceService {
         // around the summaries' OccurredAt range is safe headroom; when no
         // summary row is found we fall back to an unbounded span scan.
         const summaryResult = await clickHouseClient.query({
-            query: `
+          query: `
         SELECT
           TraceId AS ts_TraceId,
           SpanCount AS ts_SpanCount,
@@ -1840,18 +1912,20 @@ export class ClickHouseTraceService {
         FROM trace_summaries AS t
         WHERE t.TenantId = {tenantId:String}
           AND t.TraceId IN ({traceIds:Array(String)})
+          ${summaryTimeFilter}
           AND (t.TenantId, t.TraceId, t.UpdatedAt) IN (
             SELECT TenantId, TraceId, max(UpdatedAt)
             FROM trace_summaries
             WHERE TenantId = {tenantId:String}
               AND TraceId IN ({traceIds:Array(String)})
+              ${summarySubqueryTimeFilter}
             GROUP BY TenantId, TraceId
           )
         ORDER BY t.TraceId
       `,
-            query_params: { tenantId: projectId, traceIds },
-            format: "JSONEachRow",
-          });
+          query_params: { tenantId: projectId, traceIds, ...summaryTimeParams },
+          format: "JSONEachRow",
+        });
 
         const summaryRows = (await summaryResult.json()) as TraceSummaryRow[];
 
@@ -1884,7 +1958,7 @@ export class ClickHouseTraceService {
           : {};
 
         const spansResult = await clickHouseClient.query({
-            query: `
+          query: `
         SELECT
           SpanId,
           TraceId,
@@ -1925,9 +1999,9 @@ export class ClickHouseTraceService {
         ORDER BY t.TraceId, t.StartTime ASC
         LIMIT ${MAX_SPANS_PER_TRACE} BY t.TraceId
       `,
-            query_params: { tenantId: projectId, traceIds, ...spanTimeParams },
-            format: "JSONEachRow",
-          });
+          query_params: { tenantId: projectId, traceIds, ...spanTimeParams },
+          format: "JSONEachRow",
+        });
 
         // Parse spans
         type SpanRow = {
@@ -1971,7 +2045,12 @@ export class ClickHouseTraceService {
         for (const [traceId, spans] of spansByTrace) {
           if (spans.length >= MAX_SPANS_PER_TRACE) {
             this.logger.warn(
-              { projectId, traceId, spanCount: spans.length, cap: MAX_SPANS_PER_TRACE },
+              {
+                projectId,
+                traceId,
+                spanCount: spans.length,
+                cap: MAX_SPANS_PER_TRACE,
+              },
               "Trace reached the per-trace span cap; span list may be truncated",
             );
           }
@@ -2210,7 +2289,8 @@ export class ClickHouseTraceService {
       durationMs: row.DurationMs,
       name: row.SpanName,
       kind: row.SpanKind as NormalizedSpanKind,
-      resourceAttributes: row.ResourceAttributes as NormalizedSpan["resourceAttributes"],
+      resourceAttributes:
+        row.ResourceAttributes as NormalizedSpan["resourceAttributes"],
       spanAttributes: row.SpanAttributes as NormalizedSpan["spanAttributes"],
       statusCode: row.StatusCode as NormalizedStatusCode | null,
       statusMessage: row.StatusMessage,
@@ -2379,9 +2459,7 @@ function findNearestLlm<T extends PromptStudioCandidateRow>(
 /**
  * Transform traces to include guardrail information
  */
-function transformTracesWithGuardrails(
-  traces: Trace[],
-): TraceWithGuardrail[] {
+function transformTracesWithGuardrails(traces: Trace[]): TraceWithGuardrail[] {
   return traces.map((trace) => {
     return {
       ...trace,

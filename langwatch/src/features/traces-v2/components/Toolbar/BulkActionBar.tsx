@@ -1,9 +1,9 @@
 import { Box, Button, HStack, Text } from "@chakra-ui/react";
 import { Database, Download, X } from "lucide-react";
 import type React from "react";
-import { Tooltip } from "~/components/ui/tooltip";
 import { PersonalFeatureGateDialog } from "~/components/me/PersonalFeatureGateDialog";
 import { usePersonalFeatureGate } from "~/components/me/usePersonalFeatureGate";
+import { Tooltip } from "~/components/ui/tooltip";
 import { useDrawer } from "~/hooks/useDrawer";
 import {
   SELECT_ALL_MATCHING_CAP,
@@ -15,6 +15,12 @@ interface BulkActionBarProps {
   totalHits: number;
   /** Trace IDs currently rendered on the page (used to detect "all visible selected"). */
   pageTraceIds: string[];
+  /** Time window for the current trace list; passed to dataset mapping reads. */
+  traceTimeRange: {
+    from: number;
+    to: number;
+    live?: boolean;
+  };
   /** Open the export config dialog with the active selection. */
   onExportSelected: (traceIds: string[]) => void;
 }
@@ -22,6 +28,7 @@ interface BulkActionBarProps {
 export const BulkActionBar: React.FC<BulkActionBarProps> = ({
   totalHits,
   pageTraceIds,
+  traceTimeRange,
   onExportSelected,
 }) => {
   const mode = useSelectionStore((s) => s.mode);
@@ -106,7 +113,10 @@ export const BulkActionBar: React.FC<BulkActionBarProps> = ({
               const allowed = await datasetGate.requestEnable();
               if (!allowed) return;
               openDrawer("addDatasetRecord", {
-                selectedTraceIds: idsArray,
+                selectedTraceSelection: {
+                  traceIds: idsArray,
+                  timeRange: traceTimeRange,
+                },
               });
             }}
           >
