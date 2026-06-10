@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { FilterParam } from "~/hooks/useFilterParams";
-import type { FilterField } from "../types";
 import {
   clickHouseFilterConditions,
   generateClickHouseFilterConditions,
 } from "../clickhouse/filter-conditions";
+import type { FilterField } from "../types";
 
 describe("clickHouseFilterConditions", () => {
   describe("topics.topics", () => {
@@ -85,7 +85,7 @@ describe("clickHouseFilterConditions", () => {
       const builder = clickHouseFilterConditions["metadata.user_id"];
       const result = builder!(["user1"], "f0");
       expect(result.sql).toBe(
-        "ts.Attributes['langwatch.user_id'] IN ({f0_values:Array(String)})"
+        "ts.Attributes['langwatch.user_id'] IN ({f0_values:Array(String)})",
       );
     });
 
@@ -93,7 +93,7 @@ describe("clickHouseFilterConditions", () => {
       const builder = clickHouseFilterConditions["metadata.thread_id"];
       const result = builder!(["thread1"], "f0");
       expect(result.sql).toBe(
-        "ts.Attributes['gen_ai.conversation.id'] IN ({f0_values:Array(String)})"
+        "ts.Attributes['gen_ai.conversation.id'] IN ({f0_values:Array(String)})",
       );
     });
 
@@ -101,7 +101,7 @@ describe("clickHouseFilterConditions", () => {
       const builder = clickHouseFilterConditions["metadata.customer_id"];
       const result = builder!(["cust1"], "f0");
       expect(result.sql).toBe(
-        "ts.Attributes['langwatch.customer_id'] IN ({f0_values:Array(String)})"
+        "ts.Attributes['langwatch.customer_id'] IN ({f0_values:Array(String)})",
       );
     });
   });
@@ -125,14 +125,23 @@ describe("clickHouseFilterConditions", () => {
       const builder = clickHouseFilterConditions["metadata.key"];
       const result = builder!(["canary", "environment"], "f0");
       expect(result.sql).toContain(" OR ");
-      expect(result.params).toHaveProperty("f0_k0_canonical", "metadata.canary");
-      expect(result.params).toHaveProperty("f0_k1_canonical", "metadata.environment");
+      expect(result.params).toHaveProperty(
+        "f0_k0_canonical",
+        "metadata.canary",
+      );
+      expect(result.params).toHaveProperty(
+        "f0_k1_canonical",
+        "metadata.environment",
+      );
     });
 
     it("converts dot-encoded keys back to dots", () => {
       const builder = clickHouseFilterConditions["metadata.key"];
       const result = builder!(["nested·key"], "f0");
-      expect(result.params).toHaveProperty("f0_k0_canonical", "metadata.nested.key");
+      expect(result.params).toHaveProperty(
+        "f0_k0_canonical",
+        "metadata.nested.key",
+      );
       expect(result.params).toHaveProperty("f0_k0_bare", "nested.key");
     });
 
@@ -168,7 +177,10 @@ describe("clickHouseFilterConditions", () => {
     it("converts dot-encoded keys back to dots", () => {
       const builder = clickHouseFilterConditions["metadata.value"];
       const result = builder!(["val"], "f0", "nested·key");
-      expect(result.params).toHaveProperty("f0_canonical", "metadata.nested.key");
+      expect(result.params).toHaveProperty(
+        "f0_canonical",
+        "metadata.nested.key",
+      );
       expect(result.params).toHaveProperty("f0_bare", "nested.key");
     });
   });
@@ -194,7 +206,7 @@ describe("clickHouseFilterConditions", () => {
       expect(result.sql).toContain("ts.TraceId IN");
       expect(result.sql).toContain("stored_spans");
       expect(result.sql).toContain(
-        'hasAny("Events.Name", {f0_values:Array(String)})'
+        'hasAny("Events.Name", {f0_values:Array(String)})',
       );
       expect(result.sql).not.toContain("SpanAttributes['event.type']");
       expect(result.params).toEqual({
@@ -205,17 +217,21 @@ describe("clickHouseFilterConditions", () => {
 
   describe("evaluations.evaluator_id.has_passed", () => {
     it("generates EXISTS subquery filtering on Passed IS NOT NULL", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_passed"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_passed"];
       expect(builder).not.toBeNull();
       const result = builder!(["eval-1", "eval-2"], "f0");
       expect(result.sql).toContain("EXISTS (");
-      expect(result.sql).toContain("es.EvaluatorId IN ({f0_values:Array(String)})");
+      expect(result.sql).toContain(
+        "es.EvaluatorId IN ({f0_values:Array(String)})",
+      );
       expect(result.sql).toContain("es.Passed IS NOT NULL");
       expect(result.params).toEqual({ f0_values: ["eval-1", "eval-2"] });
     });
 
     it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_passed"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_passed"];
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("es.TraceId IS NOT NULL");
       expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
@@ -225,17 +241,21 @@ describe("clickHouseFilterConditions", () => {
 
   describe("evaluations.evaluator_id.has_score", () => {
     it("generates EXISTS subquery filtering on Score IS NOT NULL", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_score"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_score"];
       expect(builder).not.toBeNull();
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("EXISTS (");
-      expect(result.sql).toContain("es.EvaluatorId IN ({f0_values:Array(String)})");
+      expect(result.sql).toContain(
+        "es.EvaluatorId IN ({f0_values:Array(String)})",
+      );
       expect(result.sql).toContain("es.Score IS NOT NULL");
       expect(result.params).toEqual({ f0_values: ["eval-1"] });
     });
 
     it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_score"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_score"];
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("es.TraceId IS NOT NULL");
       expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
@@ -245,11 +265,14 @@ describe("clickHouseFilterConditions", () => {
 
   describe("evaluations.evaluator_id.has_label", () => {
     it("generates EXISTS subquery filtering on Label IS NOT NULL and excludes succeeded/failed", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_label"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_label"];
       expect(builder).not.toBeNull();
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("EXISTS (");
-      expect(result.sql).toContain("es.EvaluatorId IN ({f0_values:Array(String)})");
+      expect(result.sql).toContain(
+        "es.EvaluatorId IN ({f0_values:Array(String)})",
+      );
       expect(result.sql).toContain("es.Label IS NOT NULL");
       expect(result.sql).toContain("es.Label != ''");
       expect(result.sql).toContain("es.Label NOT IN ('succeeded', 'failed')");
@@ -257,7 +280,8 @@ describe("clickHouseFilterConditions", () => {
     });
 
     it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.has_label"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.has_label"];
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("es.TraceId IS NOT NULL");
       expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
@@ -267,7 +291,8 @@ describe("clickHouseFilterConditions", () => {
 
   describe("evaluations.evaluator_id.guardrails_only", () => {
     it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
-      const builder = clickHouseFilterConditions["evaluations.evaluator_id.guardrails_only"];
+      const builder =
+        clickHouseFilterConditions["evaluations.evaluator_id.guardrails_only"];
       const result = builder!(["eval-1"], "f0");
       expect(result.sql).toContain("es.TraceId IS NOT NULL");
       expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
@@ -371,12 +396,29 @@ describe("clickHouseFilterConditions", () => {
   });
 
   describe("evaluations.label", () => {
-    it("uses assumeNotNull for Nullable TraceId correlation (#3000)", () => {
+    it("returns 1=0 when key is missing", () => {
+      const builder = clickHouseFilterConditions["evaluations.label"];
+      const result = builder!(["positive"], "f0");
+      expect(result.sql).toBe("1=0");
+    });
+
+    it("generates a non-correlated TraceId IN subquery for labels", () => {
       const builder = clickHouseFilterConditions["evaluations.label"];
       const result = builder!(["positive"], "f0", "eval-1");
-      expect(result.sql).toContain("es.TraceId IS NOT NULL");
-      expect(result.sql).toContain("assumeNotNull(es.TraceId) = ts.TraceId");
-      expect(result.sql).not.toMatch(/es\.TraceId = ts\.TraceId/);
+      expect(result.sql).toContain("ts.TraceId IN (");
+      expect(result.sql).toContain("SELECT assumeNotNull(TraceId)");
+      expect(result.sql).toContain("WHERE TenantId = {tenantId:String}");
+      expect(result.sql).toContain("TraceId IS NOT NULL");
+      expect(result.sql).toContain("EvaluatorId = {f0_key:String}");
+      expect(result.sql).toContain("Label IS NOT NULL");
+      expect(result.sql).toContain(
+        "assumeNotNull(Label) IN ({f0_values:Array(String)})",
+      );
+      expect(result.sql).not.toContain("EXISTS");
+      expect(result.params).toEqual({
+        f0_key: "eval-1",
+        f0_values: ["positive"],
+      });
     });
   });
 });
@@ -454,6 +496,30 @@ describe("generateClickHouseFilterConditions", () => {
     expect(Object.keys(result.params).length).toBeGreaterThan(0);
   });
 
+  it("handles nested evaluation label filters from trace and analytics requests", () => {
+    const filters: Partial<Record<FilterField, FilterParam>> = {
+      "traces.origin": ["web_sps", "moa"],
+      "evaluations.label": {
+        monitor_0004R4NvlJn9YEQKsvSjpdQAUjLA8: ["解决方案"],
+      },
+    };
+
+    const result = generateClickHouseFilterConditions(filters);
+
+    expect(result.conditions).toHaveLength(2);
+    expect(result.conditions[1]).toContain("ts.TraceId IN (");
+    expect(result.conditions[1]).toContain("EvaluatorId = {f1_key:String}");
+    expect(result.conditions[1]).toContain(
+      "assumeNotNull(Label) IN ({f1_values:Array(String)})",
+    );
+    expect(result.params).toMatchObject({
+      f0_values: ["web_sps", "moa"],
+      f1_key: "monitor_0004R4NvlJn9YEQKsvSjpdQAUjLA8",
+      f1_values: ["解决方案"],
+    });
+    expect(result.hasUnsupportedFilters).toBe(false);
+  });
+
   it("generates unique parameter names for multiple filters", () => {
     const filters: Partial<Record<FilterField, FilterParam>> = {
       "topics.topics": ["topic1"],
@@ -478,7 +544,10 @@ describe("generateClickHouseFilterConditions", () => {
 
       expect(result.conditions.length).toBe(1);
       expect(result.params).toHaveProperty("f0_key", "purchase");
-      expect(result.params).toHaveProperty("f0_attrkey", "event.metrics.amount");
+      expect(result.params).toHaveProperty(
+        "f0_attrkey",
+        "event.metrics.amount",
+      );
       expect(result.params).toHaveProperty("f0_min");
       expect(result.params).toHaveProperty("f0_max");
     });
