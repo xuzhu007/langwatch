@@ -266,6 +266,7 @@ export const tracesRouter = createTRPCRouter({
             live: z.boolean().optional(),
           })
           .optional(),
+        includeSpans: z.boolean().optional(),
       }),
     )
     .use(checkProjectPermission("traces:view"))
@@ -284,7 +285,7 @@ export const tracesRouter = createTRPCRouter({
         traceIds,
         protections,
         timeRange ? { from: timeRange.from, to: timeRange.to } : undefined,
-        { full: true },
+        { full: true, includeSpans: input.includeSpans },
       );
     }),
 

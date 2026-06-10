@@ -268,6 +268,8 @@ export class ClickHouseTraceService {
    *   over-threshold IO values read back full (#4888). Default
    *   (undefined/false) maps the ≤64 KB preview as-is and issues zero
    *   event_log SELECTs.
+   * @param opts.includeSpans - When false, reads only trace_summaries and
+   *   returns traces with empty spans. Defaults to true.
    * @returns Array of Trace objects with spans, or null if ClickHouse is not enabled
    */
   async getTracesWithSpans(
@@ -275,7 +277,7 @@ export class ClickHouseTraceService {
     traceIds: string[],
     protections: Protections,
     occurredAt?: OccurredAtRange,
-    opts?: { resolveBlobs?: boolean },
+    opts?: { resolveBlobs?: boolean; includeSpans?: boolean },
   ): Promise<Trace[] | null> {
     return await this.tracer.withActiveSpan(
       "ClickHouseTraceService.getTracesWithSpans",
@@ -288,20 +290,44 @@ export class ClickHouseTraceService {
           return null;
         }
 
-        if (traceIds.length === 0) {
+        const uniqueTraceIds = Array.from(
+          new Set(traceIds.filter((traceId) => traceId)),
+        );
+        if (uniqueTraceIds.length === 0) {
           return [];
         }
+        const includeSpans = opts?.includeSpans ?? true;
 
         this.logger.debug(
-          { projectId, traceIdCount: traceIds.length },
+          { projectId, traceIdCount: uniqueTraceIds.length, includeSpans },
           "Fetching traces with spans from ClickHouse",
         );
 
         try {
+          if (!includeSpans) {
+            const summaryRows = await this.fetchTraceSummaryRowsByTraceIds({
+              projectId,
+              traceIds: uniqueTraceIds,
+              occurredAt,
+            });
+
+            const traces = summaryRows.map((row) => {
+              const summary = this.rowToTraceSummaryData(row);
+              const trace = mapTraceSummaryToTrace(summary, [], projectId);
+              return applyTraceProtections(trace, protections);
+            });
+
+            this.logger.debug(
+              { projectId, traceCount: traces.length },
+              "Successfully fetched trace summaries from ClickHouse",
+            );
+
+            return traces;
+          }
           // Fetch trace summaries with spans using JOIN
           const tracesWithSpans = await this.fetchTracesWithSpansJoined(
             projectId,
-            traceIds,
+            uniqueTraceIds,
             occurredAt,
           );
 
@@ -2367,6 +2393,108 @@ export class ClickHouseTraceService {
         });
       }),
     );
+  }
+
+  private async fetchTraceSummaryRowsByTraceIds({
+    projectId,
+    traceIds,
+    occurredAt,
+  }: {
+    projectId: string;
+    traceIds: string[];
+    occurredAt?: OccurredAtRange;
+  }): Promise<TraceSummaryRow[]> {
+    const clickHouseClient = await this.resolveClient(projectId);
+    if (!clickHouseClient) {
+      throw new Error("ClickHouse client not available");
+    }
+
+    const SUMMARY_PARTITION_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+    const hasSummaryWindow =
+      occurredAt !== undefined && occurredAt.from > 0 && occurredAt.to > 0;
+    const summaryTimeFilterOuter = hasSummaryWindow
+      ? "AND t.OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64}) AND t.OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})"
+      : "";
+    const summaryTimeFilterInner = hasSummaryWindow
+      ? "AND OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64}) AND OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})"
+      : "";
+    const summaryTimeParams = hasSummaryWindow
+      ? {
+          sumFromMs: occurredAt.from - SUMMARY_PARTITION_WINDOW_MS,
+          sumToMs: occurredAt.to + SUMMARY_PARTITION_WINDOW_MS,
+        }
+      : {};
+
+    const runBatch = async (batchTraceIds: string[]) => {
+      const result = await clickHouseClient.query({
+        query: `
+        SELECT
+          TraceId AS ts_TraceId,
+          SpanCount AS ts_SpanCount,
+          TotalDurationMs AS ts_TotalDurationMs,
+          ComputedIOSchemaVersion AS ts_ComputedIOSchemaVersion,
+          ComputedInput AS ts_ComputedInput,
+          ComputedOutput AS ts_ComputedOutput,
+          TimeToFirstTokenMs AS ts_TimeToFirstTokenMs,
+          TimeToLastTokenMs AS ts_TimeToLastTokenMs,
+          TokensPerSecond AS ts_TokensPerSecond,
+          ContainsErrorStatus AS ts_ContainsErrorStatus,
+          ContainsOKStatus AS ts_ContainsOKStatus,
+          ErrorMessage AS ts_ErrorMessage,
+          Models AS ts_Models,
+          TotalCost AS ts_TotalCost,
+          NonBilledCost AS ts_NonBilledCost,
+          TokensEstimated AS ts_TokensEstimated,
+          TotalPromptTokenCount AS ts_TotalPromptTokenCount,
+          TotalCompletionTokenCount AS ts_TotalCompletionTokenCount,
+          TopicId AS ts_TopicId,
+          SubTopicId AS ts_SubTopicId,
+          HasAnnotation AS ts_HasAnnotation,
+          AnnotationIds AS ts_AnnotationIds,
+          Attributes AS ts_Attributes,
+          TraceName AS ts_TraceName,
+          toUnixTimestamp64Milli(OccurredAt) AS ts_OccurredAt,
+          toUnixTimestamp64Milli(CreatedAt) AS ts_CreatedAt,
+          toUnixTimestamp64Milli(UpdatedAt) AS ts_UpdatedAt
+        FROM trace_summaries AS t
+        WHERE t.TenantId = {tenantId:String}
+          AND t.TraceId IN ({traceIds:Array(String)})
+          ${summaryTimeFilterOuter}
+          AND (t.TenantId, t.TraceId, t.UpdatedAt) IN (
+            SELECT TenantId, TraceId, max(UpdatedAt)
+            FROM trace_summaries
+            WHERE TenantId = {tenantId:String}
+              AND TraceId IN ({traceIds:Array(String)})
+              ${summaryTimeFilterInner}
+            GROUP BY TenantId, TraceId
+          )
+        ORDER BY t.TraceId
+      `,
+        query_params: {
+          tenantId: projectId,
+          traceIds: batchTraceIds,
+          ...summaryTimeParams,
+        },
+        format: "JSONEachRow",
+      });
+
+      return result.json() as Promise<TraceSummaryRow[]>;
+    };
+
+    const rows: TraceSummaryRow[] = [];
+    for (
+      let i = 0;
+      i < traceIds.length;
+      i += ClickHouseTraceService.SUMMARY_BATCH_SIZE
+    ) {
+      const batch = traceIds.slice(
+        i,
+        i + ClickHouseTraceService.SUMMARY_BATCH_SIZE,
+      );
+      rows.push(...(await runBatch(batch)));
+    }
+
+    return rows;
   }
 
   /**

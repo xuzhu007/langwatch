@@ -15,6 +15,7 @@ import type {
   DatasetColumns,
   DatasetRecordEntry,
 } from "../server/datasets/types";
+import type { MappingState } from "../server/tracer/tracesMapping";
 import { AddOrEditDatasetDrawer } from "./AddOrEditDatasetDrawer";
 import { DatasetMappingPreview } from "./datasets/DatasetMappingPreview";
 import { DatasetSelector } from "./datasets/DatasetSelector";
@@ -23,6 +24,80 @@ import { Link } from "./ui/link";
 import { toaster } from "./ui/toaster";
 
 const logger = createLogger("AddDatasetRecordDrawer");
+
+const TRACE_SOURCES_REQUIRING_SPANS = new Set([
+  "contexts",
+  "contexts.string_list",
+  "events",
+  "spans",
+  "spans.llm.input",
+  "spans.llm.output",
+]);
+const TRACE_EXPANSIONS_REQUIRING_SPANS = new Set([
+  "events.event_id",
+  "spans.all.span_id",
+  "spans.llm.span_id",
+]);
+const DEFAULT_COLUMN_NAMES_REQUIRING_SPANS = new Set(["contexts", "spans"]);
+
+const sourceNeedsSpans = (source?: string) =>
+  !!source &&
+  (TRACE_SOURCES_REQUIRING_SPANS.has(source) || source.startsWith("spans."));
+
+const getDatasetTraceMapping = (mapping: unknown): MappingState | undefined => {
+  if (!mapping || typeof mapping !== "object") return undefined;
+
+  const value = mapping as {
+    traceMapping?: MappingState;
+    mapping?: MappingState["mapping"];
+    expansions?: MappingState["expansions"];
+  };
+
+  if (value.traceMapping) {
+    return value.traceMapping;
+  }
+
+  if (value.mapping) {
+    return {
+      mapping: value.mapping,
+      expansions: value.expansions ?? [],
+    };
+  }
+
+  return undefined;
+};
+
+const traceMappingNeedsSpans = (mapping?: MappingState) => {
+  if (!mapping) return false;
+
+  if (
+    mapping.expansions?.some((expansion) =>
+      TRACE_EXPANSIONS_REQUIRING_SPANS.has(expansion),
+    )
+  ) {
+    return true;
+  }
+
+  return Object.values(mapping.mapping ?? {}).some((entry) => {
+    const source = entry?.source;
+    if (sourceNeedsSpans(source)) return true;
+    return entry?.selectedFields?.some(sourceNeedsSpans) ?? false;
+  });
+};
+
+const unmappedDefaultColumnsNeedSpans = (
+  columnTypes: DatasetColumns | undefined,
+  mapping?: MappingState,
+) => {
+  const mappedColumns = new Set(Object.keys(mapping?.mapping ?? {}));
+  return (
+    columnTypes?.some(
+      ({ name }) =>
+        !mappedColumns.has(name) &&
+        DEFAULT_COLUMN_NAMES_REQUIRING_SPANS.has(name),
+    ) ?? false
+  );
+};
 
 /** Form values for dataset selection */
 type FormValues = {
@@ -96,6 +171,27 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
   const selectedDataset = datasets.data?.find(
     (dataset) => dataset.id === datasetId,
   );
+  const columnTypes = selectedDataset?.columnTypes as
+    | DatasetColumns
+    | undefined;
+  const [traceMappingOverride, setTraceMappingOverride] = useState<
+    MappingState | undefined
+  >();
+  const savedTraceMapping = useMemo(
+    () => getDatasetTraceMapping(selectedDataset?.mapping),
+    [selectedDataset?.mapping],
+  );
+  const includeSpansForDataset = useMemo(() => {
+    const mapping = traceMappingOverride ?? savedTraceMapping;
+    return (
+      traceMappingNeedsSpans(mapping) ||
+      unmappedDefaultColumnsNeedSpans(columnTypes, mapping)
+    );
+  }, [columnTypes, savedTraceMapping, traceMappingOverride]);
+
+  useEffect(() => {
+    setTraceMappingOverride(undefined);
+  }, [selectedDataset?.id]);
 
   // Combine trace IDs from props into a single array
   const traceIds = useMemo(
@@ -120,9 +216,10 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
       projectId: project?.id ?? "",
       traceIds: traceIds,
       timeRange: selectedTraceTimeRange,
+      includeSpans: includeSpansForDataset,
     },
     {
-      enabled: !!project && traceIds.length > 0,
+      enabled: !!project && !!selectedDataset && traceIds.length > 0,
       refetchOnWindowFocus: false,
     },
   );
@@ -158,9 +255,6 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
     [],
   );
   const rowsToAdd = editableRowData.filter((row) => row.selected);
-  const columnTypes = selectedDataset?.columnTypes as
-    | DatasetColumns
-    | undefined;
 
   /**
    * Handle form submission
@@ -332,6 +426,7 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
                   onEditColumns={editDataset.onOpen}
                   onRowDataChange={setRowDataFromDataset}
                   editorPortalRef={editorPortalRef}
+                  setDatasetTriggerMapping={setTraceMappingOverride}
                 />
               )}
             </VStack>

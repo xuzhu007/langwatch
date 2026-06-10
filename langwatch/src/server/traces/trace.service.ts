@@ -297,6 +297,8 @@ export class TraceService {
    * @param opts.full - When true AND blob-resolution deps are present, resolves
    *   offloaded eventref pointers from event_log so over-threshold IO values
    *   read back full (#4888). Default (undefined/false) returns previews.
+   * @param opts.includeSpans - When false, returns trace summaries without
+   *   reading stored_spans. Defaults to true.
    * @returns Array of Trace objects with spans
    */
   async getTracesWithSpans(
@@ -304,7 +306,7 @@ export class TraceService {
     traceIds: string[],
     protections: Protections,
     occurredAt?: { from: number; to: number },
-    opts?: { full?: boolean },
+    opts?: { full?: boolean; includeSpans?: boolean },
   ): Promise<Trace[]> {
     return this.tracer.withActiveSpan(
       "TraceService.getTracesWithSpans",
@@ -319,7 +321,7 @@ export class TraceService {
           traceIds,
           protections,
           occurredAt,
-          { resolveBlobs: opts?.full },
+          { resolveBlobs: opts?.full, includeSpans: opts?.includeSpans },
         );
         if (traces === null) {
           throw new Error(
