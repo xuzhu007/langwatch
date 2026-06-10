@@ -211,6 +211,7 @@ export class TraceService {
     options: {
       startDate?: number;
       endDate?: number;
+      includeSpans?: boolean;
     } = {},
   ): Promise<Trace[]> {
     return this.tracer.withActiveSpan(
