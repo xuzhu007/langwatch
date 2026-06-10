@@ -123,6 +123,7 @@ export class ClickHouseTraceService {
     options: {
       startDate?: number;
       endDate?: number;
+      includeSpans?: boolean;
     } = {},
   ): Promise<Trace[] | null> {
     return await this.tracer.withActiveSpan(
@@ -144,13 +145,51 @@ export class ClickHouseTraceService {
         if (uniqueTraceIds.length === 0) {
           return [];
         }
+        const includeSpans = options.includeSpans ?? true;
 
         this.logger.debug(
-          { projectId, traceIdCount: uniqueTraceIds.length },
+          { projectId, traceIdCount: uniqueTraceIds.length, includeSpans },
           "Fetching traces with spans from ClickHouse",
         );
 
         try {
+          if (!includeSpans) {
+            const tracesById = new Map<string, Trace>();
+            for (
+              let i = 0;
+              i < uniqueTraceIds.length;
+              i += ClickHouseTraceService.TRACE_WITH_SPANS_BATCH_SIZE
+            ) {
+              const batch = uniqueTraceIds.slice(
+                i,
+                i + ClickHouseTraceService.TRACE_WITH_SPANS_BATCH_SIZE,
+              );
+              const summaryRows = await this.fetchTraceSummariesByIds(
+                projectId,
+                batch,
+                options,
+              );
+              for (const row of summaryRows) {
+                const summary = this.rowToTraceSummaryData(row);
+                const trace = mapTraceSummaryToTrace(summary, [], projectId);
+                tracesById.set(
+                  trace.trace_id,
+                  applyTraceProtections(trace, protections),
+                );
+              }
+            }
+
+            const traces = uniqueTraceIds
+              .map((traceId) => tracesById.get(traceId))
+              .filter((trace): trace is Trace => !!trace);
+
+            this.logger.debug(
+              { projectId, traceCount: traces.length, includeSpans },
+              "Successfully fetched trace summaries from ClickHouse",
+            );
+
+            return traces;
+          }
           const tracesWithSpans = new Map<
             string,
             { summary: TraceSummaryData; spans: NormalizedSpan[] }
@@ -210,6 +249,91 @@ export class ClickHouseTraceService {
           );
           throw new Error("Failed to fetch traces with spans");
         }
+      },
+    );
+  }
+
+  /**
+   * Fetch latest trace summary rows for exact trace IDs without loading spans.
+   *
+   * Used by dataset mapping previews that only need trace-level fields
+   * (trace_id/input/output/metadata/metrics). Keeping this path span-free
+   * avoids building very large tRPC responses when users add many selected
+   * traces to a dataset.
+   */
+  private async fetchTraceSummariesByIds(
+    projectId: string,
+    traceIds: string[],
+    options: {
+      startDate?: number;
+      endDate?: number;
+    } = {},
+  ): Promise<TraceSummaryRow[]> {
+    return await this.tracer.withActiveSpan(
+      "ClickHouseTraceService.fetchTraceSummariesByIds",
+      {
+        attributes: { "tenant.id": projectId },
+      },
+      async () => {
+        const clickHouseClient = await this.resolveClient(projectId);
+        if (!clickHouseClient) {
+          throw new Error("ClickHouse client not available");
+        }
+
+        const {
+          summaryTimeFilter,
+          summarySubqueryTimeFilter,
+          summaryTimeParams,
+        } = buildTraceSummaryTimeFilters(options);
+
+        const summaryResult = await clickHouseClient.query({
+          query: `
+        SELECT
+          TraceId AS ts_TraceId,
+          SpanCount AS ts_SpanCount,
+          TotalDurationMs AS ts_TotalDurationMs,
+          ComputedIOSchemaVersion AS ts_ComputedIOSchemaVersion,
+          ComputedInput AS ts_ComputedInput,
+          ComputedOutput AS ts_ComputedOutput,
+          TimeToFirstTokenMs AS ts_TimeToFirstTokenMs,
+          TimeToLastTokenMs AS ts_TimeToLastTokenMs,
+          TokensPerSecond AS ts_TokensPerSecond,
+          ContainsErrorStatus AS ts_ContainsErrorStatus,
+          ContainsOKStatus AS ts_ContainsOKStatus,
+          ErrorMessage AS ts_ErrorMessage,
+          Models AS ts_Models,
+          TotalCost AS ts_TotalCost,
+          TokensEstimated AS ts_TokensEstimated,
+          TotalPromptTokenCount AS ts_TotalPromptTokenCount,
+          TotalCompletionTokenCount AS ts_TotalCompletionTokenCount,
+          TopicId AS ts_TopicId,
+          SubTopicId AS ts_SubTopicId,
+          HasAnnotation AS ts_HasAnnotation,
+          AnnotationIds AS ts_AnnotationIds,
+          Attributes AS ts_Attributes,
+          TraceName AS ts_TraceName,
+          toUnixTimestamp64Milli(OccurredAt) AS ts_OccurredAt,
+          toUnixTimestamp64Milli(CreatedAt) AS ts_CreatedAt,
+          toUnixTimestamp64Milli(UpdatedAt) AS ts_UpdatedAt
+        FROM trace_summaries AS t
+        WHERE t.TenantId = {tenantId:String}
+          AND t.TraceId IN ({traceIds:Array(String)})
+          ${summaryTimeFilter}
+          AND (t.TenantId, t.TraceId, t.UpdatedAt) IN (
+            SELECT TenantId, TraceId, max(UpdatedAt)
+            FROM trace_summaries
+            WHERE TenantId = {tenantId:String}
+              AND TraceId IN ({traceIds:Array(String)})
+              ${summarySubqueryTimeFilter}
+            GROUP BY TenantId, TraceId
+          )
+        ORDER BY t.TraceId
+      `,
+          query_params: { tenantId: projectId, traceIds, ...summaryTimeParams },
+          format: "JSONEachRow",
+        });
+
+        return (await summaryResult.json()) as TraceSummaryRow[];
       },
     );
   }
@@ -1840,39 +1964,11 @@ export class ClickHouseTraceService {
           throw new Error("ClickHouse client not available");
         }
 
-        const summaryStartDate =
-          typeof options.startDate === "number" &&
-          Number.isFinite(options.startDate)
-            ? Math.max(0, Math.floor(options.startDate))
-            : undefined;
-        const summaryEndDate =
-          typeof options.endDate === "number" &&
-          Number.isFinite(options.endDate)
-            ? Math.max(0, Math.floor(options.endDate))
-            : undefined;
-        const summaryTimeFilters: string[] = [];
-        if (summaryStartDate !== undefined) {
-          summaryTimeFilters.push(
-            "t.OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
-          );
-        }
-        if (summaryEndDate !== undefined) {
-          summaryTimeFilters.push(
-            "t.OccurredAt <= fromUnixTimestamp64Milli({summaryEndDate:Int64})",
-          );
-        }
-        const summaryTimeFilter =
-          summaryTimeFilters.length > 0
-            ? `AND ${summaryTimeFilters.join(" AND ")}`
-            : "";
-        const summarySubqueryTimeFilter = summaryTimeFilter.replaceAll(
-          "t.OccurredAt",
-          "OccurredAt",
-        );
-        const summaryTimeParams = {
-          ...(summaryStartDate !== undefined ? { summaryStartDate } : {}),
-          ...(summaryEndDate !== undefined ? { summaryEndDate } : {}),
-        };
+        const {
+          summaryTimeFilter,
+          summarySubqueryTimeFilter,
+          summaryTimeParams,
+        } = buildTraceSummaryTimeFilters(options);
 
         // Summaries first (light, one row per trace): they carry OccurredAt,
         // which bounds the heavy stored_spans scan below to the traces' weekly
@@ -2391,6 +2487,49 @@ function isClickHouseMemoryLimitError(error: unknown): boolean {
     error.message.toLowerCase().includes("memory limit exceeded") ||
     (error as { type?: string }).type === "MEMORY_LIMIT_EXCEEDED"
   );
+}
+function buildTraceSummaryTimeFilters(options: {
+  startDate?: number;
+  endDate?: number;
+}): {
+  summaryTimeFilter: string;
+  summarySubqueryTimeFilter: string;
+  summaryTimeParams: Record<string, number>;
+} {
+  const summaryStartDate =
+    typeof options.startDate === "number" && Number.isFinite(options.startDate)
+      ? Math.max(0, Math.floor(options.startDate))
+      : undefined;
+  const summaryEndDate =
+    typeof options.endDate === "number" && Number.isFinite(options.endDate)
+      ? Math.max(0, Math.floor(options.endDate))
+      : undefined;
+  const summaryTimeFilters: string[] = [];
+  if (summaryStartDate !== undefined) {
+    summaryTimeFilters.push(
+      "t.OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
+    );
+  }
+  if (summaryEndDate !== undefined) {
+    summaryTimeFilters.push(
+      "t.OccurredAt <= fromUnixTimestamp64Milli({summaryEndDate:Int64})",
+    );
+  }
+  const summaryTimeFilter =
+    summaryTimeFilters.length > 0
+      ? `AND ${summaryTimeFilters.join(" AND ")}`
+      : "";
+  return {
+    summaryTimeFilter,
+    summarySubqueryTimeFilter: summaryTimeFilter.replaceAll(
+      "t.OccurredAt",
+      "OccurredAt",
+    ),
+    summaryTimeParams: {
+      ...(summaryStartDate !== undefined ? { summaryStartDate } : {}),
+      ...(summaryEndDate !== undefined ? { summaryEndDate } : {}),
+    },
+  };
 }
 
 /**

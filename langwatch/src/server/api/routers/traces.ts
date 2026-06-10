@@ -261,6 +261,7 @@ export const tracesRouter = createTRPCRouter({
             live: z.boolean().optional(),
           })
           .optional(),
+        includeSpans: z.boolean().optional(),
       }),
     )
     .use(checkProjectPermission("traces:view"))
@@ -277,12 +278,10 @@ export const tracesRouter = createTRPCRouter({
             ...(timeRange.live ? {} : { endDate: timeRange.to }),
           }
         : {};
-      return traceService.getTracesWithSpans(
-        projectId,
-        traceIds,
-        protections,
-        traceLookupOptions,
-      );
+      return traceService.getTracesWithSpans(projectId, traceIds, protections, {
+        ...traceLookupOptions,
+        includeSpans: input.includeSpans,
+      });
     }),
 
   getFormattedSpansDigest: protectedProcedure
