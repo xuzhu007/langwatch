@@ -30,7 +30,7 @@ COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration
 # mcp-server is a langwatch workspace member and exposes a bin at dist/index.js.
 # Build it before langwatch's install so pnpm can link the workspace bin.
 COPY mcp-server/package.json mcp-server/pnpm-lock.yaml mcp-server/pnpm-workspace.yaml ./mcp-server/
-RUN cd mcp-server && CI=true pnpm install --frozen-lockfile
+RUN cd mcp-server && CI=true pnpm install --frozen-lockfile --ignore-scripts
 COPY mcp-server ./mcp-server
 RUN cd mcp-server && pnpm run build
 
