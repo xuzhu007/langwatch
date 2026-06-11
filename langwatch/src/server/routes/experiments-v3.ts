@@ -221,6 +221,7 @@ secured.access(sessionAuth).post("/execute", zValidator("json", executionRequest
   };
 
   return streamSSE(c, async (stream) => {
+    let streamRunId: string | undefined;
     try {
       const isFullRun = request.scope.type === "full";
 
@@ -238,11 +239,31 @@ secured.access(sessionAuth).post("/execute", zValidator("json", executionRequest
       });
 
       for await (const event of orchestrator) {
+        if (event.type === "execution_started") {
+          streamRunId = event.runId;
+          await runStateManager.createRun({
+            runId: event.runId,
+            projectId,
+            experimentId: request.experimentId,
+            experimentSlug:
+              request.experimentSlug ?? request.experimentId ?? "workbench",
+            total: event.total,
+          });
+        }
+
+        if (streamRunId) {
+          await runStateManager.addEvent(streamRunId, event);
+        }
         await stream.writeSSE({
           data: JSON.stringify(event),
         });
 
         if (event.type === "done" || event.type === "stopped") {
+          if (event.type === "done") {
+            await runStateManager.completeRun(event.summary.runId, event.summary);
+          } else if (streamRunId) {
+            await runStateManager.stopRun(streamRunId);
+          }
           if (session?.user?.id) {
             trackServerEvent({
               userId: session.user.id,
@@ -263,6 +284,9 @@ secured.access(sessionAuth).post("/execute", zValidator("json", executionRequest
     } catch (error) {
       logger.error({ error, projectId }, "Orchestrator error");
       captureException(error, { extra: { projectId } });
+      if (streamRunId) {
+        await runStateManager.failRun(streamRunId, (error as Error).message);
+      }
 
       await stream.writeSSE({
         data: JSON.stringify({
