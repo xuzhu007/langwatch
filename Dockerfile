@@ -1,5 +1,8 @@
+# 固定 Node/Alpine 版本，避免 `docker build --pull` 拉取浮动 node:24-alpine 后引入宿主机相关的写入回归。
+ARG NODE_IMAGE=node:24.13.0-alpine3.22
+
 # ── Stage 1: build ──────────────────────────────────────────────────
-FROM node:24-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
 RUN apk --no-cache add curl python3 make gcc g++ openssl bash
 RUN npm install -g pnpm@10.24.0
 
@@ -70,7 +73,7 @@ RUN cd langwatch && CI=true pnpm prune --prod
 RUN cd langwatch && pnpm prisma generate
 
 # ── Stage 2: runtime ───────────────────────────────────────────────
-FROM node:24-alpine
+FROM ${NODE_IMAGE}
 RUN apk --no-cache add curl openssl bash
 RUN npm install -g pnpm@10.24.0
 
