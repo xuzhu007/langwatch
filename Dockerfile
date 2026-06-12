@@ -45,6 +45,10 @@ ENV npm_config_network_concurrency=4
 # （start:prepare:files → build:mcp-server）自动构建；无需单独 install/build。
 # （单独安装会多出一个独立步骤并放大宿主机的 EPERM/网络问题，是之前 exit 255 的根源。）
 COPY mcp-server ./mcp-server
+# pnpm install 会先为 workspace 包创建 bin 链接，此时正式构建尚未生成 dist/index.js。
+# 先放一个占位入口避免 bin 链接阶段读取缺失文件；后续 build:mcp-server 会覆盖它。
+RUN mkdir -p mcp-server/dist && \
+  printf '#!/usr/bin/env node\n' > mcp-server/dist/index.js
 COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
 
 COPY langwatch/package.json langwatch/pnpm-lock.yaml langwatch/pnpm-workspace.yaml ./langwatch/
