@@ -25,6 +25,7 @@ WORKDIR /app
 
 # Skip Prisma checksum verification for air-gapped builds
 ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
+ENV PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy
 
 COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
 # mcp-server is a langwatch workspace member and exposes a bin at dist/index.js.
