@@ -30,6 +30,15 @@ ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
 ENV npm_config_package_import_method=copy
 # 部分宿主机内核/seccomp 配置与 libuv 的 io_uring 交互会导致异步文件写入返回 EPERM，显式禁用以提高兼容性
 ENV UV_USE_IO_URING=0
+# 网络健壮性加固：构建机常处于公司代理/EDR/受限网络下，pnpm 并发拉取数百个依赖
+# （mcp-server 含 @anthropic-ai/claude-code 等数十 MB 大包）时，连接重置/超时会让进程
+# 持续失败（BuildKit 报 exit code 255），整条命令重试也无法恢复持续性的网络抖动。
+# 提高单请求重试次数与超时、降低并发，既减少网络瞬断导致的失败，也降低并行解压的峰值内存。
+ENV npm_config_fetch_retries=5
+ENV npm_config_fetch_retry_mintimeout=20000
+ENV npm_config_fetch_retry_maxtimeout=120000
+ENV npm_config_fetch_timeout=300000
+ENV npm_config_network_concurrency=4
 
 COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
 # mcp-server is a langwatch workspace member and exposes a bin at dist/index.js.
