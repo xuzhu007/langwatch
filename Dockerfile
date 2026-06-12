@@ -30,26 +30,22 @@ ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
 ENV npm_config_package_import_method=copy
 # 部分宿主机内核/seccomp 配置与 libuv 的 io_uring 交互会导致异步文件写入返回 EPERM，显式禁用以提高兼容性
 ENV UV_USE_IO_URING=0
-# 网络健壮性加固：构建机常处于公司代理/EDR/受限网络下，pnpm 并发拉取数百个依赖
-# （mcp-server 含 @anthropic-ai/claude-code 等数十 MB 大包）时，连接重置/超时会让进程
-# 持续失败（BuildKit 报 exit code 255），整条命令重试也无法恢复持续性的网络抖动。
-# 提高单请求重试次数与超时、降低并发，既减少网络瞬断导致的失败，也降低并行解压的峰值内存。
+# 网络健壮性加固：构建机常处于公司代理/EDR/受限网络下，pnpm 并发拉取上千个依赖时，
+# 连接重置/超时会让进程持续失败（BuildKit 报 exit code 255），整条命令重试也无法恢复
+# 持续性的网络抖动。提高单请求重试次数与超时、降低并发，既减少网络瞬断导致的
+# 失败，也降低并行解压的峰值内存。
 ENV npm_config_fetch_retries=5
 ENV npm_config_fetch_retry_mintimeout=20000
 ENV npm_config_fetch_retry_maxtimeout=120000
 ENV npm_config_fetch_timeout=300000
 ENV npm_config_network_concurrency=4
 
-COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
-# mcp-server is a langwatch workspace member and exposes a bin at dist/index.js.
-# Build it before langwatch's install so pnpm can link the workspace bin.
-COPY mcp-server/package.json mcp-server/pnpm-lock.yaml mcp-server/pnpm-workspace.yaml ./mcp-server/
-# 安装失败时自动重试一次：宿主机杀毒/EDR 文件锁、overlayfs copy-up 竞争等会造成瞬时 EPERM，重试可恢复
-RUN cd mcp-server && \
-  { CI=true pnpm install --frozen-lockfile --ignore-scripts || \
-    { echo "pnpm install 失败，重试一次..."; CI=true pnpm install --frozen-lockfile --ignore-scripts; }; }
+# mcp-server 是 langwatch 的 workspace 成员（见 langwatch/pnpm-workspace.yaml 的 ../mcp-server）。
+# 与上游一致：整个目录拷入，由 langwatch 的 workspace 安装统一链接，并由其 `pnpm run build`
+# （start:prepare:files → build:mcp-server）自动构建；无需单独 install/build。
+# （单独安装会多出一个独立步骤并放大宿主机的 EPERM/网络问题，是之前 exit 255 的根源。）
 COPY mcp-server ./mcp-server
-RUN cd mcp-server && pnpm run build
+COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
 
 COPY langwatch/package.json langwatch/pnpm-lock.yaml langwatch/pnpm-workspace.yaml ./langwatch/
 COPY langwatch/vendor ./langwatch/vendor
