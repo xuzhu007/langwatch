@@ -25,20 +25,30 @@ WORKDIR /app
 
 # Skip Prisma checksum verification for air-gapped builds
 ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
-ENV PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy
+# 注意：pnpm 不识别 PNPM_CONFIG_* 前缀的环境变量，必须使用 npm_config_* 前缀才会生效。
+# 使用 copy 方式导入依赖，避免硬链接/克隆在部分宿主机存储驱动（ZFS、fuse-overlayfs 等）上的兼容性问题
+ENV npm_config_package_import_method=copy
+# 部分宿主机内核/seccomp 配置与 libuv 的 io_uring 交互会导致异步文件写入返回 EPERM，显式禁用以提高兼容性
+ENV UV_USE_IO_URING=0
 
 COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
 # mcp-server is a langwatch workspace member and exposes a bin at dist/index.js.
 # Build it before langwatch's install so pnpm can link the workspace bin.
 COPY mcp-server/package.json mcp-server/pnpm-lock.yaml mcp-server/pnpm-workspace.yaml ./mcp-server/
-RUN cd mcp-server && CI=true pnpm install --frozen-lockfile --ignore-scripts
+# 安装失败时自动重试一次：宿主机杀毒/EDR 文件锁、overlayfs copy-up 竞争等会造成瞬时 EPERM，重试可恢复
+RUN cd mcp-server && \
+  { CI=true pnpm install --frozen-lockfile --ignore-scripts || \
+    { echo "pnpm install 失败，重试一次..."; CI=true pnpm install --frozen-lockfile --ignore-scripts; }; }
 COPY mcp-server ./mcp-server
 RUN cd mcp-server && pnpm run build
 
 COPY langwatch/package.json langwatch/pnpm-lock.yaml langwatch/pnpm-workspace.yaml ./langwatch/
 COPY langwatch/vendor ./langwatch/vendor
 # https://stackoverflow.com/questions/70154568/pnpm-equivalent-command-for-npm-ci
-RUN cd langwatch && CI=true pnpm install --frozen-lockfile
+# 同上：失败时自动重试一次，应对宿主机环境造成的瞬时 EPERM
+RUN cd langwatch && \
+  { CI=true pnpm install --frozen-lockfile || \
+    { echo "pnpm install 失败，重试一次..."; CI=true pnpm install --frozen-lockfile; }; }
 # SDK package files needed by generate-sdk-versions.sh during build
 COPY typescript-sdk/package.json ./typescript-sdk/package.json
 COPY python-sdk/pyproject.toml ./python-sdk/pyproject.toml
