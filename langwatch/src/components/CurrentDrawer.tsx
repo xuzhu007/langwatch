@@ -1,3 +1,4 @@
+import { Center, Spinner } from "@chakra-ui/react";
 import { OrganizationUserRole } from "@prisma/client";
 import qs from "qs";
 import { Suspense, useEffect, useMemo } from "react";
@@ -10,6 +11,7 @@ import {
 } from "../hooks/useDrawer";
 import { useOrganizationTeamProject } from "../hooks/useOrganizationTeamProject";
 import { useUpgradeModalStore } from "../stores/upgradeModalStore";
+import { URL_QS_PARSE_OPTIONS } from "../utils/qsParseOptions";
 import { drawers } from "./drawerRegistry";
 import { DrawerOffsetProvider } from "./ui/drawer";
 
@@ -33,11 +35,10 @@ export function CurrentDrawer({ marginTop }: { marginTop?: number }) {
   // handing the rendered drawer a fresh props object each time and cascading
   // a re-render through its subtree even when nothing drawer-relevant changed.
   const queryDrawer = useMemo<DrawerProps | undefined>(() => {
-    const parsed = qs.parse(queryString.replaceAll("%2C", ","), {
-      allowDots: true,
-      comma: true,
-      allowEmptyArrays: true,
-    });
+    const parsed = qs.parse(
+      queryString.replaceAll("%2C", ","),
+      URL_QS_PARSE_OPTIONS,
+    );
     return parsed.drawer as DrawerProps | undefined;
   }, [queryString]);
 
@@ -47,7 +48,9 @@ export function CurrentDrawer({ marginTop }: { marginTop?: number }) {
   // Instead of rendering the drawer, show the restriction modal
   // and clear the drawer from the URL. This protects ALL entry points:
   // direct clicks, command bar, deep links, and any future call sites.
-  const restrictedResource = drawerType ? restrictedDrawers[drawerType] : undefined;
+  const restrictedResource = drawerType
+    ? restrictedDrawers[drawerType]
+    : undefined;
   const isRestricted =
     !!restrictedResource && organizationRole === OrganizationUserRole.EXTERNAL;
 
@@ -132,7 +135,7 @@ export function CurrentDrawer({ marginTop }: { marginTop?: number }) {
           );
         }}
       >
-        <Suspense>
+        <Suspense fallback={<DrawerLoadingFallback />}>
           <CurrentDrawerComponent
             {...queryDrawer}
             {...complexProps}
@@ -141,5 +144,13 @@ export function CurrentDrawer({ marginTop }: { marginTop?: number }) {
         </Suspense>
       </ErrorBoundary>
     </DrawerOffsetProvider>
+  );
+}
+
+function DrawerLoadingFallback() {
+  return (
+    <Center height="200px">
+      <Spinner size="lg" color="blue.500" />
+    </Center>
   );
 }

@@ -8,6 +8,7 @@ import {
   transposeColumnsFirstToRowsFirstWithId,
   transpostRowsFirstToColumnsFirstWithoutId,
 } from "../utils/datasetUtils";
+import { applyEntryInputDefaults } from "./entryInputDefaults";
 
 export const loadDatasets = async (
   event: StudioClientEvent,
@@ -86,6 +87,9 @@ export const loadDatasets = async (
         throw new Error("Dataset ID is required");
       }
 
+      // ADR-032 I-READY: a non-ready (uploading/processing/failed) s3_jsonl
+      // dataset throws DatasetNotReadyError here — it must NOT be silently
+      // treated as empty. The throw propagates as a clear run error.
       const dataset = await getFullDataset({
         datasetId: node.data.dataset.id,
         projectId,
@@ -108,10 +112,10 @@ export const loadDatasets = async (
     }),
   );
 
-  const workflow: Workflow = {
+  const workflow: Workflow = applyEntryInputDefaults({
     ...(event.payload.workflow as Workflow),
     nodes,
-  };
+  });
 
   return {
     ...event,

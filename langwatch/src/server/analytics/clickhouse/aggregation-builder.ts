@@ -5,32 +5,29 @@
  * into complete ClickHouse SQL queries.
  */
 
-import type { AggregationTypes } from "../types";
-import type { SeriesInputType } from "../registry";
+import { snakeCase } from "../../../utils/stringCasing";
 import type { FilterField } from "../../filters/types";
+import type { SeriesInputType } from "../registry";
+import type { AggregationTypes } from "../types";
 import {
-  type CHTable,
   buildJoinClause,
-  tableAliases,
+  type CHTable,
+  extractReferencedEvaluationColumns,
+  extractReferencedSpanColumns,
+  extractReferencedTraceColumns,
   TRACE_ANALYTICS_COLUMNS,
   TRACE_IDENTITY_COLUMNS,
-  extractReferencedSpanColumns,
-  extractReferencedEvaluationColumns,
-  extractReferencedTraceColumns,
+  tableAliases,
 } from "./field-mappings";
-import { snakeCase } from "../../../utils/stringCasing";
+import {
+  type FilterTranslation,
+  translateAllFilters,
+} from "./filter-translator";
 import {
   type MetricTranslation,
   translateMetric,
   translatePipelineAggregation,
 } from "./metric-translator";
-import {
-  translateAllFilters,
-  type FilterTranslation,
-} from "./filter-translator";
-import { createLogger } from "../../../utils/logger/server";
-
-const logger = createLogger("langwatch:analytics:aggregation-builder");
 
 /**
  * Resolve which columns a joined table needs based on the SQL expressions
@@ -64,6 +61,24 @@ const DATE_FILTER_BOTH_PERIODS = `AND ((OccurredAt >= {currentStart:DateTime64(3
 const DATE_FILTER_CURRENT = `AND OccurredAt >= {currentStart:DateTime64(3)} AND OccurredAt < {currentEnd:DateTime64(3)}`;
 const DATE_FILTER_PREVIOUS = `AND OccurredAt >= {previousStart:DateTime64(3)} AND OccurredAt < {previousEnd:DateTime64(3)}`;
 const DATE_FILTER_START_END = `AND OccurredAt >= {startDate:DateTime64(3)} AND OccurredAt < {endDate:DateTime64(3)}`;
+
+/**
+ * StartTime partition-pruning predicates for the `stored_spans` subqueries that
+ * span/event facet filters generate (see translateAllFilters' spanTimePredicate
+ * argument). `stored_spans` is partitioned by `toYearWeek(StartTime)` and tiered
+ * to S3, so an unbounded facet subquery cold-scans every weekly partition. A
+ * span's StartTime falls within its trace's lifetime, so bounding it to the same
+ * date envelope the outer OccurredAt filter uses — plus a 2-day cushion for long
+ * traces / clock skew, matching the span-fetch partition hints elsewhere — prunes
+ * the scan without changing which traces match. One constant per caller date
+ * regime: the two-period aggregation vs. the single start/end-range builders.
+ */
+const SPAN_TIME_FILTER_BOTH_PERIODS =
+  "AND StartTime >= {previousStart:DateTime64(3)} - INTERVAL 2 DAY " +
+  "AND StartTime < {currentEnd:DateTime64(3)} + INTERVAL 2 DAY";
+const SPAN_TIME_FILTER_START_END =
+  "AND StartTime >= {startDate:DateTime64(3)} - INTERVAL 2 DAY " +
+  "AND StartTime < {endDate:DateTime64(3)} + INTERVAL 2 DAY";
 
 /**
  * Returns a deduped FROM-clause expression for trace_summaries.
@@ -109,6 +124,55 @@ function dedupedTraceSummaries(
         GROUP BY TenantId, TraceId
       )
   ) ${alias}`;
+}
+
+/**
+ * The trace_summaries columns a metric/timeseries query actually references.
+ *
+ * The deduped trace subquery used to SELECT the full {@link TRACE_ANALYTICS_COLUMNS}
+ * set — including the wide `Attributes` map — for every trace in range before
+ * aggregating, which drove analytics scans into the per-query memory limit on
+ * large tenants (observed: a metadata-cardinality summary reading ~10 GiB).
+ * Threading the referenced columns into {@link dedupedTraceSummaries} lets
+ * ClickHouse read only what the query uses: the identity columns (always needed
+ * for dedup / tenant / time) plus whatever the metric expressions, group-by
+ * column, filter and JOIN clauses touch.
+ *
+ * The result is always a subset of {@link TRACE_ANALYTICS_COLUMNS} (what the
+ * subquery read before), so it can never expose a column the query couldn't
+ * already use. When in doubt it over-includes (a column referenced by any of
+ * the passed expressions is kept), so it never under-selects and breaks a query.
+ */
+function referencedTraceColumns(
+  metrics: MetricTranslation[],
+  extraExpressions: string[],
+): readonly string[] {
+  const metricExpressions = metrics.flatMap((metric) => {
+    const exprs = [metric.selectExpression];
+    const subquery = metric.subquery;
+    if (subquery) {
+      exprs.push(
+        subquery.innerSelect,
+        subquery.innerGroupBy,
+        subquery.outerAggregation,
+      );
+      if (subquery.nestedSubquery) {
+        exprs.push(
+          subquery.nestedSubquery.select,
+          subquery.nestedSubquery.groupBy,
+          subquery.nestedSubquery.having ?? "",
+        );
+      }
+    }
+    return exprs;
+  });
+  return [
+    ...TRACE_IDENTITY_COLUMNS,
+    ...extractReferencedTraceColumns([
+      ...metricExpressions,
+      ...extraExpressions,
+    ]),
+  ];
 }
 
 /** Maximum number of filter options returned by filter queries */
@@ -376,8 +440,10 @@ function buildGroupKeyHavingClause({
   if (!groupByColumn) return "";
   const hasGroupByKey = !!groupByKey;
   const isEvaluationPassed = groupBy === "evaluations.evaluation_passed";
-  if (isEvaluationPassed && hasGroupByKey) return "HAVING group_key IS NOT NULL";
-  if (!groupByHandlesUnknown && !isEvaluationPassed) return "HAVING group_key != ''";
+  if (isEvaluationPassed && hasGroupByKey)
+    return "HAVING group_key IS NOT NULL";
+  if (!groupByHandlesUnknown && !isEvaluationPassed)
+    return "HAVING group_key != ''";
   return "";
 }
 
@@ -494,10 +560,13 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
     }
   }
 
-  // Translate filters
+  // Translate filters. Span/event facet filters resolve to stored_spans
+  // subqueries; pass the StartTime envelope so they prune partitions instead of
+  // cold-scanning S3 (see SPAN_TIME_FILTER_BOTH_PERIODS).
   const filterTranslation = translateAllFilters(
     input.filters ?? {},
-    input.negateFilters,
+    input.negateFilters ?? false,
+    SPAN_TIME_FILTER_BOTH_PERIODS,
   );
   for (const join of filterTranslation.requiredJoins) {
     allJoins.add(join);
@@ -598,7 +667,10 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
   // Guard: only fire when there are NO pipeline (subquery) metrics. Pipeline
   // metrics live in `subqueryMetrics` which `buildMixedEvalTimeseriesQuery`
   // does not receive — routing here would silently drop them.
-  if (subqueryMetrics.length === 0 && hasEvalMixedWithTraceMetrics(simpleMetrics)) {
+  if (
+    subqueryMetrics.length === 0 &&
+    hasEvalMixedWithTraceMetrics(simpleMetrics)
+  ) {
     return buildMixedEvalTimeseriesQuery({
       input,
       ts,
@@ -700,11 +772,17 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
     groupByKey: input.groupByKey,
   });
 
+  const traceColumns = referencedTraceColumns(metricTranslations, [
+    filterWhere,
+    groupByColumn ?? "",
+    joinClauses,
+  ]);
+
   // Build the complete SQL
   const sql = `
     SELECT
       ${selectExprs.join(",\n      ")}
-    FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_BOTH_PERIODS)}
+    FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_BOTH_PERIODS)}
     ${joinClauses}
     WHERE ${baseWhere}
       ${filterWhere}
@@ -764,6 +842,12 @@ function buildMixedEvalTimeseriesQuery({
   allTranslationParams: Record<string, unknown>;
   timeZone: string;
 }): BuiltQuery {
+  const traceColumns = referencedTraceColumns(simpleMetrics, [
+    filterWhere,
+    groupByColumn ?? "",
+    joinClauses,
+  ]);
+
   const dateTrunc =
     typeof input.timeScale === "number"
       ? getDateTruncFunction(input.timeScale, timeZone)
@@ -909,7 +993,7 @@ function buildMixedEvalTimeseriesQuery({
       ${cteName} AS (
         SELECT
           ${periodInnerExprs.join(",\n          ")}
-        FROM ${dedupedTraceSummaries(ts, undefined, `AND OccurredAt >= {${startParam}:DateTime64(3)} AND OccurredAt < {${endParam}:DateTime64(3)}`)}
+        FROM ${dedupedTraceSummaries(ts, traceColumns, `AND OccurredAt >= {${startParam}:DateTime64(3)} AND OccurredAt < {${endParam}:DateTime64(3)}`)}
         ${joinClauses}
         WHERE ${ts}.TenantId = {tenantId:String}
           AND ${ts}.OccurredAt >= {${startParam}:DateTime64(3)} AND ${ts}.OccurredAt < {${endParam}:DateTime64(3)}
@@ -947,7 +1031,7 @@ function buildMixedEvalTimeseriesQuery({
     WITH per_trace_metrics AS (
       SELECT
         ${innerSelectExprs.join(",\n        ")}
-      FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_BOTH_PERIODS)}
+      FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_BOTH_PERIODS)}
       ${joinClauses}
       WHERE ${baseWhere}
         ${filterWhere}
@@ -1194,6 +1278,9 @@ function buildArrayJoinTimeseriesQuery(
     `${traceColumnWrapper(`${ts}.TotalCost`)} AS trace_total_cost`,
   );
   cteSelectExprs.push(
+    `${traceColumnWrapper(`${ts}.NonBilledCost`)} AS trace_non_billed_cost`,
+  );
+  cteSelectExprs.push(
     `${traceColumnWrapper(`${ts}.TotalDurationMs`)} AS trace_duration_ms`,
   );
   cteSelectExprs.push(
@@ -1292,6 +1379,15 @@ function buildArrayJoinTimeseriesQuery(
       ? "HAVING group_key != ''"
       : "";
 
+  // Columns the dedup subquery must expose: everything the CTE's SELECT list
+  // (which hardcodes per-trace passthroughs like ts.NonBilledCost regardless of
+  // the requested metrics) and the filter reference. Derived from the assembled
+  // expressions rather than the metric list so no referenced column is pruned.
+  const traceColumns = referencedTraceColumns(
+    [],
+    [...cteSelectExprs, filterWhere, joinClauses],
+  );
+
   // CTE body: use GROUP BY when pre-aggregating eval metrics per trace,
   // otherwise fall back to SELECT DISTINCT for backward-compatible behavior.
   let cteBody: string;
@@ -1301,7 +1397,7 @@ function buildArrayJoinTimeseriesQuery(
     cteBody = `
       SELECT
         ${cteSelectExprs.join(",\n        ")}
-      FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_BOTH_PERIODS)}
+      FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_BOTH_PERIODS)}
       ${joinClauses}
       WHERE ${baseWhere}
         ${filterWhere}
@@ -1311,7 +1407,7 @@ function buildArrayJoinTimeseriesQuery(
     cteBody = `
       SELECT DISTINCT
         ${cteSelectExprs.join(",\n        ")}
-      FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_BOTH_PERIODS)}
+      FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_BOTH_PERIODS)}
       ${joinClauses}
       WHERE ${baseWhere}
         ${filterWhere}
@@ -1497,6 +1593,10 @@ function buildSubqueryTimeseriesQuery(
   groupByHandlesUnknown = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
+  const traceColumns = referencedTraceColumns(
+    [...simpleMetrics, ...subqueryMetrics],
+    [filterWhere, groupByColumn ?? "", joinClauses],
+  );
   const ctes: string[] = [];
 
   // Build group_key expression when groupBy is active, matching the pattern used in
@@ -1533,7 +1633,7 @@ function buildSubqueryTimeseriesQuery(
           SELECT ${subquery.innerSelect}${groupKeyInnerSelect}
           FROM (
             SELECT ${nested.select}
-            FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_CURRENT)}
+            FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_CURRENT)}
             ${joinClauses}
             WHERE ${ts}.TenantId = {tenantId:String}
               AND ${ts}.OccurredAt >= {currentStart:DateTime64(3)}
@@ -1556,7 +1656,7 @@ function buildSubqueryTimeseriesQuery(
           SELECT ${subquery.innerSelect}${groupKeyInnerSelect}
           FROM (
             SELECT ${nested.select}
-            FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_PREVIOUS)}
+            FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_PREVIOUS)}
             ${joinClauses}
             WHERE ${ts}.TenantId = {tenantId:String}
               AND ${ts}.OccurredAt >= {previousStart:DateTime64(3)}
@@ -1578,7 +1678,7 @@ function buildSubqueryTimeseriesQuery(
         SELECT '${metric.alias}' AS metric_name, ${subquery.outerAggregation.replace(` AS ${metric.alias}`, "")} AS metric_value${groupKeyInnerSelect}
         FROM (
           SELECT ${subquery.innerSelect}${groupKeyInnerSelect}
-          FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_CURRENT)}
+          FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_CURRENT)}
           ${joinClauses}
           WHERE ${ts}.TenantId = {tenantId:String}
             AND ${ts}.OccurredAt >= {currentStart:DateTime64(3)}
@@ -1596,7 +1696,7 @@ function buildSubqueryTimeseriesQuery(
         SELECT '${metric.alias}' AS metric_name, ${subquery.outerAggregation.replace(` AS ${metric.alias}`, "")} AS metric_value${groupKeyInnerSelect}
         FROM (
           SELECT ${subquery.innerSelect}${groupKeyInnerSelect}
-          FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_PREVIOUS)}
+          FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_PREVIOUS)}
           ${joinClauses}
           WHERE ${ts}.TenantId = {tenantId:String}
             AND ${ts}.OccurredAt >= {previousStart:DateTime64(3)}
@@ -1633,7 +1733,7 @@ function buildSubqueryTimeseriesQuery(
       simple_metrics_current AS (
         SELECT
           ${simpleSelectExprs.join(",\n          ")}
-        FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_CURRENT)}
+        FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_CURRENT)}
         ${joinClauses}
         WHERE ${ts}.TenantId = {tenantId:String}
           AND ${ts}.OccurredAt >= {currentStart:DateTime64(3)}
@@ -1645,7 +1745,7 @@ function buildSubqueryTimeseriesQuery(
       simple_metrics_previous AS (
         SELECT
           ${simpleSelectExprs.join(",\n          ")}
-        FROM ${dedupedTraceSummaries(ts, undefined, DATE_FILTER_PREVIOUS)}
+        FROM ${dedupedTraceSummaries(ts, traceColumns, DATE_FILTER_PREVIOUS)}
         ${joinClauses}
         WHERE ${ts}.TenantId = {tenantId:String}
           AND ${ts}.OccurredAt >= {previousStart:DateTime64(3)}
@@ -1761,10 +1861,7 @@ function buildDateBucketedPipelineQuery({
   timeZone: string;
 }): BuiltQuery {
   const ts = tableAliases.trace_summaries;
-  const dateTrunc = getDateTruncFunction(
-    input.timeScale as number,
-    timeZone,
-  );
+  const dateTrunc = getDateTruncFunction(input.timeScale as number, timeZone);
 
   const periodCase = `
     CASE
@@ -1839,7 +1936,8 @@ function buildDateBucketedPipelineQuery({
     if (input.filters) {
       const filterJoins = translateAllFilters(
         input.filters,
-        input.negateFilters,
+        input.negateFilters ?? false,
+        SPAN_TIME_FILTER_BOTH_PERIODS,
       ).requiredJoins;
       for (const j of filterJoins) simpleJoins.add(j);
     }
@@ -1962,6 +2060,10 @@ function buildPipelineMetricCTE(
     throw new Error(`Metric "${metric.alias}" is missing subquery definition`);
   }
   const subquery = metric.subquery;
+  const traceColumns = referencedTraceColumns(
+    [metric],
+    [ctx.fullFilterWhere, ctx.groupKeyExpr ?? "", ctx.joinClauses],
+  );
   const cteName = `cte_${metric.alias}`;
   const hasGroup = !!ctx.groupByColumn;
   const groupPrefix = hasGroup ? "group_key, " : "";
@@ -1986,7 +2088,7 @@ function buildPipelineMetricCTE(
   ];
 
   const baseFrom = `
-          FROM ${dedupedTraceSummaries(ctx.ts, undefined, DATE_FILTER_BOTH_PERIODS)}
+          FROM ${dedupedTraceSummaries(ctx.ts, traceColumns, DATE_FILTER_BOTH_PERIODS)}
           ${ctx.joinClauses}
           WHERE ${ctx.baseWhere}
             ${ctx.fullFilterWhere}`;
@@ -2045,6 +2147,7 @@ function buildPipelineMetricCTE(
 /** Maps source field names to their corresponding CTE column names */
 const DEDUP_FIELD_MAPPINGS: Record<string, string> = {
   TotalCost: "trace_total_cost",
+  NonBilledCost: "trace_non_billed_cost",
   TotalDurationMs: "trace_duration_ms",
   TotalPromptTokenCount: "trace_prompt_tokens",
   TotalCompletionTokenCount: "trace_completion_tokens",
@@ -2245,7 +2348,11 @@ export function buildDataForFilterQuery(
   const es = tableAliases.evaluation_runs;
 
   // Translate filters if provided
-  const filterTranslation = translateAllFilters(filters ?? {});
+  const filterTranslation = translateAllFilters(
+    filters ?? {},
+    false,
+    SPAN_TIME_FILTER_START_END,
+  );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
@@ -2467,7 +2574,11 @@ export function buildTopDocumentsQuery(
   const ss = tableAliases.stored_spans;
 
   // Translate filters
-  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
+  const filterTranslation = translateAllFilters(
+    filters ?? {},
+    negateFilters,
+    SPAN_TIME_FILTER_START_END,
+  );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
@@ -2500,6 +2611,8 @@ export function buildTopDocumentsQuery(
       WHERE ${ts}.TenantId = {tenantId:String}
         AND ${ts}.OccurredAt >= {startDate:DateTime64(3)}
         AND ${ts}.OccurredAt < {endDate:DateTime64(3)}
+        AND ${ss}.StartTime >= {startDate:DateTime64(3)} - INTERVAL 2 DAY
+        AND ${ss}.StartTime < {endDate:DateTime64(3)} + INTERVAL 2 DAY
         AND ${ss}.SpanAttributes['langwatch.rag.contexts'] != ''
         ${filterWhere}
     )
@@ -2523,6 +2636,8 @@ export function buildTopDocumentsQuery(
     WHERE ${ts}.TenantId = {tenantId:String}
       AND ${ts}.OccurredAt >= {startDate:DateTime64(3)}
       AND ${ts}.OccurredAt < {endDate:DateTime64(3)}
+      AND ${ss}.StartTime >= {startDate:DateTime64(3)} - INTERVAL 2 DAY
+      AND ${ss}.StartTime < {endDate:DateTime64(3)} + INTERVAL 2 DAY
       AND ${ss}.SpanAttributes['langwatch.rag.contexts'] != ''
       ${filterWhere}
   `;
@@ -2559,7 +2674,11 @@ export function buildFeedbacksQuery(
   const ss = tableAliases.stored_spans;
 
   // Translate filters
-  const filterTranslation = translateAllFilters(filters ?? {}, negateFilters);
+  const filterTranslation = translateAllFilters(
+    filters ?? {},
+    negateFilters,
+    SPAN_TIME_FILTER_START_END,
+  );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
       ? `AND ${filterTranslation.whereClause}`
@@ -2594,6 +2713,8 @@ export function buildFeedbacksQuery(
     WHERE ${ts}.TenantId = {tenantId:String}
       AND ${ts}.OccurredAt >= {startDate:DateTime64(3)}
       AND ${ts}.OccurredAt < {endDate:DateTime64(3)}
+      AND ${ss}.StartTime >= {startDate:DateTime64(3)} - INTERVAL 2 DAY
+      AND ${ss}.StartTime < {endDate:DateTime64(3)} + INTERVAL 2 DAY
       AND event_name = 'thumbs_up_down'
       AND mapContains(event_attrs, 'event.metrics.vote')
       ${filterWhere}

@@ -1,26 +1,29 @@
+import { resolveNonBilledCost } from "~/features/traces-v2/utils/costAttribution";
 import type { EvaluationRunService } from "~/server/app-layer/evaluations/evaluation-run.service";
 import type { EvalSummary } from "~/server/app-layer/evaluations/types";
 import type { TopicService } from "~/server/app-layer/topics/topic.service";
 import { TtlCache } from "~/server/utils/ttlCache";
 import { createLogger } from "~/utils/logger/server";
+import {
+  deriveTraceStatus,
+  TRACE_STATUS_CLICKHOUSE_EXPRESSION,
+} from "./derive-trace-status";
 import type {
   ExpressionCategoricalDef,
   FacetDefinition,
   FacetTable,
   RangeFacetDef,
 } from "./facet-registry";
-import {
-  deriveTraceStatus,
-  TRACE_STATUS_CLICKHOUSE_EXPRESSION,
-} from "./derive-trace-status";
 import { FACET_REGISTRY, TABLE_TIME_COLUMNS } from "./facet-registry";
 import type {
   BatchedFacetResult,
   CategoricalFacetResult,
+  DiscreteFacetResult,
   TraceListRepository,
   TraceListSort,
 } from "./repositories/trace-list.repository";
 import type { TraceSummaryData } from "./types";
+import { teaserOf } from "./visibility-window.service";
 
 export interface TraceListEvent {
   spanId: string;
@@ -34,13 +37,41 @@ export interface TraceListItem {
   name: string;
   serviceName: string;
   durationMs: number;
+  /** Grand list-price cost. `nonBilledCost` is the bundled (theoretical)
+   *  portion; billed = totalCost - nonBilledCost. */
   totalCost: number;
+  nonBilledCost: number;
   totalTokens: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * Cache + reasoning token sums folded onto the trace summary's reserved
+   * attribute keys. Null when the trace's model never reported them (no prompt
+   * caching, or a provider like Anthropic that emits no reasoning count). The
+   * list cell keeps showing the input+output delta; these drive the hover
+   * breakdown so a cached turn's true processed-token count is one hover away.
+   */
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  reasoningTokens: number | null;
   models: string[];
+  /** Trace-level labels (the `langwatch.labels` attribute), decoded from
+   *  the JSON-encoded array stored on the summary. Empty when unset. */
+  labels: string[];
+  /** The managed prompt last used in the trace, for the Prompt column.
+   *  `promptId` filters by `lastUsedPrompt`; `promptVersionNumber` is the
+   *  displayed "v{N}". Both null when the trace used no managed prompt. */
+  promptId: string | null;
+  promptVersionNumber: number | null;
   status: "ok" | "error" | "warning";
   spanCount: number;
+  /**
+   * Stored payload size of the trace in bytes — the MATERIALIZED
+   * `_size_bytes` column on `trace_summaries` (see migration 00032). Drives
+   * the optional Size column and is sortable. 0 when the column is absent on
+   * older rows that have not yet had the value drift onto disk.
+   */
+  sizeBytes: number;
   input: string | null;
   output: string | null;
   error: string | null;
@@ -79,6 +110,11 @@ interface ListParams {
   page: number;
   pageSize: number;
   filterWhere?: { sql: string; params: Record<string, unknown> };
+  /**
+   * Visibility gate: list items older than this cutoff get their
+   * input/output previews teaser-redacted. Omitted/null = ungated.
+   */
+  visibilityCutoffMs?: number | null;
 }
 
 interface FacetParams {
@@ -275,10 +311,11 @@ const DISCOVER_WINDOW_PRESETS: ReadonlyArray<{
  * requests for the "same" window hit the same slot regardless of which
  * sub-minute timestamp the client computed.
  */
-function snapToWindowPreset(timeRange: {
+function snapToWindowPreset(timeRange: { from: number; to: number }): {
   from: number;
   to: number;
-}): { from: number; to: number; label: string } {
+  label: string;
+} {
   const span = Math.max(0, timeRange.to - timeRange.from);
   const preset =
     DISCOVER_WINDOW_PRESETS.find((p) => span <= p.maxSpanMs) ??
@@ -317,12 +354,41 @@ function discoverCacheKey(
   return [tenantId, snapped.label, snapped.from, snapped.to].join("|");
 }
 
+/**
+ * Per-value result aggregates carried by the evaluator facet so the
+ * sidebar inline-drilldown can render verdict pills, score-range
+ * sliders, and hasLabel discriminators without firing a second query
+ * per evaluator. Absent on other facets where it's not meaningful.
+ */
+export interface EvaluatorValueAggregates {
+  passedCount: number;
+  failedCount: number;
+  erroredCount: number;
+  scoreMin: number | null;
+  scoreMax: number | null;
+  hasScore: boolean;
+  /** Count of distinct non-null score values. Lets the drilldown hide a
+   *  pointless score slider when the score is constant (1 distinct) or a
+   *  binary 0/1 that just mirrors the pass/fail verdict (2 distinct, ≤1). */
+  distinctScores: number;
+  hasLabel: boolean;
+  /** Top distinct emitted-label values + counts (capped to a small top-N).
+   *  The sidebar drilldown renders these as clickable `evaluatorLabel` filter
+   *  rows. Absent / empty when the evaluator emits no labels. */
+  labelValues?: { value: string; count: number }[];
+}
+
 interface CategoricalFacetDescriptor {
   key: string;
   kind: "categorical";
   label: string;
   group: "trace" | "evaluation" | "span" | "metadata" | "prompt";
-  topValues: { value: string; label?: string; count: number }[];
+  topValues: {
+    value: string;
+    label?: string;
+    count: number;
+    aggregates?: EvaluatorValueAggregates;
+  }[];
   totalDistinct: number;
 }
 
@@ -333,6 +399,13 @@ interface RangeFacetDescriptor {
   group: "trace" | "evaluation" | "span" | "metadata" | "prompt";
   min: number;
   max: number;
+  /** Present only for `isDiscrete`-flagged integer facets: the distinct values
+   *  + counts for the tick-list presentation, plus the true distinct count
+   *  (the sidebar shows the slider instead above its threshold). */
+  discrete?: {
+    values: { value: number; count: number }[];
+    distinctCount: number;
+  };
 }
 
 interface DynamicKeysFacetDescriptor {
@@ -373,6 +446,7 @@ const SORT_COLUMN_MAP: Record<string, TraceListSort["column"]> = {
   ttft: "TimeToFirstTokenMs",
   tokensIn: "TotalPromptTokenCount",
   tokensOut: "TotalCompletionTokenCount",
+  size: "_size_bytes",
 };
 
 const FACET_EXPRESSIONS: Record<string, string> = {
@@ -438,8 +512,28 @@ export class TraceListService {
       params.timeRange.from,
     );
 
+    // Tease input/output/error previews and user-authored labels of items
+    // beyond the caller's visibility window — existence and counts stay
+    // untouched. Labels are user-authored metadata strings, so they're gated
+    // alongside the content fields to avoid leaking through on old traces.
+    const gatedItems =
+      params.visibilityCutoffMs === null ||
+      params.visibilityCutoffMs === undefined
+        ? items
+        : items.map((item) =>
+            item.timestamp < params.visibilityCutoffMs!
+              ? {
+                  ...item,
+                  input: item.input ? teaserOf(item.input) : item.input,
+                  output: item.output ? teaserOf(item.output) : item.output,
+                  error: item.error ? teaserOf(item.error) : item.error,
+                  labels: item.labels.map((label) => teaserOf(label)),
+                }
+              : item,
+          );
+
     return {
-      items,
+      items: gatedItems,
       totalHits: result.totalHits,
       evaluations,
     };
@@ -646,6 +740,10 @@ export class TraceListService {
     params: DiscoverParams,
   ): Promise<FacetDescriptor[]> {
     const TOP_N = 50;
+    // Distinct integer values fetched per `isDiscrete`-flagged facet. The exact
+    // distinct count comes back regardless of this cap, so the sidebar can
+    // still fall back to the slider when a facet exceeds its threshold.
+    const DISCRETE_VALUE_LIMIT = 50;
 
     // Partition the registry: simple-expression facets per table go through
     // the batched ClickHouse path; arrayJoin/queryBuilder/dynamic_keys facets
@@ -688,7 +786,8 @@ export class TraceListService {
 
     type Outcome =
       | { kind: "batch"; table: FacetTable; result: BatchedFacetResult }
-      | { kind: "standalone"; key: string; descriptor: FacetDescriptor };
+      | { kind: "standalone"; key: string; descriptor: FacetDescriptor }
+      | { kind: "discrete"; key: string; result: DiscreteFacetResult };
 
     const tasks: Promise<Outcome>[] = [];
     // Per-task wall-clock so a slow discover surfaces which query is at fault.
@@ -740,15 +839,38 @@ export class TraceListService {
                 descriptor = await this.discoverRange(def, params);
                 break;
               case "dynamic_keys":
-                descriptor = await this.discoverDynamicKeys(
-                  def,
-                  params,
-                  TOP_N,
-                );
+                descriptor = await this.discoverDynamicKeys(def, params, TOP_N);
                 break;
             }
             return { kind: "standalone", key: def.key, descriptor };
           })(),
+        ),
+      );
+    }
+
+    // Distinct-value discovery for `isDiscrete`-flagged integer facets. Runs as
+    // its own GROUP BY per facet — the batched range pass only yields min/max.
+    for (const def of FACET_REGISTRY) {
+      if (def.kind !== "range" || !def.isDiscrete) continue;
+      tasks.push(
+        wrap(
+          `discrete:${def.key}`,
+          this.repository
+            .findDiscreteValues({
+              tenantId: params.tenantId,
+              timeRange: params.timeRange,
+              table: def.table,
+              timeColumn: TABLE_TIME_COLUMNS[def.table],
+              column: def.expression,
+              limit: DISCRETE_VALUE_LIMIT,
+            })
+            .then(
+              (result): Outcome => ({
+                kind: "discrete",
+                key: def.key,
+                result,
+              }),
+            ),
         ),
       );
     }
@@ -770,6 +892,7 @@ export class TraceListService {
 
     const batchByTable = new Map<FacetTable, BatchedFacetResult>();
     const standaloneByKey = new Map<string, FacetDescriptor>();
+    const discreteByKey = new Map<string, DiscreteFacetResult>();
 
     for (const result of settled) {
       if (result.status === "rejected") {
@@ -781,6 +904,8 @@ export class TraceListService {
       }
       if (result.value.kind === "batch") {
         batchByTable.set(result.value.table, result.value.result);
+      } else if (result.value.kind === "discrete") {
+        discreteByKey.set(result.value.key, result.value.result);
       } else {
         standaloneByKey.set(result.value.key, result.value.descriptor);
       }
@@ -794,6 +919,7 @@ export class TraceListService {
         params,
         batchByTable,
         standaloneByKey,
+        discreteByKey,
       );
       if (descriptor) facets.push(descriptor);
     }
@@ -805,6 +931,7 @@ export class TraceListService {
     params: DiscoverParams,
     batchByTable: Map<FacetTable, BatchedFacetResult>,
     standaloneByKey: Map<string, FacetDescriptor>,
+    discreteByKey: Map<string, DiscreteFacetResult>,
   ): Promise<FacetDescriptor | null> {
     if (def.kind === "categorical" && isExpressionCategorical(def)) {
       if (def.expression.includes("arrayJoin")) {
@@ -831,6 +958,7 @@ export class TraceListService {
       const batch = batchByTable.get(def.table);
       const range = batch?.ranges[def.key];
       if (!range) return null;
+      const discrete = def.isDiscrete ? discreteByKey.get(def.key) : undefined;
       return {
         key: def.key,
         kind: "range",
@@ -838,6 +966,7 @@ export class TraceListService {
         group: def.group,
         min: range.min,
         max: range.max,
+        ...(discrete ? { discrete } : {}),
       };
     }
 
@@ -1061,6 +1190,35 @@ export class TraceListService {
   }
 }
 
+/**
+ * Parse a reserved-key token sum off the trace attribute map. The fold parks
+ * these as strings; a non-finite or absent value reads as "not reported" (null)
+ * so the hover hides the row rather than showing a zero.
+ */
+function parseTokenCount(raw: string | undefined): number | null {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Decode the `langwatch.labels` attribute — a JSON-encoded array of
+ * strings (e.g. `'["prod","beta"]'`) parked on the trace summary. A
+ * missing or malformed value reads as no labels rather than throwing.
+ */
+export function parseLabels(raw: string | undefined): string[] {
+  if (raw == null || raw === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (label): label is string => typeof label === "string" && label !== "",
+    );
+  } catch {
+    return [];
+  }
+}
+
 function mapToTraceListItem(row: TraceSummaryData): TraceListItem {
   const status = deriveTraceStatus(row);
 
@@ -1078,12 +1236,30 @@ function mapToTraceListItem(row: TraceSummaryData): TraceListItem {
     serviceName: row.attributes["service.name"] ?? "",
     durationMs: row.totalDurationMs,
     totalCost: row.totalCost ?? 0,
+    nonBilledCost: resolveNonBilledCost({
+      foldedNonBilledCost: row.nonBilledCost,
+      totalCost: row.totalCost,
+      attributes: row.attributes,
+    }),
     totalTokens,
     inputTokens: row.totalPromptTokenCount,
     outputTokens: row.totalCompletionTokenCount,
+    cacheReadTokens: parseTokenCount(
+      row.attributes["langwatch.reserved.cache_read_tokens"],
+    ),
+    cacheCreationTokens: parseTokenCount(
+      row.attributes["langwatch.reserved.cache_creation_tokens"],
+    ),
+    reasoningTokens: parseTokenCount(
+      row.attributes["langwatch.reserved.reasoning_tokens"],
+    ),
     models: row.models,
+    labels: parseLabels(row.attributes["langwatch.labels"]),
+    promptId: row.lastUsedPromptId,
+    promptVersionNumber: row.lastUsedPromptVersionNumber,
     status,
     spanCount: row.spanCount,
+    sizeBytes: row.sizeBytes ?? 0,
     input: row.computedInput,
     output: row.computedOutput,
     error: row.errorMessage,

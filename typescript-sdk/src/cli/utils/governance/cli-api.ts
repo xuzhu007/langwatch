@@ -197,10 +197,25 @@ export async function getGovernanceStatus(
   return getJSON(cfg, `/api/auth/cli/governance/status`, options);
 }
 
+/**
+ * A coding assistant the member can run via `langwatch <slug>`. Sourced from
+ * the org's published coding_assistant catalog tiles, so the CLI only offers
+ * tools the org actually publishes.
+ */
+export interface CliBootstrapTool {
+  slug: string;
+  displayName: string;
+}
+
+/**
+ * A model provider the member can mint a personal virtual key for. Sourced
+ * from the org's published model_provider catalog tiles. Distinct from a
+ * tool: a provider backs a virtual key, a tool is a coding assistant you run.
+ */
 export interface CliBootstrapProvider {
   name: string;
   displayName: string;
-  models: string[];
+  configured: boolean;
 }
 
 export interface CliBootstrapBudget {
@@ -210,7 +225,24 @@ export interface CliBootstrapBudget {
 }
 
 export interface CliBootstrapResponse {
+  /**
+   * Coding assistants the member can run via `langwatch <slug>`. Empty when
+   * the org has published no coding-assistant tiles; the ceremony then falls
+   * back to its built-in default wrapper list. `undefined` on legacy servers
+   * without the field (same fallback).
+   */
+  tools?: CliBootstrapTool[];
   providers: CliBootstrapProvider[];
+  /**
+   * Provider families (e.g. "openai") for which the org has a live, enabled
+   * credential the caller can reach - independent of whether a model_provider
+   * catalog tile was published. This is what the gateway can actually route
+   * through, so the wrapper preflight gates the gateway path on this, NOT on
+   * `providers` (which is the admin-curated mint-your-own-VK catalog).
+   * `undefined` on legacy servers without the field; the wrapper then falls
+   * back to the `providers` tile list for the check.
+   */
+  gatewayProviders?: string[];
   budget: CliBootstrapBudget;
   /**
    * Server-authoritative gateway base URL. Sourced from the backend's
@@ -382,6 +414,45 @@ export async function mintIngestionKey(
     "/api/auth/cli/governance/ingestion-key",
     { ...options, body: { source_type: sourceType }, mutating: true },
   );
+}
+
+
+/**
+ * Extracts the 16-char lookupId from an ingestion token.
+ * Token format: `ik-lw-{16-char lookupId}_{secret}`.
+ * Returns the lookupId string, or undefined when the token doesn't match the
+ * expected format (older token shapes, malformed cache entries).
+ */
+export function extractLookupIdFromToken(token: string): string | undefined {
+  const match = /^ik-lw-([^_]+)_/.exec(token);
+  return match?.[1];
+}
+
+// Ingestion key listing -------------------------------------------------------
+
+/**
+ * Lists all live (non-revoked) personal-project ingestion keys for the
+ * caller's org. Used as a cache-liveness preflight (#4755): before reusing a
+ * locally cached token, the wrapper calls this to confirm the key is still
+ * active. If the server resolves and the cached lookupId is absent → the key
+ * was revoked → mint fresh. If the call rejects (offline / older server) →
+ * reuse the cache as-is (offline-first fallback).
+ */
+export async function listIngestionKeys(
+  cfg: GovernanceConfig,
+  options: CliApiOptions = {},
+): Promise<{ sourceType: string; lookupId: string }[]> {
+  const body = await requestREST<{
+    keys: Array<{
+      source_type: string;
+      lookup_id: string;
+      ingestion_template_id: string | null;
+    }>;
+  }>(cfg, "GET", "/api/auth/cli/governance/ingestion-keys", options);
+  return body.keys.map((k) => ({
+    sourceType: k.source_type,
+    lookupId: k.lookup_id,
+  }));
 }
 
 // IngestionTemplate verbs ----------------------------------------------------

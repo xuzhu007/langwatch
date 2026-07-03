@@ -1,13 +1,10 @@
 import { Box, HStack, IconButton, Input, Text, VStack } from "@chakra-ui/react";
 import { useEffect, useId, useRef, useState } from "react";
 import { LuCheck, LuX } from "react-icons/lu";
+import { toaster } from "~/components/ui/toaster";
 import { Tooltip } from "~/components/ui/tooltip";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-import { toaster } from "~/components/ui/toaster";
-import {
-  TRACE_NAME_MAX_LENGTH,
-  TRACE_NAME_MIN_LENGTH,
-} from "~/server/event-sourcing/pipelines/trace-processing/schemas/constants";
+import { TRACE_NAME_MAX_LENGTH } from "~/server/event-sourcing/pipelines/trace-processing/schemas/constants";
 import { api } from "~/utils/api";
 
 interface EditableTraceNameProps {
@@ -220,11 +217,19 @@ export function EditableTraceName({
           </IconButton>
         </Tooltip>
       </HStack>
+      {/* Counter + validation float beneath the input row (absolute, out of
+          flow) so they don't add height to this box — otherwise the header
+          row's `align="center"` re-centres the sibling status orb against
+          the taller box and the orb visibly drops while editing. See
+          specs/traces-v2/editable-trace-name-alignment.feature */}
       {localValidationMessage && (
         <Text
           id={errorId}
           textStyle="2xs"
           color="red.fg"
+          position="absolute"
+          top="100%"
+          left={0}
           marginTop={0.5}
           role="alert"
         >
@@ -235,6 +240,9 @@ export function EditableTraceName({
         <Text
           textStyle="2xs"
           color="fg.subtle"
+          position="absolute"
+          top="100%"
+          left={0}
           marginTop={0.5}
         >
           {trimmed.length}/{TRACE_NAME_MAX_LENGTH}
@@ -243,8 +251,3 @@ export function EditableTraceName({
     </Box>
   );
 }
-
-export const TRACE_NAME_LIMITS = {
-  min: TRACE_NAME_MIN_LENGTH,
-  max: TRACE_NAME_MAX_LENGTH,
-} as const;

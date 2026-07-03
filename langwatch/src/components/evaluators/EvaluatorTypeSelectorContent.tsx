@@ -5,7 +5,7 @@ import { useRouter } from "~/utils/compat/next-router";
 import { Tooltip } from "~/components/ui/tooltip";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-import { AVAILABLE_EVALUATORS } from "~/server/evaluations/evaluators.generated";
+import { AVAILABLE_EVALUATORS } from "~/server/evaluations/evaluators";
 import { api } from "~/utils/api";
 import type { EvaluatorCategoryId } from "./EvaluatorCategorySelectorDrawer";
 
@@ -32,6 +32,7 @@ const evaluatorCategoryMap: Record<
   "langevals/llm_boolean": "llm_judge",
   "langevals/llm_score": "llm_judge",
   "langevals/llm_category": "llm_judge",
+  "langevals/pairwise_compare": "llm_judge",
 
   // RAG
   "ragas/faithfulness": "rag",
@@ -51,6 +52,7 @@ const evaluatorCategoryMap: Record<
 
   // Safety
   "presidio/pii_detection": "safety",
+  "langwatch/api_keys_and_secrets_detection": "safety",
   "azure/prompt_injection": "safety",
   "azure/jailbreak": "safety",
   "azure/content_safety": "safety",

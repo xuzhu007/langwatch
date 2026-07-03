@@ -9,28 +9,45 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Check, Copy } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
-import { type RouterOutputs } from "~/utils/api";
+import { Check, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react";
+import {
+  memo,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useAnnotationsByTraceIds } from "~/hooks/useAnnotationsByTraceIds";
-import { copyToClipboard } from "~/utils/clipboard";
+import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import type { RouterOutputs } from "~/utils/api";
 import { useConversationTurns } from "../../../hooks/useConversationTurns";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { useTraceDrawerNavigation } from "../../../hooks/useTraceDrawerNavigation";
 import type { TraceListItem } from "../../../types/trace";
 import { RenderedMarkdown } from "../markdownView";
 import { SegmentedToggle } from "../SegmentedToggle";
-import { extractReadableText, extractReasoningText } from "../transcript";
+import {
+  extractReadableText,
+  extractReasoningText,
+  extractSystemText,
+} from "../transcript";
 import { AnnotationsView } from "./AnnotationsView";
 import { ChatTurnRow } from "./ChatTurnRow";
+import { ConversationExpandContext } from "./expandContext";
 import { SystemPromptBanner } from "./SystemPromptBanner";
-import { EMPTY_TURNS, type Mode, type ParsedTurn } from "./types";
+import {
+  EMPTY_TURNS,
+  type Mode,
+  type ParsedTurn,
+  type TurnLayout,
+} from "./types";
 import {
   buildConversationMarkdownChunks,
   type ConversationMarkdownChunk,
   joinConversationMarkdown,
-  parseLastUserText,
-  parseSystemPrompt,
 } from "./utils";
 
 type AnnotationItem = RouterOutputs["annotation"]["getByTraceIds"][number];
@@ -65,7 +82,10 @@ export const ConversationView = memo(function ConversationView({
   currentTraceId,
 }: ConversationViewProps) {
   const { navigateToTrace } = useTraceDrawerNavigation();
-  const [mode, setMode] = useState<Mode>("bubbles");
+  const [mode, setMode] = useState<Mode>("thread");
+  // "Expand all" seeds every message's local expand state; individual
+  // Show more / Show less toggles override until the next expand-all flip.
+  const [isExpandAllEnabled, setIsExpandAllEnabled] = useState(false);
   const query = useConversationTurns(conversationId);
 
   const turns =
@@ -104,10 +124,8 @@ export const ConversationView = memo(function ConversationView({
         turn: t,
         // Use the shared Transcript helper so we handle the same shapes
         // the I/O viewer does (chat arrays, single message objects,
-        // typed-block content arrays). parseLastUserText only handled
-        // chat arrays, missing single-message and bare-block envelopes.
-        userText:
-          extractReadableText(t.input, "user") || parseLastUserText(t.input),
+        // typed-block content arrays, and the raw-string fallback).
+        userText: extractReadableText(t.input, "user"),
         assistantText: extractReadableText(t.output, "assistant"),
         assistantReasoning: extractReasoningText(t.output),
         gapSecs,
@@ -131,7 +149,10 @@ export const ConversationView = memo(function ConversationView({
         fromTraceId: currentTraceIdRef.current,
         fromViewMode: "conversation",
         toTraceId: traceId,
-        toViewMode: "trace",
+        // Open the turn's Summary, not the raw Trace tab — and transiently, so
+        // peeking at a turn doesn't repoint the user's remembered tab.
+        toViewMode: "summary",
+        persistViewMode: false,
       });
     },
     [navigateToTrace],
@@ -176,15 +197,22 @@ export const ConversationView = memo(function ConversationView({
         turnCount={turns.length}
         mode={mode}
         onModeChange={setMode}
+        isExpandAllEnabled={isExpandAllEnabled}
+        onToggleExpandAll={() => setIsExpandAllEnabled((v) => !v)}
       />
-      {mode === "bubbles" ? (
-        <BubblesView
-          parsedTurns={parsedTurns}
-          systemPromptInput={turns[0]?.input}
-          currentTraceId={currentTraceId}
-          onSelectTurn={handleSelectTurn}
-          annotationsByTrace={annotationsByTrace}
-        />
+      {mode === "thread" || mode === "bubbles" ? (
+        <ConversationExpandContext.Provider
+          value={{ isExpandable: true, shouldExpandAll: isExpandAllEnabled }}
+        >
+          <TurnsView
+            layout={mode}
+            parsedTurns={parsedTurns}
+            systemPromptInput={turns[0]?.input}
+            currentTraceId={currentTraceId}
+            onSelectTurn={handleSelectTurn}
+            annotationsByTrace={annotationsByTrace}
+          />
+        </ConversationExpandContext.Provider>
       ) : mode === "annotations" ? (
         <AnnotationsView
           parsedTurns={parsedTurns}
@@ -317,44 +345,82 @@ const ConversationHeader: React.FC<{
   turnCount: number;
   mode: Mode;
   onModeChange: (m: Mode) => void;
-}> = ({ conversationId, turnCount, mode, onModeChange }) => (
-  <HStack
-    gap={2}
-    paddingX={4}
-    paddingY={2.5}
-    borderBottomWidth="1px"
-    borderColor="border.muted"
-    bg="bg.subtle"
-    flexShrink={0}
-  >
-    <Text
-      textStyle="2xs"
-      color="fg.muted"
-      textTransform="uppercase"
-      letterSpacing="0.06em"
-      fontWeight="semibold"
+  isExpandAllEnabled: boolean;
+  onToggleExpandAll: () => void;
+}> = ({
+  conversationId,
+  turnCount,
+  mode,
+  onModeChange,
+  isExpandAllEnabled,
+  onToggleExpandAll,
+}) => {
+  // Expand-all only applies to the message layouts that truncate.
+  const isExpandAllVisible = mode === "thread" || mode === "bubbles";
+  return (
+    <HStack
+      gap={2}
+      paddingX={4}
+      paddingY={2.5}
+      borderBottomWidth="1px"
+      borderColor="border.muted"
+      bg="bg.subtle"
+      flexShrink={0}
     >
-      Conversation
-    </Text>
-    <Text textStyle="xs" color="fg.subtle" truncate>
-      {conversationId}
-    </Text>
-    <Box flex={1} />
-    <SegmentedToggle
-      value={mode}
-      onChange={(v) => onModeChange(v as Mode)}
-      options={["bubbles", "markdown", "annotations"]}
-    />
-  </HStack>
-);
+      <Text
+        textStyle="2xs"
+        color="fg.muted"
+        textTransform="uppercase"
+        letterSpacing="0.06em"
+        fontWeight="semibold"
+      >
+        Conversation
+      </Text>
+      <Text textStyle="xs" color="fg.subtle" truncate>
+        {conversationId}
+      </Text>
+      <Box flex={1} />
+      {isExpandAllVisible && (
+        <Button
+          size="xs"
+          variant="ghost"
+          color="fg.muted"
+          gap={1}
+          onClick={onToggleExpandAll}
+          aria-pressed={isExpandAllEnabled}
+        >
+          <Icon
+            as={isExpandAllEnabled ? ChevronsDownUp : ChevronsUpDown}
+            boxSize="13px"
+          />
+          {isExpandAllEnabled ? "Collapse all" : "Expand all"}
+        </Button>
+      )}
+      <SegmentedToggle
+        value={mode}
+        onChange={(v) => onModeChange(v as Mode)}
+        options={["thread", "bubbles", "markdown", "annotations"]}
+      />
+    </HStack>
+  );
+};
 
-const BubblesView: React.FC<{
+/**
+ * ChatGPT-style thread layout constrains the column to a comfortable reading
+ * width and centers it; bubbles span the pane so the left/right sides have
+ * room to breathe.
+ */
+const THREAD_MAX_WIDTH = "800px";
+
+const TurnsView: React.FC<{
+  layout: TurnLayout;
   parsedTurns: ParsedTurn[];
   systemPromptInput: string | null | undefined;
   currentTraceId: string;
   onSelectTurn: (traceId: string) => void;
   annotationsByTrace: AnnotationsByTrace;
 }> = ({
+  layout,
   parsedTurns,
   systemPromptInput,
   currentTraceId,
@@ -362,13 +428,14 @@ const BubblesView: React.FC<{
   annotationsByTrace,
 }) => {
   const systemPrompt = useMemo(
-    () => parseSystemPrompt(systemPromptInput),
+    () => extractSystemText(systemPromptInput),
     [systemPromptInput],
   );
 
   if (parsedTurns.length >= VIRTUALIZE_AT) {
     return (
-      <VirtualizedBubblesView
+      <VirtualizedTurnsView
+        layout={layout}
         parsedTurns={parsedTurns}
         systemPrompt={systemPrompt}
         currentTraceId={currentTraceId}
@@ -378,29 +445,89 @@ const BubblesView: React.FC<{
     );
   }
 
+  const maxWidth = layout === "thread" ? THREAD_MAX_WIDTH : undefined;
+
+  // On open, drop the reader at the turn whose trace the drawer is showing
+  // rather than at the top — a long thread otherwise opens scrolled away
+  // from the turn the operator clicked in from. Centers once per mount; we
+  // don't re-scroll on later navigation so we never fight the user.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
+  useCenterActiveTurnOnce({ scrollRef, activeRef });
+
   return (
-    <VStack align="stretch" gap={5} paddingX={5} paddingY={4} overflow="auto">
-      {systemPrompt && <SystemPromptBanner text={systemPrompt} />}
-      {parsedTurns.map((p, i) => (
-        <ChatTurnRow
-          key={p.turn.traceId}
-          turn={p.turn}
-          userText={p.userText}
-          assistantText={p.assistantText}
-          assistantReasoning={p.assistantReasoning}
-          gapSecs={p.gapSecs}
-          showGap={p.showGap}
-          index={i + 1}
-          isCurrent={p.turn.traceId === currentTraceId}
-          onSelect={onSelectTurn}
-          annotationItems={
-            annotationsByTrace.get(p.turn.traceId) ?? EMPTY_ANNOTATION_ITEMS
-          }
-        />
-      ))}
-    </VStack>
+    <Box
+      ref={scrollRef}
+      position="relative"
+      flex={1}
+      overflow="auto"
+      paddingX={5}
+      paddingY={4}
+    >
+      <VStack
+        align="stretch"
+        gap={layout === "thread" ? 2 : 5}
+        width="full"
+        maxWidth={maxWidth}
+        marginX="auto"
+      >
+        {systemPrompt && <SystemPromptBanner text={systemPrompt} />}
+        {parsedTurns.map((p, i) => {
+          const isCurrent = p.turn.traceId === currentTraceId;
+          return (
+            <Box
+              key={p.turn.traceId}
+              ref={isCurrent ? activeRef : undefined}
+              width="full"
+            >
+              <ChatTurnRow
+                layout={layout}
+                turn={p.turn}
+                userText={p.userText}
+                assistantText={p.assistantText}
+                assistantReasoning={p.assistantReasoning}
+                gapSecs={p.gapSecs}
+                showGap={p.showGap}
+                index={i + 1}
+                isCurrent={isCurrent}
+                onSelect={onSelectTurn}
+                annotationItems={
+                  annotationsByTrace.get(p.turn.traceId) ??
+                  EMPTY_ANNOTATION_ITEMS
+                }
+              />
+            </Box>
+          );
+        })}
+      </VStack>
+    </Box>
   );
 };
+
+/**
+ * Scroll the active turn to the vertical center of its scroll container,
+ * exactly once after mount. `offsetTop` is measured against the nearest
+ * positioned ancestor, so the scroll container sets `position: relative`.
+ */
+function useCenterActiveTurnOnce({
+  scrollRef,
+  activeRef,
+}: {
+  scrollRef: RefObject<HTMLDivElement | null>;
+  activeRef: RefObject<HTMLDivElement | null>;
+}) {
+  const done = useRef(false);
+  useLayoutEffect(() => {
+    if (done.current) return;
+    const container = scrollRef.current;
+    const active = activeRef.current;
+    if (!container || !active) return;
+    done.current = true;
+    const top =
+      active.offsetTop - container.clientHeight / 2 + active.offsetHeight / 2;
+    container.scrollTop = Math.max(0, top);
+  }, [scrollRef, activeRef]);
+}
 
 /**
  * Virtualized rendering path for long conversations. Mirrors the threshold +
@@ -408,13 +535,15 @@ const BubblesView: React.FC<{
  * codebase. The system-prompt banner stays sticky at the top, outside the
  * virtual range, so it doesn't get measured + remeasured every scroll.
  */
-const VirtualizedBubblesView: React.FC<{
+const VirtualizedTurnsView: React.FC<{
+  layout: TurnLayout;
   parsedTurns: ParsedTurn[];
   systemPrompt: string | null;
   currentTraceId: string;
   onSelectTurn: (traceId: string) => void;
   annotationsByTrace: AnnotationsByTrace;
 }> = ({
+  layout,
   parsedTurns,
   systemPrompt,
   currentTraceId,
@@ -431,50 +560,69 @@ const VirtualizedBubblesView: React.FC<{
     getItemKey: (index) => parsedTurns[index]!.turn.traceId,
   });
 
+  // Land on the open trace's turn instead of the top of a long thread.
+  // Once per mount; the virtualizer settles estimated heights as the user
+  // scrolls, but centering on the index is close enough on open.
+  const scrolledToActive = useRef(false);
+  useEffect(() => {
+    if (scrolledToActive.current) return;
+    const activeIndex = parsedTurns.findIndex(
+      (p) => p.turn.traceId === currentTraceId,
+    );
+    if (activeIndex <= 0) return;
+    scrolledToActive.current = true;
+    virtualizer.scrollToIndex(activeIndex, { align: "center" });
+  }, [parsedTurns, currentTraceId, virtualizer]);
+
+  const maxWidth = layout === "thread" ? THREAD_MAX_WIDTH : undefined;
+
   return (
     <Box ref={parentRef} flex={1} overflow="auto" paddingX={5} paddingY={4}>
-      {systemPrompt && (
-        <Box marginBottom={5}>
-          <SystemPromptBanner text={systemPrompt} />
+      <Box width="full" maxWidth={maxWidth} marginX="auto">
+        {systemPrompt && (
+          <Box marginBottom={5}>
+            <SystemPromptBanner text={systemPrompt} />
+          </Box>
+        )}
+        <Box
+          height={`${virtualizer.getTotalSize()}px`}
+          width="full"
+          position="relative"
+        >
+          {virtualizer.getVirtualItems().map((row) => {
+            const p = parsedTurns[row.index]!;
+            return (
+              <Box
+                key={row.key}
+                ref={virtualizer.measureElement}
+                data-index={row.index}
+                position="absolute"
+                top={0}
+                left={0}
+                width="full"
+                transform={`translateY(${row.start}px)`}
+                paddingBottom={layout === "thread" ? 2 : 5}
+              >
+                <ChatTurnRow
+                  layout={layout}
+                  turn={p.turn}
+                  userText={p.userText}
+                  assistantText={p.assistantText}
+                  assistantReasoning={p.assistantReasoning}
+                  gapSecs={p.gapSecs}
+                  showGap={p.showGap}
+                  index={row.index + 1}
+                  isCurrent={p.turn.traceId === currentTraceId}
+                  onSelect={onSelectTurn}
+                  annotationItems={
+                    annotationsByTrace.get(p.turn.traceId) ??
+                    EMPTY_ANNOTATION_ITEMS
+                  }
+                />
+              </Box>
+            );
+          })}
         </Box>
-      )}
-      <Box
-        height={`${virtualizer.getTotalSize()}px`}
-        width="full"
-        position="relative"
-      >
-        {virtualizer.getVirtualItems().map((row) => {
-          const p = parsedTurns[row.index]!;
-          return (
-            <Box
-              key={row.key}
-              ref={virtualizer.measureElement}
-              data-index={row.index}
-              position="absolute"
-              top={0}
-              left={0}
-              width="full"
-              transform={`translateY(${row.start}px)`}
-              paddingBottom={5}
-            >
-              <ChatTurnRow
-                turn={p.turn}
-                userText={p.userText}
-                assistantText={p.assistantText}
-                assistantReasoning={p.assistantReasoning}
-                gapSecs={p.gapSecs}
-                showGap={p.showGap}
-                index={row.index + 1}
-                isCurrent={p.turn.traceId === currentTraceId}
-                onSelect={onSelectTurn}
-                annotationItems={
-                  annotationsByTrace.get(p.turn.traceId) ??
-                  EMPTY_ANNOTATION_ITEMS
-                }
-              />
-            </Box>
-          );
-        })}
       </Box>
     </Box>
   );
@@ -483,13 +631,11 @@ const VirtualizedBubblesView: React.FC<{
 const MarkdownConversationView: React.FC<{
   chunks: ConversationMarkdownChunk[];
 }> = ({ chunks }) => {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyToClipboard();
 
   const handleCopy = useCallback(() => {
-    void copyToClipboard(joinConversationMarkdown(chunks));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }, [chunks]);
+    copy(joinConversationMarkdown(chunks));
+  }, [chunks, copy]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({

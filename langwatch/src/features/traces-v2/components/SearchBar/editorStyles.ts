@@ -9,7 +9,12 @@ export const editorStyles: SystemStyleObject = {
     whiteSpace: "nowrap",
     overflowX: "auto",
     overflowY: "hidden",
-    caretColor: "var(--chakra-colors-fg-DEFAULT)",
+    // Hard cap on editor height regardless of what made it past the
+    // paste sanitizer. Without this, a stray multi-paragraph state
+    // (whitespace-only newline that survives normalisation, or schema
+    // expansion in future) pushes the rest of the page off-screen.
+    maxHeight: "96px",
+    caretColor: "var(--chakra-colors-fg)",
   },
   "& .tiptap p": { margin: 0 },
   "& .tiptap p.is-editor-empty:first-of-type::before": {
@@ -47,6 +52,38 @@ export const editorStyles: SystemStyleObject = {
     paddingRight: "6px",
     marginLeft: "1px",
   },
+  // Label collapse: when a chip carries a human-readable `label`, render the
+  // field-qualified label (`evaluator:Policy Check`) as in-flow ::after text
+  // and collapse the underlying id to zero width (font-size:0). The chip then
+  // hugs the *label*, not the longer id — no spare space reserved for the
+  // value tail. The id stays in the DOM (selection / copy / the query
+  // language all keep it) and returns to full size on hover, where the label
+  // hides and the chip grows in place to reveal the full id. The `evaluator:`
+  // prefix is part of both the label and the id, so it never moves — only the
+  // value tail differs.
+  "& .filter-token[data-filter-chip-label]": {
+    fontSize: "0px",
+  },
+  "& .filter-token[data-filter-chip-label]::after": {
+    content: "attr(data-filter-chip-label)",
+    color: "blue.fg",
+    fontFamily: "inherit",
+    fontSize: "var(--chakra-font-sizes-xs)",
+    lineHeight: "22px",
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+  },
+  // Reveal the underlying id on hover — also when the X-button half is
+  // hovered, so the whole pill reads consistently. Restore the id text to
+  // full size and drop the label so only the id shows; the chip grows to fit.
+  "& .filter-token[data-filter-chip-label]:hover, & .filter-token[data-filter-chip-label]:has(+ .filter-token-delete:hover)":
+    {
+      fontSize: "var(--chakra-font-sizes-xs)",
+    },
+  "& .filter-token[data-filter-chip-label]:hover::after, & .filter-token[data-filter-chip-label]:has(+ .filter-token-delete:hover)::after":
+    {
+      display: "none",
+    },
   // Field name was unrecognised (typo, removed key) — still parses as a
   // tag but the rest of the platform won't filter on it. A warning tint
   // makes that visible without rejecting the query outright.

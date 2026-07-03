@@ -1,4 +1,5 @@
 import { type ColumnDef, createColumnHelper } from "@tanstack/react-table";
+import { timeColumnSizing } from "../../stores/timeFormatStore";
 import type { TraceListItem } from "../../types/trace";
 import type { ConversationGroup } from "./conversationGroups";
 import type { TraceGroup } from "./registry";
@@ -15,15 +16,12 @@ const traceColumnDefs = {
   time: traceCol.accessor("timestamp", {
     id: "time",
     header: "Time",
-    // 68px is enough for the "TIME" header + sort caret + the longest
-    // relative-time strings we render (`16d`, `2m`, `now`, chevron +
-    // relative) without truncating, and tight enough that the trace
-    // name doesn't sit a thumb's width away from the timestamp. 80px
-    // cap prevents a manual resize from walking the column back out.
-    size: 68,
-    minSize: 68,
-    maxSize: 80,
-    enableResizing: false,
+    // Default sizing is the relative-mode footprint (68px) — enough for
+    // the compact strings we typically render (`16d`, `2m`, `now`). When
+    // the user flips the column to ISO from the picker, `useTraceLensColumns`
+    // swaps in the wider ISO footprint (via `timeColumnSizing`) so the full
+    // stamp doesn't clip; both footprints live in one place on the store.
+    ...timeColumnSizing("relative"),
   }),
   since: traceCol.accessor("timestamp", {
     id: "since",
@@ -167,10 +165,38 @@ const traceColumnDefs = {
     minSize: 80,
     meta: num,
   }),
+  size: traceCol.accessor("sizeBytes", {
+    id: "size",
+    header: "Storage size",
+    // Body content is short ("1.4 MB"); the "STORAGE SIZE" header + sort
+    // chevron drives the floor — wider than the compact numeric columns to
+    // fit the two-word uppercase label without clamping.
+    size: 120,
+    minSize: 110,
+    meta: num,
+  }),
   model: traceCol.accessor((row) => row.models[0] ?? "", {
     id: "model",
     header: "Model",
     size: 180,
+    minSize: 140,
+    enableSorting: false,
+  }),
+  labels: traceCol.accessor((row) => row.labels.join(", "), {
+    id: "labels",
+    header: "Labels",
+    // Wide enough for two or three short label badges before wrapping;
+    // labels are free-form so there's no natural cap, but most traces
+    // carry only a handful.
+    size: 200,
+    minSize: 140,
+    enableSorting: false,
+  }),
+  prompt: traceCol.accessor((row) => row.promptId ?? "", {
+    id: "prompt",
+    header: "Prompt",
+    // Fits a prompt handle + "v{N}" chip; the handle truncates inside it.
+    size: 200,
     minSize: 140,
     enableSorting: false,
   }),
@@ -253,8 +279,8 @@ const traceColumnDefs = {
 
 /**
  * Union of every id present in `traceColumnDefs`. Used to constrain the
- * STANDARD_COLUMNS list and the cell registry — adding an id to one place
- * but not the others becomes a compile error instead of a silent blank cell.
+ * cell registry — adding an id to one place but not the other becomes a
+ * compile error instead of a silent blank cell.
  */
 export type TraceColumnId = keyof typeof traceColumnDefs;
 
@@ -406,6 +432,18 @@ export function buildTraceColumns(
   return ids
     .map((id) => traceColumnDefsByString[id])
     .filter((def): def is ColumnDef<TraceListItem, any> => Boolean(def));
+}
+
+/**
+ * Single static column def by id, or `undefined` for an unknown id. Used
+ * by `useTraceLensColumns` to interleave static and synthesised
+ * per-evaluator eval columns in `columnOrder` order. Dynamic `eval:*`
+ * columns are not here — they are built by `buildEvalColumnDef`.
+ */
+export function getTraceColumnDef(
+  id: string,
+): ColumnDef<TraceListItem, unknown> | undefined {
+  return traceColumnDefsByString[id];
 }
 
 export function buildConversationColumns(

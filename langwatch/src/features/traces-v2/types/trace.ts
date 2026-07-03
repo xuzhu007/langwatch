@@ -53,20 +53,59 @@ export interface TraceListItem {
   name: string;
   serviceName: string;
   durationMs: number;
+  /** Grand list-price cost. `nonBilledCost` is the bundled (theoretical)
+   *  portion of it; billed = totalCost - nonBilledCost. */
   totalCost: number;
+  nonBilledCost: number;
   totalTokens: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Cache + reasoning token sums (null when the model never reported them).
+   *  The Tokens cell shows input+output; these drive the hover breakdown. */
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  reasoningTokens?: number | null;
   models: string[];
+  /** Trace-level labels (`langwatch.labels`), rendered by the Labels column. */
+  labels: string[];
+  /** Managed prompt last used in the trace, for the Prompt column. */
+  promptId?: string | null;
+  promptVersionNumber?: number | null;
   status: TraceStatus;
   spanCount: number;
+  /** Stored payload size of the trace in bytes (`_size_bytes` on
+   *  trace_summaries), rendered by the optional Size column. 0 when absent. */
+  sizeBytes: number;
   input: string | null;
   output: string | null;
+  /**
+   * Set when a restrict privacy rule hides the content from this viewer (the
+   * server nulled `input`/`output`). Lets the Input/Output cells render a
+   * "Redacted" marker instead of the em-dash used for genuinely-absent content.
+   * `*VisibleTo` is the audience label ("Admins" / "no one") or null/undefined
+   * for the generic copy.
+   */
+  inputRedacted?: boolean | null;
+  outputRedacted?: boolean | null;
+  inputVisibleTo?: string | null;
+  outputVisibleTo?: string | null;
   error?: string;
   errorSpanName?: string;
   conversationId?: string;
   userId?: string;
-  origin: "application" | "simulation" | "evaluation";
+  origin:
+    | "application"
+    | "simulation"
+    | "evaluation"
+    | "workflow"
+    | "playground"
+    | "gateway"
+    | "sample"
+    | "coding_agent"
+    | "ai_tool"
+    // CH `langwatch.origin` is a free string; keep the known set for
+    // autocomplete/exhaustiveness while still accepting future values.
+    | (string & {});
   tokensEstimated?: boolean;
   ttft?: number;
   traceName?: string;

@@ -11,6 +11,7 @@
  */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 
@@ -52,14 +53,6 @@ vi.mock("~/hooks/useProjectEventTypes", () => ({
 vi.mock("~/hooks/useAnnotationsByTraceIds", () => ({
   useAnnotationsByTraceIds: () => ({ data: [] }),
 }));
-
-vi.mock(
-  "~/components/evaluations/wizard/hooks/evaluation-wizard-store/useEvaluationWizardStore",
-  () => ({
-    useEvaluationWizardStore: (selector: (state: unknown) => unknown) =>
-      selector({ workbenchState: { task: undefined } }),
-  }),
-);
 
 vi.mock("~/utils/api", () => ({
   api: {
@@ -107,7 +100,10 @@ describe("TracesMapping events dropdown (integration)", () => {
   describe("when a project event type is absent from the loaded trace", () => {
     /** @scenario Event types from the project are offered even when absent from the open trace */
     it("offers the project event type for mapping", async () => {
+      const user = userEvent.setup();
       renderEventsMapping();
+      // Open the searchable key dropdown (shows "* (any event)" until opened).
+      await user.click(await screen.findByText("* (any event)"));
 
       expect(
         await screen.findByRole("option", { name: "thumbs_up" }),

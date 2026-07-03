@@ -122,6 +122,21 @@ export const workerRestartsCounter = new Counter({
   help: "Number of times the worker has been restarted",
 });
 
+// ADR-022: edge-spool fail-open counter. The edge spool falls back to
+// unmodified command data when the feature-flag store or S3 errors, so
+// ingestion is never blocked. A healthy fleet emits this at ~zero rate;
+// sustained increments (esp. reason="spool") indicate an S3 outage worth
+// alerting on without grepping warn logs.
+register.removeSingleMetric("langwatch_edge_spool_fail_open_total");
+const edgeSpoolFailOpenCounter = new Counter({
+  name: "langwatch_edge_spool_fail_open_total",
+  help: "Count of ADR-022 edge-spool fail-open events by failing stage",
+  labelNames: ["reason"] as const,
+});
+
+export const getEdgeSpoolFailOpenCounter = (reason: "flag_store" | "spool") =>
+  edgeSpoolFailOpenCounter.labels(reason);
+
 // Online-evaluator loop guard counter (post-2026-05-11 incident). A healthy
 // fleet emits this at ~zero rate. Sustained increments indicate either
 // causality_depth propagation is broken on the evaluator side or a customer
@@ -275,6 +290,8 @@ export const eventSourcingStoreDurationHistogram = new Histogram({
 // ============================================================================
 
 type ESStatus = "completed" | "failed";
+/** Reactors additionally skip pre-enqueue when shouldReact returns false. */
+type ReactorStatus = ESStatus | "skipped";
 
 // --- Command metrics ---
 register.removeSingleMetric("es_command_total");
@@ -377,7 +394,7 @@ const esReactorTotal = new Counter({
 export const incrementEsReactorTotal = (
   pipelineName: string,
   reactorName: string,
-  status: ESStatus,
+  status: ReactorStatus,
 ) => esReactorTotal.labels(pipelineName, reactorName, status).inc();
 
 register.removeSingleMetric("es_reactor_duration_milliseconds");

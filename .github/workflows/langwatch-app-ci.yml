@@ -36,9 +36,25 @@ jobs:
               - '.github/workflows/langwatch-app-ci.yml'
               - '.github/.release-please-manifest.json'
               - '.github/scripts/**'
+            # The parity scanner binds @scenario annotations from test files
+            # across many roots, not just specs/ and langwatch/. This list MUST
+            # cover every root the scanner reads (DEFAULT_TEST_ROOTS,
+            # DEFAULT_GO_TEST_ROOTS, DEFAULT_PYTHON_TEST_ROOTS,
+            # DEFAULT_BATS_TEST_ROOTS in langwatch/scripts/check-feature-parity.ts),
+            # otherwise a binding change in an unlisted root merges without the
+            # gate ever running and silently breaks parity on main (e.g. #5143
+            # edited only scripts/__tests__/*.bats and slipped through).
             feature-parity:
-              - 'langwatch/**'
               - 'specs/**'
+              - 'langwatch/**'
+              - 'mcp-server/**'
+              - 'typescript-sdk/**'
+              - 'python-sdk/**'
+              - 'services/**'
+              - 'pkg/**'
+              - 'langevals/**'
+              - 'langwatch_server/**'
+              - 'scripts/**'
               - '.github/workflows/langwatch-app-ci.yml'
 
   typecheck:
@@ -143,7 +159,14 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     env:
-      VITEST_MAX_WORKERS: "4" # physical core count on GitHub-hosted ubuntu runners
+      # Several integration suites (groupQueue, scripts, loopPrevention,
+      # traceparent) call redis.flushall() directly in afterEach against the
+      # shared Redis — the shared cleanup helper is tenant-scoped to avoid this
+      # race, but these suites aren't. vitest.integration.config.ts sets
+      # fileParallelism: false but does NOT cap the worker pool, so on CI
+      # multiple workers raced on those FLUSHALLs and wiped each other's
+      # in-flight queue state. Force a single worker to serialize them.
+      VITEST_MAX_WORKERS: "1"
       # Required environment variables for integration tests
       DATABASE_URL: "postgresql://langwatch_ci:ci_password@localhost:5432/langwatch_test"
       BASE_HOST: "localhost:3000"
@@ -284,6 +307,9 @@ jobs:
         with:
           reporter: github-pr-review
           fail_level: error
+          # The action resolves the Biome version (from the lockfile) and runs
+          # Biome inside workdir, so biome_flags paths are relative to it.
+          workdir: langwatch
           biome_flags: "./src"
 
       - name: Notify Slack on failure

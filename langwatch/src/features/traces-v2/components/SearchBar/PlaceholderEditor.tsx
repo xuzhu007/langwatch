@@ -5,7 +5,12 @@ import {
   removeNodeAtLocation,
   swapOperatorAtLocation,
 } from "~/server/app-layer/traces/query-language/mutations";
-import { buildDecorationPlan, type TokenRef } from "./filterHighlight";
+import { useFacetValueLabelResolver } from "../../hooks/useFacetValueLabels";
+import {
+  buildDecorationPlan,
+  chipOverlayLabel,
+  type TokenRef,
+} from "./filterHighlight";
 
 const PLACEHOLDER_TEXT = "Search filters, free text, or Ask AI…";
 
@@ -141,6 +146,11 @@ export const PlaceholderEditor: React.FC<PlaceholderEditorProps> = ({
 
   const isEmpty = queryText.length === 0;
   const segments = useMemo(() => buildSegments(queryText), [queryText]);
+  // Chips store the raw id (unique) but display the resolved facet label
+  // (readable) — same source the sidebar uses. The label is painted by the
+  // shared CSS overlay (see editorStyles), field prefix intact, and the raw
+  // id slides back into view on hover — identical to the live editor.
+  const resolveLabel = useFacetValueLabelResolver();
 
   return (
     <Box
@@ -241,6 +251,22 @@ export const PlaceholderEditor: React.FC<PlaceholderEditorProps> = ({
             // simultaneously activate the heavier ProseMirror editor.
             if (seg.token && onTokenClick && seg.token.value !== null) {
               const tok = seg.token;
+              const richLabel = resolveLabel({
+                field: tok.field,
+                value: tok.value!,
+              });
+              // Render the raw `field:value` text and let the shared CSS
+              // overlay (editorStyles `.filter-token[data-filter-chip-label]`)
+              // paint the field-qualified label on top — exactly what the
+              // live editor does. Both renderers now produce an identical
+              // chip, so the hand-off when the placeholder swaps for the
+              // real editor is a no-op (no width lurch). Token coords,
+              // data-attrs, and the query text all keep the unique id.
+              const overlayLabel = chipOverlayLabel({
+                field: tok.field,
+                value: tok.value!,
+                label: richLabel,
+              });
               return (
                 <span
                   key={i}
@@ -249,8 +275,13 @@ export const PlaceholderEditor: React.FC<PlaceholderEditorProps> = ({
                   data-filter-chip-end={tok.end}
                   data-filter-chip-field={tok.field}
                   data-filter-chip-value={tok.value}
+                  data-filter-chip-label={overlayLabel}
                   style={{ cursor: "pointer" }}
-                  title="Click to change value"
+                  title={
+                    richLabel
+                      ? `${tok.field}:${tok.value} — click to change value`
+                      : "Click to change value"
+                  }
                   onMouseDown={(event) => {
                     event.preventDefault();
                     event.stopPropagation();

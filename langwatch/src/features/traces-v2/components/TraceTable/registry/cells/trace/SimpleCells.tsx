@@ -1,32 +1,55 @@
 import { Badge, Text } from "@chakra-ui/react";
+import { useFilterStore } from "~/features/traces-v2/stores/filterStore";
 import type { TraceListItem } from "../../../../../types/trace";
+import { formatTokens } from "../../../../../utils/formatters";
 import {
-  formatDuration,
-  formatTokens,
-} from "../../../../../utils/formatters";
+  originColorPalette,
+  originLabel,
+} from "../../../../../utils/originDisplay";
 import { MonoCell } from "../../../MonoCell";
 import { StatusIndicator } from "../../../StatusRow";
 import type { CellDef } from "../../types";
+import { dash } from "../dashPlaceholder";
+import { FilterChip } from "../FilterChip";
 
-const dash = "—";
+/**
+ * Origin badge that doubles as a facet filter — clicking it toggles the
+ * `origin` facet (FilterChip stops propagation so the row's drawer doesn't
+ * open). Mirrors the model / label cells. See
+ * specs/traces-v2/origin-badge-filter.feature
+ */
+function renderOrigin(row: TraceListItem, size: "sm" | "xs") {
+  const label = originLabel(row.origin);
+  const palette = originColorPalette(row.origin);
+  const badge = (
+    <Badge
+      size={size}
+      variant="surface"
+      colorPalette={palette}
+      textTransform="capitalize"
+      fontWeight="medium"
+      {...(size === "xs" ? { paddingX: 1.5 } : {})}
+    >
+      {label}
+    </Badge>
+  );
+  if (!row.origin) return badge;
+  return (
+    <FilterChip
+      onFilter={() =>
+        useFilterStore.getState().toggleFacet("origin", row.origin)
+      }
+      filterLabel={`Filter by origin "${label}"`}
+    >
+      {badge}
+    </FilterChip>
+  );
+}
 
 export const StatusCell = {
   id: "status",
   label: "Status",
   render: ({ row }) => <StatusIndicator status={row.status} />,
-} as const satisfies CellDef<TraceListItem>;
-
-export const TtftCell = {
-  id: "ttft",
-  label: "TTFT",
-  render: ({ row }) => (
-    <MonoCell>{row.ttft != null ? formatDuration(row.ttft) : dash}</MonoCell>
-  ),
-  renderComfortable: ({ row }) => (
-    <Text textStyle="sm" color="fg.muted" textAlign="right">
-      {row.ttft != null ? formatDuration(row.ttft) : dash}
-    </Text>
-  ),
 } as const satisfies CellDef<TraceListItem>;
 
 export const UserIdCell = {
@@ -59,51 +82,16 @@ export const ConversationIdCell = {
   ),
 } as const satisfies CellDef<TraceListItem>;
 
-const ORIGIN_LABEL: Record<string, string> = {
-  application: "Application",
-  simulation: "Simulation",
-  evaluation: "Evaluation",
-  workflow: "Workflow",
-  playground: "Playground",
-  gateway: "Gateway",
-  sample: "Sample",
-};
-
-/**
- * Map each origin to a Chakra `colorPalette` for the badge. Mirrors
- * the dot-color map (`ORIGIN_COLORS` in formatters) and the
- * canonical `~/utils/originColors.ts` table so the table chip,
- * filter sidebar dots, and any other origin renderer agree on
- * which colour each origin gets.
- */
-const ORIGIN_PALETTE: Record<string, string> = {
-  application: "blue",
-  evaluation: "green",
-  simulation: "pink",
-  workflow: "cyan",
-  playground: "teal",
-  gateway: "purple",
-  sample: "gray",
-};
-
 export const OriginCell = {
   id: "origin",
   label: "Origin",
-  render: ({ row }) => {
-    const label = ORIGIN_LABEL[row.origin] ?? row.origin;
-    const palette = ORIGIN_PALETTE[row.origin] ?? "gray";
-    return (
-      <Badge
-        size="sm"
-        variant="subtle"
-        colorPalette={palette}
-        textTransform="capitalize"
-        fontWeight="medium"
-      >
-        {label}
-      </Badge>
-    );
-  },
+  render: ({ row }) => renderOrigin(row, "sm"),
+  // Compact density: smaller pill (xs badge, lighter weight, tighter
+  // letterspacing) so the Origin column doesn't dominate the row at
+  // high information densities. The Comfortable + default renderers
+  // keep the prominent `sm` badge — operators reading expanded rows
+  // benefit from the bigger colour chip.
+  renderCompact: ({ row }) => renderOrigin(row, "xs"),
 } as const satisfies CellDef<TraceListItem>;
 
 export const TokensInCell = {

@@ -1,11 +1,30 @@
-import { Badge, Box, HStack, Text, VStack } from "@chakra-ui/react";
+import {
+  Badge,
+  Box,
+  chakra,
+  HoverCard,
+  HStack,
+  Icon,
+  Portal,
+  Text,
+  VStack,
+} from "@chakra-ui/react";
+import { CircleHelp } from "lucide-react";
 import type React from "react";
-import { Tooltip } from "~/components/ui/tooltip";
+import { useFilterStore } from "~/features/traces-v2/stores/filterStore";
 import { modelProviderIcons } from "~/server/modelProviders/iconsMap";
 import type { TraceListItem } from "../../../../../types/trace";
 import { abbreviateModel } from "../../../../../utils/formatters";
 import { MonoCell } from "../../../MonoCell";
 import type { CellDef } from "../../types";
+import { FilterChip } from "../FilterChip";
+
+// When the +N popover would otherwise render a wall of model names,
+// cap the visible list and direct the user to the drawer for the rest.
+// Ten fits in a comfortable column-of-rows without scrolling on a
+// dense table; tune if the trace ecosystem starts producing wider
+// model mixes.
+const EXTRA_MODELS_VISIBLE_CAP = 10;
 
 type Density = "compact" | "comfortable";
 
@@ -87,7 +106,7 @@ const MONOCHROME_PROVIDER_ICONS = new Set<ProviderKey>([
  * icon stays at 12px / 14px so it complements the mono label without
  * dominating it.
  */
-function ProviderIcon({
+export function ProviderIcon({
   model,
   size,
 }: {
@@ -121,9 +140,7 @@ function ProviderIcon({
         // away from neutral. We want neutral white-ish, so just
         // invert. brightness(0.92) tones the result to off-white so
         // it doesn't hard-burn against the dark surface.
-        isMonochrome
-          ? { filter: "invert(1) brightness(0.92)" }
-          : undefined
+        isMonochrome ? { filter: "invert(1) brightness(0.92)" } : undefined
       }
       aria-hidden="true"
     >
@@ -132,30 +149,98 @@ function ProviderIcon({
   );
 }
 
-function ExtraModelsBadge({
+/**
+ * Rich card listing every model a trace touched — provider-icon + full
+ * name rows under a count header. A HoverCard (not a Tooltip) so the
+ * interactive model rows are keyboard-accessible: it opens on hover AND
+ * on trigger focus, and the card content is focusable/tabbable (a tooltip
+ * is neither). The chip is the trigger via `asChild`, which preserves the
+ * chip's own click-to-filter + ↗ provider link rather than swallowing
+ * them. Hover stays forgiving (open/close delays) so the pointer can
+ * travel onto the card and click a row. See
+ * specs/traces-v2/model-chip-interactive-card.feature
+ */
+export function ModelsTooltip({
   models,
-  size,
+  children,
 }: {
   models: string[];
-  size: "xs" | "sm";
+  children: React.ReactNode;
 }) {
+  const visible = models.slice(0, EXTRA_MODELS_VISIBLE_CAP);
+  const overflow = models.length - visible.length;
   return (
-    <Tooltip
-      showArrow
-      content={
-        <VStack align="start" gap={0.5} paddingY={0.5}>
-          {models.map((m) => (
-            <Text key={m} textStyle="xs">
-              {m}
-            </Text>
-          ))}
-        </VStack>
-      }
+    <HoverCard.Root
+      openDelay={150}
+      closeDelay={200}
+      positioning={{ placement: "top" }}
     >
-      <Badge size={size} variant="outline" cursor="help">
-        +{models.length}
-      </Badge>
-    </Tooltip>
+      <HoverCard.Trigger asChild>{children}</HoverCard.Trigger>
+      <Portal>
+        <HoverCard.Positioner>
+          <HoverCard.Content
+            background="bg.panel"
+            color="fg"
+            borderRadius="xl"
+            boxShadow="lg"
+            padding={2}
+            maxWidth="320px"
+          >
+            <VStack align="stretch" gap={1}>
+              <Text
+                textStyle="2xs"
+                color="fg.muted"
+                textTransform="uppercase"
+                letterSpacing="0.06em"
+                paddingX={2}
+                paddingTop={1}
+              >
+                {models.length} models · click to filter
+              </Text>
+              <VStack align="stretch" gap={0}>
+                {visible.map((m) => (
+                  <chakra.button
+                    key={m}
+                    type="button"
+                    display="flex"
+                    alignItems="center"
+                    gap={2}
+                    width="full"
+                    minWidth={0}
+                    paddingX={2}
+                    paddingY={1}
+                    borderRadius="md"
+                    cursor="pointer"
+                    textAlign="left"
+                    _hover={{ bg: "bg.muted" }}
+                    onClick={() =>
+                      useFilterStore.getState().toggleFacet("model", m)
+                    }
+                    aria-label={`Filter by model "${m}"`}
+                  >
+                    <ProviderIcon model={m} size="comfortable" />
+                    <Text textStyle="xs" color="fg" truncate>
+                      {m}
+                    </Text>
+                  </chakra.button>
+                ))}
+              </VStack>
+              {overflow > 0 && (
+                <Text
+                  textStyle="2xs"
+                  color="fg.muted"
+                  fontStyle="italic"
+                  paddingX={2}
+                  paddingBottom={1}
+                >
+                  +{overflow} more
+                </Text>
+              )}
+            </VStack>
+          </HoverCard.Content>
+        </HoverCard.Positioner>
+      </Portal>
+    </HoverCard.Root>
   );
 }
 
@@ -169,49 +254,76 @@ function renderModel(row: TraceListItem, density: Density) {
   }
   const rawPrimary = row.models[0]!;
   const primary = abbreviateModel(rawPrimary);
-  const rest = row.models.slice(1);
-  // Wrap the icon + label in a light grey badge so the model reads as
-  // a contained chip (parallels the Origin column's subtle Badge).
-  // Without the surrounding tag the small provider icon felt
-  // unprotected and the cell read as floating SVG + text.
-  if (density === "compact") {
-    return (
-      <HStack gap={1.5}>
-        <Badge
-          size="sm"
-          variant="subtle"
-          colorPalette="gray"
-          gap={1.5}
-          paddingX={2}
-          fontWeight="medium"
-        >
-          <ProviderIcon model={rawPrimary} size="compact" />
+  const overflow = row.models.length - 1;
+  const compact = density === "compact";
+  // "Known" = the provider was recognised, which is the table's proxy
+  // for "this model resolves to a cost mapping". Unknown models get an
+  // amber chip + a help glyph, and the chip's ↗ points at model settings
+  // so the operator can add a regex mapping; known models' ↗ opens the
+  // same model-provider settings for that provider.
+  const known = inferProvider(rawPrimary) != null;
+
+  // One contained chip: provider (or "unmatched") glyph + primary model
+  // name + a quiet "+N" suffix folded inside the same badge for
+  // multi-model traces. Clicking it filters by the primary model; the
+  // hover ↗ links to model settings; multi-model traces also surface the
+  // full list in a hover popover.
+  const chip = (
+    <FilterChip
+      onFilter={() =>
+        useFilterStore.getState().toggleFacet("model", rawPrimary)
+      }
+      filterLabel={`Filter by model "${rawPrimary}"`}
+    >
+      <Badge
+        size="sm"
+        variant="surface"
+        colorPalette={known ? "gray" : "orange"}
+        gap={compact ? 1.5 : 2}
+        paddingX={compact ? 2 : 2.5}
+        fontWeight="medium"
+      >
+        {known ? (
+          <ProviderIcon
+            model={rawPrimary}
+            size={compact ? "compact" : "comfortable"}
+          />
+        ) : (
+          <Icon
+            boxSize={compact ? "12px" : "14px"}
+            color="orange.fg"
+            flexShrink={0}
+            aria-label="No model-cost match"
+          >
+            <CircleHelp />
+          </Icon>
+        )}
+        {compact ? (
           <MonoCell truncate whiteSpace={undefined}>
             {primary}
           </MonoCell>
-        </Badge>
-        {rest.length > 0 && <ExtraModelsBadge models={rest} size="xs" />}
-      </HStack>
-    );
-  }
-  return (
-    <HStack gap={2}>
-      <Badge
-        size="sm"
-        variant="subtle"
-        colorPalette="gray"
-        gap={2}
-        paddingX={2.5}
-        fontWeight="medium"
-      >
-        <ProviderIcon model={rawPrimary} size="comfortable" />
-        <Text textStyle="sm" color="fg.muted" truncate>
-          {primary}
-        </Text>
+        ) : (
+          <Text textStyle="sm" color="fg.muted" truncate>
+            {primary}
+          </Text>
+        )}
+        {overflow > 0 && (
+          <Text
+            as="span"
+            textStyle="2xs"
+            color="fg.subtle"
+            fontWeight="semibold"
+            flexShrink={0}
+          >
+            +{overflow}
+          </Text>
+        )}
       </Badge>
-      {rest.length > 0 && <ExtraModelsBadge models={rest} size="sm" />}
-    </HStack>
+    </FilterChip>
   );
+
+  if (overflow === 0) return chip;
+  return <ModelsTooltip models={row.models}>{chip}</ModelsTooltip>;
 }
 
 export const ModelCell = {

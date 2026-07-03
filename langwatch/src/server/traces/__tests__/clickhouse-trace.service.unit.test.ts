@@ -126,6 +126,7 @@ describe("ClickHouseTraceService", () => {
     it("uses the provided time range to bound the trace summary lookup", async () => {
       const startDate = Date.now() - 3600000;
       const endDate = Date.now();
+      const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
       const summaryRow = makeSummaryRow("trace-1");
       const spanRow = makeSpanRow("trace-1", "span-1");
 
@@ -145,7 +146,7 @@ describe("ClickHouseTraceService", () => {
         "proj_123",
         ["trace-1"],
         protections,
-        { startDate, endDate },
+        { from: startDate, to: endDate },
       );
 
       expect(result).not.toBeNull();
@@ -153,38 +154,32 @@ describe("ClickHouseTraceService", () => {
 
       const summaryCall = mockClickHouseQuery.mock.calls[0]![0];
       expect(summaryCall.query).toContain(
-        "t.OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
+        "t.OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64})",
       );
       expect(summaryCall.query).toContain(
-        "t.OccurredAt <= fromUnixTimestamp64Milli({summaryEndDate:Int64})",
+        "t.OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})",
       );
       expect(summaryCall.query).toContain(
-        "OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
+        "OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64})",
       );
       expect(summaryCall.query).toContain(
-        "OccurredAt <= fromUnixTimestamp64Milli({summaryEndDate:Int64})",
+        "OccurredAt <= fromUnixTimestamp64Milli({sumToMs:Int64})",
       );
-      expect(summaryCall.query_params.summaryStartDate).toBe(startDate);
-      expect(summaryCall.query_params.summaryEndDate).toBe(endDate);
+      expect(summaryCall.query_params.sumFromMs).toBe(startDate - twoDaysMs);
+      expect(summaryCall.query_params.sumToMs).toBe(endDate + twoDaysMs);
     });
 
-    it("batches large selected trace lookups", async () => {
+    it("fetches all selected trace IDs when the query fits", async () => {
       const traceIds = Array.from({ length: 26 }, (_, i) => `trace-${i}`);
       const summaryRows = traceIds.map((id) => makeSummaryRow(id));
       const spanRows = traceIds.map((id, i) => makeSpanRow(id, `span-${i}`));
 
       mockClickHouseQuery
         .mockResolvedValueOnce({
-          json: () => Promise.resolve(summaryRows.slice(0, 25)),
+          json: () => Promise.resolve(summaryRows),
         })
         .mockResolvedValueOnce({
-          json: () => Promise.resolve(spanRows.slice(0, 25)),
-        })
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve(summaryRows.slice(25)),
-        })
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve(spanRows.slice(25)),
+          json: () => Promise.resolve(spanRows),
         });
 
       const service = new ClickHouseTraceService({
@@ -202,10 +197,10 @@ describe("ClickHouseTraceService", () => {
 
       expect(
         mockClickHouseQuery.mock.calls[0]![0].query_params.traceIds,
-      ).toHaveLength(25);
+      ).toHaveLength(26);
       expect(
-        mockClickHouseQuery.mock.calls[2]![0].query_params.traceIds,
-      ).toEqual(["trace-25"]);
+        mockClickHouseQuery.mock.calls[1]![0].query_params.traceIds,
+      ).toHaveLength(26);
     });
 
     it("skips span reads for large selected trace lookups when includeSpans is false", async () => {
@@ -228,7 +223,8 @@ describe("ClickHouseTraceService", () => {
         "proj_123",
         traceIds,
         protections,
-        { startDate, endDate, includeSpans: false },
+        { from: startDate, to: endDate },
+        { includeSpans: false },
       );
 
       expect(result).not.toBeNull();
@@ -246,11 +242,11 @@ describe("ClickHouseTraceService", () => {
         ),
       ).toEqual([25, 25, 25, 25]);
       expect(mockClickHouseQuery.mock.calls[0]![0].query).toContain(
-        "t.OccurredAt >= fromUnixTimestamp64Milli({summaryStartDate:Int64})",
+        "t.OccurredAt >= fromUnixTimestamp64Milli({sumFromMs:Int64})",
       );
       expect(mockClickHouseQuery.mock.calls[0]![0].query_params).toMatchObject({
-        summaryStartDate: startDate,
-        summaryEndDate: endDate,
+        sumFromMs: startDate - 2 * 24 * 60 * 60 * 1000,
+        sumToMs: endDate + 2 * 24 * 60 * 60 * 1000,
       });
     });
   });
@@ -982,6 +978,180 @@ describe("ClickHouseTraceService", () => {
         expect(traces).toHaveLength(1);
         expect(traces[0]!.spans).toHaveLength(1);
         expect(traces[0]!.spans[0]!.span_id).toBe("span-1");
+      });
+    });
+  });
+
+  describe("getTracesWithSpans()", () => {
+    describe("when the join read hits MEMORY_LIMIT_EXCEEDED", () => {
+      it("retries in batches and returns all traces with their spans", async () => {
+        const traceIds = ["trace-0", "trace-1"];
+
+        mockClickHouseQuery
+          // summary query for the full list — OOM
+          .mockRejectedValueOnce(
+            new Error(
+              "Query memory limit exceeded: would use 3.50 GiB, " +
+                "maximum: 3.50 GiB: MEMORY_LIMIT_EXCEEDED",
+            ),
+          )
+          // retry batch (both traces fit in one batch of 25): summary then spans
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(traceIds.map((id) => makeSummaryRow(id))),
+          })
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(traceIds.map((id) => makeSpanRow(id, `${id}-s`))),
+          });
+
+        const service = new ClickHouseTraceService({
+          project: { findUnique: mockPrismaFindUnique },
+        } as never);
+
+        const traces = await service.getTracesWithSpans(
+          "proj_123",
+          traceIds,
+          protections,
+        );
+
+        expect(traces).not.toBeNull();
+        expect(traces!.map((t) => t.trace_id).sort()).toEqual(traceIds);
+        for (const trace of traces!) {
+          expect(trace.spans).toHaveLength(1);
+        }
+      });
+
+      it("splits into 25-trace batches when retrying with >25 traces", async () => {
+        const traceIds = Array.from({ length: 30 }, (_, i) => `trace-${i}`);
+
+        mockClickHouseQuery
+          // full-list summary — OOM
+          .mockRejectedValueOnce(new Error("MEMORY_LIMIT_EXCEEDED"))
+          // batch 1: summary (0-24) then spans
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(0, 25).map((id) => makeSummaryRow(id)),
+              ),
+          })
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(0, 25).map((id) => makeSpanRow(id, `${id}-s`)),
+              ),
+          })
+          // batch 2: summary (25-29) then spans
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(25).map((id) => makeSummaryRow(id)),
+              ),
+          })
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(25).map((id) => makeSpanRow(id, `${id}-s`)),
+              ),
+          });
+
+        const service = new ClickHouseTraceService({
+          project: { findUnique: mockPrismaFindUnique },
+        } as never);
+
+        const traces = await service.getTracesWithSpans(
+          "proj_123",
+          traceIds,
+          protections,
+        );
+
+        expect(traces).toHaveLength(30);
+        // call 0 = OOM, 1 = summary batch1, 2 = spans batch1, 3 = summary batch2
+        const batch1Summary = mockClickHouseQuery.mock.calls[1]![0];
+        const batch2Summary = mockClickHouseQuery.mock.calls[3]![0];
+        expect(batch1Summary.query_params.traceIds).toHaveLength(25);
+        expect(batch2Summary.query_params.traceIds).toHaveLength(5);
+      });
+
+      it("does not batch-retry non-OOM errors", async () => {
+        mockClickHouseQuery.mockRejectedValue(
+          new Error("SYNTAX_ERROR: bad query"),
+        );
+
+        const service = new ClickHouseTraceService({
+          project: { findUnique: mockPrismaFindUnique },
+        } as never);
+
+        await expect(
+          service.getTracesWithSpans("proj_123", ["trace-0"], protections),
+        ).rejects.toThrow();
+        // The single failed query is not followed by per-batch retries.
+        expect(mockClickHouseQuery).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("when an occurredAt range is supplied", () => {
+      const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+
+      it("bounds the summary read to the OccurredAt window (±2 days)", async () => {
+        mockClickHouseQuery
+          .mockResolvedValueOnce({
+            json: () => Promise.resolve([makeSummaryRow("trace-0")]),
+          })
+          .mockResolvedValueOnce({
+            json: () => Promise.resolve([makeSpanRow("trace-0", "trace-0-s")]),
+          });
+
+        const service = new ClickHouseTraceService({
+          project: { findUnique: mockPrismaFindUnique },
+        } as never);
+
+        await service.getTracesWithSpans("proj_123", ["trace-0"], protections, {
+          from: 1_000_000,
+          to: 2_000_000,
+        });
+
+        const summaryCall = mockClickHouseQuery.mock.calls[0]![0];
+        // Both bounds present in both the outer scan and the inner dedup
+        // subquery (a dropped upper bound would leave the read half-open).
+        expect(
+          summaryCall.query.match(/OccurredAt >= fromUnixTimestamp64Milli/g) ??
+            [],
+        ).toHaveLength(2);
+        expect(
+          summaryCall.query.match(/OccurredAt <= fromUnixTimestamp64Milli/g) ??
+            [],
+        ).toHaveLength(2);
+        expect(summaryCall.query_params.sumFromMs).toBe(
+          1_000_000 - TWO_DAYS_MS,
+        );
+        expect(summaryCall.query_params.sumToMs).toBe(2_000_000 + TWO_DAYS_MS);
+      });
+    });
+
+    describe("when no occurredAt range is supplied", () => {
+      it("omits the OccurredAt window and keeps the unbounded summary read", async () => {
+        mockClickHouseQuery
+          .mockResolvedValueOnce({
+            json: () => Promise.resolve([makeSummaryRow("trace-0")]),
+          })
+          .mockResolvedValueOnce({
+            json: () => Promise.resolve([makeSpanRow("trace-0", "trace-0-s")]),
+          });
+
+        const service = new ClickHouseTraceService({
+          project: { findUnique: mockPrismaFindUnique },
+        } as never);
+
+        await service.getTracesWithSpans("proj_123", ["trace-0"], protections);
+
+        const summaryCall = mockClickHouseQuery.mock.calls[0]![0];
+        // No OccurredAt predicate inlined at all, and no window params.
+        expect(summaryCall.query).not.toContain("OccurredAt >=");
+        expect(summaryCall.query).not.toContain("OccurredAt <=");
+        expect(summaryCall.query).not.toContain("sumFromMs");
+        expect(summaryCall.query_params.sumFromMs).toBeUndefined();
+        expect(summaryCall.query_params.sumToMs).toBeUndefined();
       });
     });
   });

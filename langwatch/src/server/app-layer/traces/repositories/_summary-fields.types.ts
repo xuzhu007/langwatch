@@ -27,6 +27,7 @@ export interface TraceSummaryFieldsBase {
   ErrorMessage: string | null;
   Models: string[];
   TotalCost: number | null;
+  NonBilledCost: number | null;
   TokensEstimated: boolean;
   TotalPromptTokenCount: number | null;
   TotalCompletionTokenCount: number | null;
@@ -46,4 +47,12 @@ export interface TraceSummaryFieldsBase {
   TopicId: string | null;
   SubTopicId: string | null;
   AnnotationIds: string[];
+  /**
+   * Stored payload size of the trace in bytes — the MATERIALIZED
+   * `_size_bytes` column (CH-native `byteSize(...)`; see migration 00032).
+   * SELECT-only: never written in INSERTs. Optional because only the list
+   * read path projects it (`_size_bytes AS SizeBytes`); the single-trace
+   * summary read leaves it absent.
+   */
+  SizeBytes?: number;
 }

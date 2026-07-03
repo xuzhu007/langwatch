@@ -5,13 +5,19 @@ import {
   lLMSpanSchema,
   rAGChunkSchema,
   rAGSpanSchema,
-} from "../tracer/types.generated";
+} from "../tracer/types";
 
 // Strict type for records from database - ID is always present
-export type DatasetRecordEntry = { id: string } & Record<string, any>;
+export const datasetRecordEntrySchema = z
+  .object({ id: z.string() })
+  .and(z.record(z.string(), z.any()));
+export type DatasetRecordEntry = z.infer<typeof datasetRecordEntrySchema>;
 
 // Input type for creating new records - ID is optional (backend generates with nanoid)
-export type DatasetRecordInput = { id?: string } & Record<string, any>;
+export const datasetRecordInputSchema = z
+  .object({ id: z.string().optional() })
+  .and(z.record(z.string(), z.any()));
+export type DatasetRecordInput = z.infer<typeof datasetRecordInputSchema>;
 
 // TODO: fix this list being repeated 3 times
 export const datasetColumnTypeSchema = z.union([
@@ -29,19 +35,7 @@ export const datasetColumnTypeSchema = z.union([
   z.literal("image"),
 ]);
 
-export type DatasetColumnType =
-  | "string"
-  | "boolean"
-  | "number"
-  | "date"
-  | "list"
-  | "json"
-  | "spans"
-  | "rag_contexts"
-  | "chat_messages"
-  | "annotations"
-  | "evaluations"
-  | "image";
+export type DatasetColumnType = z.infer<typeof datasetColumnTypeSchema>;
 
 export const DATASET_COLUMN_TYPES = [
   "string",
@@ -58,15 +52,62 @@ export const DATASET_COLUMN_TYPES = [
   "image",
 ] as const;
 
-export type DatasetColumns = { name: string; type: DatasetColumnType }[];
+export const datasetColumnsSchema = z.array(
+  z.object({ name: z.string(), type: datasetColumnTypeSchema }),
+);
+export type DatasetColumns = z.infer<typeof datasetColumnsSchema>;
 
-export type DatasetRecordForm = {
-  /**
-   * @minLength 1
-   */
-  name: string;
-  columnTypes: DatasetColumns;
-};
+/**
+ * Upload-confirm columns (ADR-032 v19+). Each confirm-step column carries an
+ * immutable `sourceHeader` — the canonical (reserved-renamed / deduped) file
+ * header it was parsed from — so the normalize step binds each file header to
+ * its confirmed `name`+`type` BY HEADER, not by array position. That is what
+ * lets the confirm UI drag-reorder and rename columns without scrambling the
+ * data (positional binding silently maps values to the wrong column). The
+ * field is transient: it rides the create call onto the dataset row, then
+ * normalize strips it and persists a clean `DatasetColumns` in the user's
+ * chosen order.
+ */
+export const datasetConfirmColumnsSchema = z
+  .array(
+    z.object({
+      name: z.string(),
+      type: datasetColumnTypeSchema,
+      sourceHeader: z.string(),
+    }),
+  )
+  // Names become the stored record keys (normalize writes `out[target.name]`),
+  // so a blank name yields an `""`-keyed column and a duplicated name collapses
+  // two columns onto one key — the second silently overwriting the first in
+  // every row. Reject both at the boundary rather than persist a corrupt
+  // dataset (the confirm UI blocks the same cases before upload).
+  .superRefine((columns, ctx) => {
+    const seen = new Set<string>();
+    columns.forEach((column, index) => {
+      if (column.name.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "column name must not be blank",
+          path: [index, "name"],
+        });
+      }
+      if (seen.has(column.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate column name: ${column.name}`,
+          path: [index, "name"],
+        });
+      }
+      seen.add(column.name);
+    });
+  });
+export type DatasetConfirmColumns = z.infer<typeof datasetConfirmColumnsSchema>;
+
+export const datasetRecordFormSchema = z.object({
+  name: z.string().min(1),
+  columnTypes: datasetColumnsSchema,
+});
+export type DatasetRecordForm = z.infer<typeof datasetRecordFormSchema>;
 
 export const annotationScoreSchema = z.object({
   label: z.string().optional(),

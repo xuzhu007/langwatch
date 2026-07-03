@@ -2,15 +2,22 @@ import {
   Box,
   Button,
   Collapsible,
+  chakra,
   HStack,
   Icon,
   Text,
   VStack,
 } from "@chakra-ui/react";
-import { ChevronDown, ChevronUp, GripVertical, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  GripVertical,
+  List,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 import type React from "react";
-import { useState } from "react";
-import { orGroupColor } from "./orGroupPalette";
+import { memo, useState } from "react";
 
 interface SidebarSectionProps {
   title: string;
@@ -44,34 +51,56 @@ interface SidebarSectionProps {
    */
   onShiftToggle?: (nextOpen: boolean) => void;
   /**
-   * Set when this section's facet participates in a cross-facet OR
-   * group. Renders an "OR · linked" pill in the header and a coloured
-   * left-border on the section background so users can tell at a
-   * glance that this row's value is OR-bound to other sections rather
-   * than independently AND-toggleable.
+   * When provided, a small filter toggle renders just before the chevron
+   * in the section header. `open` reflects whether the typed-value filter
+   * is currently revealed. Clicks call `onToggle`. The glyph is a
+   * list-filter funnel (not a magnifying glass) so it reads as "narrow
+   * THESE values" rather than the global search bar at the top of the
+   * page. If the section is collapsed when the user opens it, we expand
+   * first so the input is actually visible — "filter the values"
+   * implicitly means "look at the values."
    */
-  orGroupId?: string;
+  searchToggleProps?: {
+    open: boolean;
+    onToggle: () => void;
+  };
   /**
-   * Other field names in the same OR group. Surfaced in the OR pill
-   * as "OR · model · service" so users know exactly which sections
-   * are linked without scanning the rail for matching colours.
+   * When provided, a small toggle renders in the header (beside search /
+   * chevron) that flips a numeric facet between its slider ("range") and its
+   * tick-list ("discrete") presentation. Only set on discrete-eligible numeric
+   * facets — categorical facets and non-eligible ranges omit it.
    */
-  orPeers?: readonly string[];
+  modeToggleProps?: {
+    mode: "range" | "discrete";
+    onToggle: () => void;
+  };
   /**
    * Content rendered between the header and the collapsible — always
    * visible, even when the section is collapsed. Used by FacetSection
-   * to keep active values (and OR-group members) visible at all
-   * times so the connector line and at-a-glance read of "what's
-   * filtered" never depend on the section being expanded.
+   * to keep active values visible at all times so the at-a-glance read
+   * of "what's filtered" never depends on the section being expanded.
    */
   pinnedContent?: React.ReactNode;
   children: React.ReactNode;
 }
 
-const DRAG_HANDLE_HIT_AREA = "16px";
-const DRAG_HANDLE_GLYPH = "12px";
+// The grip lives in the section's left padding gutter as an absolutely
+// positioned overlay rather than as a leading in-flow element. In flow it
+// pushed the header's icon + title ~20px to the right of the value rows
+// beneath (which start at their status-dot), so each section read as two
+// misaligned columns. Pulling it into the gutter lets the header icon line up
+// with the value dots and the header title line up with the value-row text —
+// the section then reads as one cohesive left-aligned block (T20). The hit
+// area matches the 8px gutter (paddingX={2}) so the overlay never spills past
+// the section's left edge into the `paint`-contained sortable wrapper.
+const DRAG_HANDLE_HIT_AREA = "8px";
+const DRAG_HANDLE_GLYPH = "10px";
+// Negative inline-start that seats the absolute grip in the left padding
+// gutter: the header HStack starts at the section's content edge, so −8px
+// places the grip's right edge flush against it (= the gutter width).
+const DRAG_HANDLE_GUTTER_OFFSET = "-8px";
 
-export const SidebarSection: React.FC<SidebarSectionProps> = ({
+const SidebarSectionInner: React.FC<SidebarSectionProps> = ({
   title,
   icon: SectionIcon,
   open,
@@ -83,17 +112,11 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
   onHide,
   hideLabel = "Hide section",
   onShiftToggle,
-  orGroupId,
-  orPeers,
+  searchToggleProps,
+  modeToggleProps,
   pinnedContent,
   children,
 }) => {
-  const orPalette = orGroupId ? orGroupColor(orGroupId) : undefined;
-  const peerLabel =
-    orPeers && orPeers.length > 0
-      ? orPeers.slice(0, 3).join(" · ") +
-        (orPeers.length > 3 ? ` +${orPeers.length - 3}` : "")
-      : null;
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = open !== undefined;
   const effectiveOpen = isControlled ? open : internalOpen;
@@ -129,37 +152,25 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
     >
       <VStack
         align="stretch"
-        paddingX={3}
+        paddingX={2}
         paddingY={2}
         gap={1}
         role="group"
         data-group
-        // When this section participates in a cross-facet OR group,
-        // anchor a 3px coloured rail on the left edge so the section
-        // visually links to its peers in the same group. Painting it
-        // as a pseudo-rail (insetInlineStart border) instead of a real
-        // border keeps the section's hit-rect unchanged.
-        position="relative"
-        _before={
-          orPalette
-            ? {
-                content: '""',
-                position: "absolute",
-                top: "6px",
-                bottom: "6px",
-                left: 0,
-                width: "3px",
-                borderRadius: "0 2px 2px 0",
-                bg: `${orPalette}.solid`,
-                opacity: 0.85,
-              }
-            : undefined
-        }
       >
-        <HStack gap={1} width="full" align="center">
+        {/* position:relative anchors the absolute grip below to the header
+            row (so it stays vertically centred on the title, not the whole
+            expanded section). The grip is pulled into the left gutter so the
+            in-flow header content (icon + title) starts at the section's
+            content edge, aligning with the value rows beneath (T20). */}
+        <HStack gap={1} width="full" align="center" position="relative">
           {dragHandleProps && (
             <Box
               {...dragHandleProps}
+              position="absolute"
+              insetInlineStart={DRAG_HANDLE_GUTTER_OFFSET}
+              top="50%"
+              transform="translateY(-50%)"
               cursor="grab"
               color="fg.subtle"
               opacity={0.4}
@@ -195,7 +206,8 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
               variant="plain"
               size="sm"
               flex={1}
-              justifyContent="space-between"
+              minWidth={0}
+              justifyContent="flex-start"
               paddingX={0}
               height="auto"
               minHeight="unset"
@@ -204,10 +216,11 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
               onClick={handleTriggerClick}
               onKeyDown={handleTriggerKeyDown}
             >
-              <HStack gap={1.5} paddingRight="5px">
+              <HStack gap={1.5} minWidth={0} width="full" flex={1}>
                 {SectionIcon && (
                   <Icon
                     boxSize="12px"
+                    flexShrink={0}
                     color={hasActive ? "fg" : "fg.subtle"}
                     _hover={{ fill: "fg" }}
                   >
@@ -219,123 +232,181 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
                   fontWeight={hasActive ? "600" : "500"}
                   color={hasActive ? "fg" : "fg.subtle"}
                   textTransform="uppercase"
-                  letterSpacing="0.08em"
+                  letterSpacing="0.02em"
                   transition="color 100ms ease"
+                  // The Chakra Button recipe sets `text-align: center`, which
+                  // the title inherits. With `flex={1}` the title box spans the
+                  // whole header, so the centred text floated to the middle of
+                  // the row while the value dots/text below stayed left-aligned
+                  // — the section read as two misaligned columns. Pin the title
+                  // to the inline start so it lines up with the value rows (T20).
+                  textAlign="start"
                   _hover={{ color: "fg" }}
+                  // flex+minWidth=0 lets the title claim all the Button's
+                  // free width before `truncate` engages; without flex it
+                  // shrinks to min-content and ellipsises far too early
+                  // (e.g. "TRACE ATTRIBUT…" at the default 220px rail).
+                  // The active badge after it stays at its natural size
+                  // (flexShrink=0) so only the title gives.
+                  flex={1}
+                  minWidth={0}
+                  truncate
                 >
                   {title}
                 </Text>
-                {!effectiveOpen &&
-                  valueCount !== undefined &&
-                  valueCount > 0 && (
-                    <Text
-                      textStyle="2xs"
-                      color="fg.subtle"
-                      _hover={{ color: "fg" }}
-                    >
-                      {valueCount}
-                    </Text>
-                  )}
-                {orPalette && (
-                  <Box
-                    as="span"
-                    display="inline-flex"
-                    alignItems="center"
-                    gap="3px"
-                    bg={`${orPalette}.subtle`}
-                    color={`${orPalette}.fg`}
-                    borderWidth="1px"
-                    borderColor={`${orPalette}.muted`}
-                    paddingX="6px"
-                    paddingY="0"
-                    borderRadius="4px"
-                    fontSize="2xs"
-                    fontWeight="700"
-                    letterSpacing="0.04em"
-                    title={
-                      peerLabel
-                        ? `OR-linked with: ${peerLabel}`
-                        : "This facet is OR-linked"
-                    }
-                  >
-                    OR
-                    {peerLabel && (
-                      <Box
-                        as="span"
-                        fontWeight="500"
-                        textTransform="lowercase"
-                        opacity={0.85}
-                      >
-                        · {peerLabel}
-                      </Box>
-                    )}
-                  </Box>
-                )}
-                {activeIndicator}
               </HStack>
-              <Icon
-                color="fg.subtle"
-                boxSize="12px"
-                mr={2}
-                _hover={{ fill: "fg" }}
-              >
-                {effectiveOpen ? <ChevronUp /> : <ChevronDown />}
-              </Icon>
             </Button>
           </Collapsible.Trigger>
-          {onHide && (
-            // Hover-revealed × removes this section from the user's
-            // sidebar (writes `explicitlyHidden` in
-            // facetVisibilityStore). Renders as a SIBLING of the
-            // Collapsible.Trigger button instead of nested inside it
-            // — nested <button>s are invalid HTML and React flags
-            // them as hydration errors. The hover-reveal still works
-            // because the visibility cue is on the parent `[role=group]`
-            // VStack, which is `data-group`'d.
+          {/* Selection indicator ("any of" hint) — rendered as a sibling of
+              the value-count / search / chevron so all header accessories
+              form one tidy right-aligned column. Previously it lived inside
+              the trigger right after the title, where the title's flex-grow
+              shoved it into the middle of the header (it read as a stray
+              badge floating in dead space). */}
+          {activeIndicator}
+          {/* Value-count slot — shown ONLY while the section is COLLAPSED,
+              where it's the only hint of how many values the facet holds. When
+              the section is expanded the values are right there, so the count
+              is redundant — and a present-value tally like "1" sitting next to
+              a list of five rows read as confusing clutter (it's the count of
+              values with matches, not the row count). Right-aligned so the
+              digits and the chevron form a clean vertical column. */}
+          {!effectiveOpen && valueCount !== undefined && valueCount > 0 && (
             <Box
-              as="button"
-              aria-label={hideLabel}
-              title={hideLabel}
-              width="16px"
-              height="16px"
-              display="flex"
-              alignItems="center"
-              justifyContent="center"
-              borderRadius="sm"
-              color="fg.subtle"
+              minWidth="20px"
+              textAlign="right"
               flexShrink={0}
-              opacity={0}
-              _groupHover={{ opacity: 0.55 }}
-              // Keyboard users tab onto the hide button just like mouse
-              // users hover the group — surface the affordance the same
-              // way for both so the section-hide action isn't mouse-only.
-              _groupFocusWithin={{ opacity: 0.55 }}
-              _hover={{ opacity: 1, color: "fg", bg: "bg.muted" }}
-              _focusVisible={{
-                opacity: 1,
-                color: "fg",
-                bg: "bg.muted",
-                outline: "2px solid",
-                outlineColor: "blue.focusRing",
-                outlineOffset: "1px",
-              }}
-              transition="opacity 120ms ease, color 120ms ease"
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onHide();
-              }}
+              color="fg.subtle"
             >
-              <Icon boxSize="10px">
-                <X />
-              </Icon>
+              <Text textStyle="2xs">{valueCount}</Text>
             </Box>
           )}
+          {/* The chevron and search toggle render as siblings of the
+              Collapsible.Trigger (not inside it) so the search button
+              can sit between them without its clicks bubbling through
+              to collapse the section. The chevron is a small button
+              that mirrors the trigger's open state and forwards to
+              the same handler.
+
+              Both occupy a fixed 16px slot — the search slot reserves
+              its width even when the section has no items (no toggle
+              rendered) so the chevron position stays consistent across
+              rows whether or not a search toggle is present. */}
+          <Box width="16px" height="16px" flexShrink={0}>
+            {searchToggleProps && (
+              <chakra.button
+                type="button"
+                aria-label={
+                  searchToggleProps.open
+                    ? `Hide ${title} value search`
+                    : `Search ${title} values`
+                }
+                aria-pressed={searchToggleProps.open}
+                width="16px"
+                height="16px"
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                borderRadius="sm"
+                color={searchToggleProps.open ? "fg" : "fg.subtle"}
+                bg={searchToggleProps.open ? "bg.muted" : undefined}
+                cursor="pointer"
+                _hover={{ color: "fg", bg: "bg.muted" }}
+                transition="background 100ms ease, color 100ms ease"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  // Pressing search on a collapsed section also expands
+                  // it — otherwise the input toggles open behind a
+                  // closed Collapsible and the user types into invisible
+                  // chrome. We only auto-expand on the "opening" press;
+                  // once search is up, a second press hides the input
+                  // but leaves the section state alone (closing the
+                  // section is the chevron's job).
+                  if (!searchToggleProps.open && !effectiveOpen) {
+                    handleOpenChange(true);
+                  }
+                  searchToggleProps.onToggle();
+                }}
+              >
+                <Icon boxSize="11px">
+                  <Search />
+                </Icon>
+              </chakra.button>
+            )}
+          </Box>
+          {/* Numeric facets get a presentation toggle (slider ↔ tick-list)
+              between search and the chevron. The glyph shows the OTHER mode —
+              what you'd switch to. */}
+          {modeToggleProps && (
+            <Box width="16px" height="16px" flexShrink={0}>
+              <chakra.button
+                type="button"
+                aria-label={
+                  modeToggleProps.mode === "discrete"
+                    ? `Show ${title} as a range slider`
+                    : `Show ${title} as a value list`
+                }
+                aria-pressed={modeToggleProps.mode === "discrete"}
+                width="16px"
+                height="16px"
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                borderRadius="sm"
+                color="fg.subtle"
+                cursor="pointer"
+                _hover={{ color: "fg", bg: "bg.muted" }}
+                transition="background 100ms ease, color 100ms ease"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  modeToggleProps.onToggle();
+                }}
+              >
+                <Icon boxSize="11px">
+                  {modeToggleProps.mode === "discrete" ? (
+                    <SlidersHorizontal />
+                  ) : (
+                    <List />
+                  )}
+                </Icon>
+              </chakra.button>
+            </Box>
+          )}
+          <chakra.button
+            type="button"
+            aria-label={effectiveOpen ? `Collapse ${title}` : `Expand ${title}`}
+            width="16px"
+            height="16px"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            color="fg.subtle"
+            flexShrink={0}
+            cursor="pointer"
+            _hover={{ color: "fg" }}
+            transition="color 100ms ease"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              handleOpenChange(!effectiveOpen);
+            }}
+          >
+            <Icon boxSize="12px">
+              {effectiveOpen ? <ChevronUp /> : <ChevronDown />}
+            </Icon>
+          </chakra.button>
+          {/* Per-section hover-X retired in Round 3 — removing a section
+              is now done exclusively from the FacetManagerPopover.
+              The inline X cluttered every section header for an action
+              users rarely took and made the row feel "destructable"
+              when most clicks were just trying to collapse / expand
+              the section. `onHide` is still threaded through so the
+              popover can drive the same store action. */}
         </HStack>
 
-        {pinnedContent && (
-          <Box marginTop={1}>{pinnedContent}</Box>
-        )}
+        {pinnedContent && <Box marginTop={1}>{pinnedContent}</Box>}
 
         <Collapsible.Content>
           <Box marginTop={pinnedContent ? 0 : 1}>{children}</Box>
@@ -344,3 +415,5 @@ export const SidebarSection: React.FC<SidebarSectionProps> = ({
     </Collapsible.Root>
   );
 };
+
+export const SidebarSection = memo(SidebarSectionInner);

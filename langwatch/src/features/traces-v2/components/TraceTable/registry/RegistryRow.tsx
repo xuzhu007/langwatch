@@ -2,6 +2,7 @@ import type { Row } from "@tanstack/react-table";
 import React, { useMemo } from "react";
 import { useDensityTokens } from "../../../hooks/useDensityTokens";
 import { useDensityStore } from "../../../stores/densityStore";
+import { useRowPulseStore } from "../../../stores/rowPulseStore";
 import type { TraceStatus } from "../../../types/trace";
 import {
   SkeletonAddonRow,
@@ -33,6 +34,16 @@ interface RegistryRowProps<TRow> {
   onSelect?: () => void;
   onTogglePeek?: () => void;
   onToggleExpand?: () => void;
+  /**
+   * When set and the row is expanded, paint the main row with this recessed
+   * surface so it reads as part of the same block as its expanded addon
+   * rows (conversation turns) instead of staying transparent and only
+   * colouring on hover. `surface` is the Chakra token for the normal cells;
+   * `firstCell` is the same colour as a raw CSS var, applied inline to the
+   * sticky first column whose background the table shell otherwise forces.
+   * Split hover scope only.
+   */
+  expandedBg?: { surface: string; firstCell: string };
   /**
    * When true, render the same row + addon tree but swap every cell's
    * content for skeleton bars. The real cells / addons are bypassed
@@ -71,6 +82,7 @@ function RegistryRowComponent<TRow>({
   onSelect,
   onTogglePeek,
   onToggleExpand,
+  expandedBg,
   isLoading = false,
   isFirstOfErrorRun = false,
   ref,
@@ -78,6 +90,9 @@ function RegistryRowComponent<TRow>({
 }: RegistryRowProps<TRow>): React.ReactElement {
   const tokens = useDensityTokens();
   const densityMode = useDensityStore((s) => s.density);
+  const isPulsing = useRowPulseStore(
+    (s) => !isLoading && !!rowDomId && s.pulsingIds.has(rowDomId),
+  );
 
   const variant = rowVariantFor({ isSelected, status });
   const style = ROW_STYLES[variant];
@@ -151,19 +166,37 @@ function RegistryRowComponent<TRow>({
     }
   };
 
+  // Expanded split-scope rows (conversation / group) paint a recessed
+  // surface so the header row reads as part of the same block as its
+  // expanded addon rows, and keeps that colour instead of only flashing on
+  // direct hover.
+  const showExpandedBg = hoverScope === "split" && isExpanded && !!expandedBg;
+
   const mainRow = (
     <Tr
       outline={isFocused ? "1px solid" : undefined}
       outlineColor={isFocused ? "blue.fg" : undefined}
       cursor={onSelect || onToggleExpand ? "pointer" : "default"}
       onClick={hoverScope === "split" ? handleRowClick : undefined}
-      bg={hoverScope === "split" ? style.bg : undefined}
+      bg={
+        hoverScope === "split"
+          ? showExpandedBg
+            ? expandedBg!.surface
+            : style.bg
+          : undefined
+      }
       // Reveal opt-in subdued content (e.g. trace ID in TraceCell)
       // only while the row is hovered. Children mark themselves with
       // `data-row-hover-reveal` and start at opacity 0 — the CSS rule
       // here lifts them to 1 when the parent row is hovered.
       css={{ "&:hover [data-row-hover-reveal]": { opacity: 1 } }}
-      _hover={hoverScope === "split" ? { bg: style.hoverBg } : undefined}
+      _hover={
+        hoverScope === "split"
+          ? showExpandedBg
+            ? undefined
+            : { bg: style.hoverBg }
+          : undefined
+      }
     >
       {visibleCells.map((cell, i) => {
         const isSelectCell = cell.column.id === SELECT_COLUMN_ID;
@@ -174,6 +207,15 @@ function RegistryRowComponent<TRow>({
           <Td
             key={cell.id}
             bg={hoverScope === "unified" ? style.bg : undefined}
+            // The sticky first column's background is forced by a high-
+            // specificity shell rule that a token prop can't beat, so the
+            // expanded recessed surface goes on inline to keep that cell in
+            // step with the rest of the header row.
+            style={
+              i === 0 && showExpandedBg
+                ? { backgroundColor: expandedBg!.firstCell }
+                : undefined
+            }
             // When this cell rowSpans into the IO preview row below, it
             // needs to paint the bottom border that the IO preview row
             // would otherwise own on this column slot — the addon row
@@ -318,6 +360,7 @@ function RegistryRowComponent<TRow>({
         onClick={onSelect}
         traceId={rowDomId}
         isNew={isNew}
+        isPulsing={isPulsing}
       >
         {mainRow}
         {addonRows}
@@ -345,6 +388,11 @@ function areRegistryRowPropsEqual<TRow>(
   // that are recreated each render but call into stable handlers, so their
   // identity doesn't affect what the row paints. Everything that does affect
   // paint is explicitly compared.
+  //
+  // NOTE: `isPulsing` is intentionally excluded here — it is derived
+  // inside the component via `useRowPulseStore` so changes to the store
+  // already trigger a re-render through React's subscription machinery.
+  // Including it in the props equality check would be redundant.
   return (
     prev.tanstackRow.original === next.tanstackRow.original &&
     prev.tanstackRow.id === next.tanstackRow.id &&
@@ -355,6 +403,7 @@ function areRegistryRowPropsEqual<TRow>(
     prev.isSelected === next.isSelected &&
     prev.isFocused === next.isFocused &&
     prev.isExpanded === next.isExpanded &&
+    prev.expandedBg === next.expandedBg &&
     prev.isNew === next.isNew &&
     prev.rowDomId === next.rowDomId &&
     prev.isLoading === next.isLoading &&

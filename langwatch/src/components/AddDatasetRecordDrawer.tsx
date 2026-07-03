@@ -348,6 +348,7 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
 
   // Scroll position tracking
   const scrollRef = useRef<HTMLDivElement>(null);
+  const editorPortalRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(false);
 
   // Update scroll position state
@@ -369,6 +370,15 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
       onOpenChange={({ open }) => {
         if (!open) {
           handleOnClose();
+        }
+      }}
+      onEscapeKeyDown={(e) => {
+        // Escape while the floating cell editor is open should only close
+        // the editor (its own handler), never the whole drawer.
+        if (
+          editorPortalRef.current?.querySelector("[data-floating-cell-editor]")
+        ) {
+          e.preventDefault();
         }
       }}
       preventScroll={true}
@@ -396,7 +406,7 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
             </Text>
           </HStack>
         </Drawer.Header>
-        <Drawer.Body overflow="visible" paddingX={0}>
+        <Drawer.Body overflow="visible" paddingX={0} ref={editorPortalRef}>
           {/* eslint-disable-next-line @typescript-eslint/no-misused-promises */}
           <form onSubmit={handleSubmit(onSubmit)}>
             <VStack paddingX={6}>
@@ -415,6 +425,7 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
                   selectedDataset={selectedDataset}
                   onEditColumns={editDataset.onOpen}
                   onRowDataChange={setRowDataFromDataset}
+                  editorPortalRef={editorPortalRef}
                   setDatasetTriggerMapping={setTraceMappingOverride}
                 />
               )}

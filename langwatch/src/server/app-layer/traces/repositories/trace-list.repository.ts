@@ -8,7 +8,10 @@ export type TraceListSortColumn =
   | "TotalTokens"
   | "TimeToFirstTokenMs"
   | "TotalPromptTokenCount"
-  | "TotalCompletionTokenCount";
+  | "TotalCompletionTokenCount"
+  // MATERIALIZED `_size_bytes` column (see migration 00032). SELECT/ORDER BY
+  // only — never inserted.
+  | "_size_bytes";
 
 export interface TraceListSort {
   column: TraceListSortColumn;
@@ -34,9 +37,46 @@ export interface FacetCountResult {
   values: Record<string, number>;
 }
 
+/**
+ * Optional per-value aggregates the evaluator facet attaches alongside
+ * its row counts so the sidebar drilldown can render verdict pills and
+ * a score range slider inline without firing a second query per
+ * evaluator. Other facets leave this absent. The shape is intentionally
+ * generic ("aggregates") so future facets that want their own
+ * per-value tallies can reuse the same plumbing.
+ */
+export interface FacetValueAggregates {
+  passedCount: number;
+  failedCount: number;
+  erroredCount: number;
+  scoreMin: number | null;
+  scoreMax: number | null;
+  hasScore: boolean;
+  /** Distinct non-null score values — lets the drilldown suppress a score
+   *  slider that is degenerate (constant, or binary 0/1 mirroring pass/fail). */
+  distinctScores: number;
+  hasLabel: boolean;
+  /** Top distinct emitted-label values + counts (capped server-side). Drives
+   *  the drilldown's clickable label-filter rows. Absent when none emitted. */
+  labelValues?: { value: string; count: number }[];
+}
+
 export interface CategoricalFacetResult {
-  values: { value: string; label?: string; count: number }[];
+  values: {
+    value: string;
+    label?: string;
+    count: number;
+    aggregates?: FacetValueAggregates;
+  }[];
   totalDistinct: number;
+}
+
+export interface DiscreteFacetResult {
+  /** Distinct integer values present, ascending, capped by the caller's limit. */
+  values: { value: number; count: number }[];
+  /** True distinct count (independent of the value cap) — the sidebar uses
+   *  this to fall back to the slider above the discrete threshold. */
+  distinctCount: number;
 }
 
 export type FacetTableName =
@@ -105,6 +145,21 @@ export interface TraceListRepository {
   }): Promise<{ min: number; max: number }>;
 
   /**
+   * Distinct integer values + counts for a discrete range facet (one declared
+   * `isDiscrete: true` on its `RangeFacetDef`), ascending, capped at `limit`.
+   * `distinctCount` is exact regardless of the cap so the sidebar can fall back
+   * to the slider once the distinct values exceed its threshold.
+   */
+  findDiscreteValues(params: {
+    tenantId: string;
+    timeRange: { from: number; to: number; live?: boolean };
+    table: FacetTableName;
+    timeColumn: string;
+    column: string;
+    limit: number;
+  }): Promise<DiscreteFacetResult>;
+
+  /**
    * Compute multiple categorical and range facets over the same table scan.
    * Categoricals share a single arrayJoin pass; ranges share a single agg pass.
    * Used by `discover` to collapse ~25 parallel queries into ~2 per table.
@@ -158,6 +213,9 @@ export class NullTraceListRepository implements TraceListRepository {
   }
   async findRangeStatsForTable(): Promise<{ min: number; max: number }> {
     return { min: 0, max: 0 };
+  }
+  async findDiscreteValues(): Promise<DiscreteFacetResult> {
+    return { values: [], distinctCount: 0 };
   }
   async findBatchedFacets(): Promise<BatchedFacetResult> {
     return { categoricals: {}, ranges: {} };

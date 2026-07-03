@@ -7,7 +7,14 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   LuCheck,
   LuCircleAlert,
@@ -19,21 +26,22 @@ import {
 } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
 import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
-import type { FieldMapping as UIFieldMapping } from "~/components/variables";
+import { useDrawer } from "~/hooks/useDrawer";
 import { copyToClipboard } from "~/utils/clipboard";
+import { parseEvaluationResult } from "~/utils/evaluationResults";
 import { parseLLMError } from "~/utils/formatLLMError";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
-import { setFlowCallbacks, useDrawer } from "~/hooks/useDrawer";
 import { useEvaluationsV3Store } from "../../hooks/useEvaluationsV3Store";
+import { useCodeEvaluatorIds } from "../../hooks/useEvaluatorName";
+import { useOpenEvaluatorEditor } from "../../hooks/useOpenEvaluatorEditor";
 import { useTargetName } from "../../hooks/useTargetName";
 import type { EvaluatorConfig, TargetConfig } from "../../types";
-import { formatLatency } from "../../utils/computeAggregates";
 import {
-  convertFromUIMapping,
-  convertToUIMapping,
-} from "../../utils/fieldMappingConverters";
-import { createEvaluatorEditorCallbacks } from "../../utils/evaluatorEditorCallbacks";
+  formatLatency,
+  normalizePairwiseLabel,
+} from "../../utils/computeAggregates";
 import { evaluatorHasMissingMappings } from "../../utils/mappingValidation";
+import { PairwiseVerdictRow } from "../PairwiseVerdictRow";
 import { EvaluatorChip } from "../TargetSection/EvaluatorChip";
 
 // Max characters to display for performance reasons
@@ -88,23 +96,17 @@ export function TargetCellContent({
 }: TargetCellContentProps) {
   const { openDrawer } = useDrawer();
   const targetName = useTargetName(target);
-  const {
-    evaluators,
-    activeDatasetId,
-    datasets,
-    removeEvaluator,
-    updateEvaluator,
-    setEvaluatorMapping,
-    removeEvaluatorMapping,
-  } = useEvaluationsV3Store((state) => ({
-    evaluators: state.evaluators,
-    activeDatasetId: state.activeDatasetId,
-    datasets: state.datasets,
-    removeEvaluator: state.removeEvaluator,
-    updateEvaluator: state.updateEvaluator,
-    setEvaluatorMapping: state.setEvaluatorMapping,
-    removeEvaluatorMapping: state.removeEvaluatorMapping,
-  }));
+  const openEvaluatorEditor = useOpenEvaluatorEditor();
+  const { evaluators, targets, activeDatasetId, removeEvaluator } =
+    useEvaluationsV3Store((state) => ({
+      evaluators: state.evaluators,
+      targets: state.targets,
+      activeDatasetId: state.activeDatasetId,
+      removeEvaluator: state.removeEvaluator,
+    }));
+
+  // Code evaluators (DB type "code") route their edit flow to the code editor.
+  const codeEvaluatorIds = useCodeEvaluatorIds(evaluators);
 
   // State for expanded output view
   const [isOutputExpanded, setIsOutputExpanded] = useState(false);
@@ -173,86 +175,6 @@ export function TargetCellContent({
     return missing;
   }, [evaluators, activeDatasetId, target.id]);
 
-  // Build the serializable `mappingsConfig` for an evaluator. Stays
-  // serializable because it goes through the drawer's ephemeral complexProps
-  // path (cleared on ErrorBoundary remount — see issue #3087).
-  const buildMappingsConfig = useCallback(
-    (evaluator: EvaluatorConfig) => {
-      // Build available sources
-      const activeDataset = datasets.find((d) => d.id === activeDatasetId);
-      const availableSources = [];
-      if (activeDataset) {
-        availableSources.push({
-          id: activeDataset.id,
-          name: activeDataset.name,
-          type: "dataset" as const,
-          fields: activeDataset.columns.map((col) => ({
-            name: col.name,
-            type: "str" as const,
-          })),
-        });
-      }
-      // Use local config outputs if available (unsaved changes), fallback to saved outputs
-      const effectiveOutputs = target.localPromptConfig?.outputs ?? target.outputs;
-      availableSources.push({
-        id: target.id,
-        name: targetName,
-        type: "signature" as const,
-        fields: effectiveOutputs.map((o) => ({
-          name: o.identifier,
-          type: o.type as "str" | "float" | "bool",
-        })),
-      });
-
-      // Get current mappings in UI format (used as initial state in the drawer)
-      const storeMappings =
-        evaluator.mappings[activeDatasetId]?.[target.id] ?? {};
-      const initialMappings: Record<string, UIFieldMapping> = {};
-      for (const [key, mapping] of Object.entries(storeMappings)) {
-        initialMappings[key] = convertToUIMapping(mapping);
-      }
-
-      return { availableSources, initialMappings };
-    },
-    [datasets, activeDatasetId, target, targetName],
-  );
-
-  // Build the durable `onMappingChange` callback for an evaluator. Lives
-  // separately from `mappingsConfig` because it must survive the drawer's
-  // complexProps clears — registered via `setFlowCallbacks` instead (#3441).
-  const buildOnMappingChange = useCallback(
-    (evaluator: EvaluatorConfig) => {
-      const datasetIds = new Set(datasets.map((d) => d.id));
-      const isDatasetSource = (sourceId: string) => datasetIds.has(sourceId);
-      return (identifier: string, mapping: UIFieldMapping | undefined) => {
-        if (mapping) {
-          const storeMapping = convertFromUIMapping(mapping, isDatasetSource);
-          setEvaluatorMapping(
-            evaluator.id,
-            activeDatasetId,
-            target.id,
-            identifier,
-            storeMapping,
-          );
-        } else {
-          removeEvaluatorMapping(
-            evaluator.id,
-            activeDatasetId,
-            target.id,
-            identifier,
-          );
-        }
-      };
-    },
-    [
-      datasets,
-      activeDatasetId,
-      target.id,
-      setEvaluatorMapping,
-      removeEvaluatorMapping,
-    ],
-  );
-
   // Use shared utility for consistent output formatting
   // Handles the "single output key" unwrap rule:
   // - {output: "hello"} -> "hello"
@@ -290,14 +212,23 @@ export function TargetCellContent({
             color="red.fg"
             fontSize="13px"
             align="start"
-            cursor={isErrorOverflowing && !isErrorExpanded ? "pointer" : undefined}
+            cursor={
+              isErrorOverflowing && !isErrorExpanded ? "pointer" : undefined
+            }
             onClick={() => setIsErrorExpanded(true)}
-            onDoubleClick={isErrorOverflowing ? () => setIsErrorExpanded(false) : undefined}
+            onDoubleClick={
+              isErrorOverflowing ? () => setIsErrorExpanded(false) : undefined
+            }
           >
             <Box flexShrink={0} paddingTop={0.5}>
               <LuCircleAlert size={16} />
             </Box>
-            <Text lineClamp={expanded || isErrorExpanded ? undefined : 2} userSelect="text" whiteSpace="pre-wrap" wordBreak="break-word">
+            <Text
+              lineClamp={expanded || isErrorExpanded ? undefined : 2}
+              userSelect="text"
+              whiteSpace="pre-wrap"
+              wordBreak="break-word"
+            >
               {parseLLMError(error).message}
             </Text>
           </HStack>
@@ -390,57 +321,82 @@ export function TargetCellContent({
     );
   };
 
-  // Render the evaluator chips section
+  // Render any pairwise verdict strips for this row (#5100). Rendered only
+  // when `target` is the variantA of a pairwise evaluator so we get one
+  // strip per row, not duplicated under variantB. The verdict result lives
+  // at `evaluatorResults[evaluator.id]` because the orchestrator anchors
+  // the Phase-2 cell on variantA. Normalization of the stored label
+  // (which is now the winner's candidate id, not a slot letter) happens
+  // inside PairwiseVerdictRow — it has access to `useTargetName` for both
+  // variants, which is required to match handle-shaped labels.
+  const renderPairwiseVerdicts = () => {
+    const strips: ReactNode[] = [];
+    for (const evaluator of evaluators) {
+      const pw = evaluator.pairwise;
+      if (!pw) continue;
+      if (pw.variantA !== target.id) continue;
+      const parsed = parseEvaluationResult(evaluatorResults[evaluator.id]);
+      if (parsed.status !== "processed") continue;
+      if (typeof parsed.label !== "string") continue;
+      const variantBTarget = targets.find((t) => t.id === pw.variantB);
+      if (!variantBTarget) continue;
+      strips.push(
+        <PairwiseVerdictRow
+          key={evaluator.id}
+          variantA={target}
+          variantB={variantBTarget}
+          label={parsed.label}
+          reasoning={parsed.details}
+        />,
+      );
+    }
+    return strips.length > 0 ? <>{strips}</> : null;
+  };
+
+  // Render the evaluator chips section. Pairwise-typed evaluators route
+  // through PairwiseAwareEvaluatorChip so the chip-tint can resolve the
+  // winner-by-id label format against each variant's prompt handle (the
+  // resolution needs `useTargetName`, which is a hook and so cannot live
+  // in `evaluators.map`).
   const renderEvaluatorChips = (inExpandedView: boolean) => (
     <HStack flexWrap="wrap" gap={1.5}>
-      {evaluators.map((evaluator: EvaluatorConfig) => (
-        <EvaluatorChip
-          key={evaluator.id}
-          evaluator={evaluator}
-          result={evaluatorResults[evaluator.id]}
-          hasMissingMappings={missingMappingsSet.has(evaluator.id)}
-          isRunning={isEvaluatorRunning?.(evaluator.id) ?? false}
-          hasTargetOutput={output !== undefined && output !== null}
-          hasAnyTargetOutputs={hasAnyTargetOutputs}
-          targetType={target.type}
-          onEdit={() => {
-            // Route all non-serializable callbacks through setFlowCallbacks.
-            // onMappingChange + onLocalConfigChange must live here (not in
-            // mappingsConfig) so the drawer's mappings section renders — see
-            // issue #3441.
-            //
-            // We use the direct `onLocalConfigChange` form (not the
-            // target-bound `targetId + updateTarget` convenience) because
-            // the chip's local config persists onto the evaluator, not the
-            // target.
-            setFlowCallbacks(
-              "evaluatorEditor",
-              createEvaluatorEditorCallbacks({
-                onLocalConfigChange: (localEvaluatorConfig) => {
-                  updateEvaluator(evaluator.id, { localEvaluatorConfig });
-                },
-                onMappingChange: buildOnMappingChange(evaluator),
-              }),
-            );
-
-            openDrawer("evaluatorEditor", {
-              evaluatorId: evaluator.dbEvaluatorId,
-              evaluatorType: evaluator.evaluatorType,
-              mappingsConfig: buildMappingsConfig(evaluator),
-              initialLocalConfig: evaluator.localEvaluatorConfig,
-            });
-          }}
-          onRemove={() => removeEvaluator(evaluator.id)}
-          onRerun={
-            onRerunEvaluator ? () => onRerunEvaluator(evaluator.id) : undefined
-          }
-          onRunOnAllRows={
-            onRunEvaluatorOnAllRows
-              ? () => onRunEvaluatorOnAllRows(evaluator.id)
-              : undefined
-          }
-        />
-      ))}
+      {evaluators.map((evaluator: EvaluatorConfig) => {
+        const chipProps = {
+          evaluator,
+          result: evaluatorResults[evaluator.id],
+          hasMissingMappings: missingMappingsSet.has(evaluator.id),
+          isRunning: isEvaluatorRunning?.(evaluator.id) ?? false,
+          hasTargetOutput: output !== undefined && output !== null,
+          hasAnyTargetOutputs,
+          targetType: target.type,
+          onEdit: () =>
+            openEvaluatorEditor({
+              evaluator,
+              target,
+              targetName,
+              isCodeEvaluator: codeEvaluatorIds.has(evaluator.id),
+            }),
+          onRemove: () => removeEvaluator(evaluator.id),
+          onRerun: onRerunEvaluator
+            ? () => onRerunEvaluator(evaluator.id)
+            : undefined,
+          onRunOnAllRows: onRunEvaluatorOnAllRows
+            ? () => onRunEvaluatorOnAllRows(evaluator.id)
+            : undefined,
+        };
+        if (evaluator.pairwise) {
+          return (
+            <PairwiseAwareEvaluatorChip
+              key={evaluator.id}
+              target={target}
+              targets={targets}
+              result={evaluatorResults[evaluator.id]}
+              chipProps={chipProps}
+            />
+          );
+        }
+        return <EvaluatorChip key={evaluator.id} {...chipProps} />;
+      })}
       <Button
         size="xs"
         variant="outline"
@@ -594,6 +550,7 @@ export function TargetCellContent({
         <VStack align="stretch" gap={2}>
           {renderActionButtons(false)}
           {renderOutput(false)}
+          {renderPairwiseVerdicts()}
           {renderEvaluatorChips(false)}
         </VStack>
       </Box>
@@ -647,4 +604,55 @@ export function TargetCellContent({
       )}
     </>
   );
+}
+
+// Resolves the pairwise winner/loser/tie tint for a chip rendered against
+// `target`. Pulled out into its own component so the two `useTargetName`
+// calls (one per variant) run at this component's top level — calling them
+// inside `evaluators.map(...)` would violate React's rules-of-hooks.
+//
+// The stored label is the winner's candidate id, which for prompt-typed
+// variants is the prompt HANDLE (e.g. "say-hi"), not the variant's target
+// id. `normalizePairwiseLabel` collapses both label shapes (legacy
+// "A"/"B"/"tie" + new winner-id, by id or handle) to a slot letter that
+// can be compared against this chip's target.
+function PairwiseAwareEvaluatorChip({
+  target,
+  targets,
+  result,
+  chipProps,
+}: {
+  target: TargetConfig;
+  targets: TargetConfig[];
+  result: unknown;
+  chipProps: Omit<React.ComponentProps<typeof EvaluatorChip>, "pairwiseState">;
+}) {
+  const pw = chipProps.evaluator.pairwise;
+  const variantATarget = pw
+    ? (targets.find((t) => t.id === pw.variantA) ?? target)
+    : target;
+  const variantBTarget = pw
+    ? (targets.find((t) => t.id === pw.variantB) ?? target)
+    : target;
+  const variantAName = useTargetName(variantATarget);
+  const variantBName = useTargetName(variantBTarget);
+
+  const pairwiseState = useMemo((): "winner" | "loser" | "tie" | undefined => {
+    if (!pw) return undefined;
+    const parsed = parseEvaluationResult(result);
+    if (parsed.status !== "processed") return undefined;
+    const slot = normalizePairwiseLabel(
+      parsed.label,
+      pw.variantA,
+      pw.variantB,
+      variantAName || undefined,
+      variantBName || undefined,
+    );
+    if (!slot) return undefined;
+    if (slot === "tie") return "tie";
+    if (slot === "A") return target.id === pw.variantA ? "winner" : "loser";
+    return target.id === pw.variantB ? "winner" : "loser";
+  }, [pw, result, target.id, variantAName, variantBName]);
+
+  return <EvaluatorChip {...chipProps} pairwiseState={pairwiseState} />;
 }

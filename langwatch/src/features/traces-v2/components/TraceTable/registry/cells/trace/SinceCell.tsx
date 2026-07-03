@@ -1,7 +1,7 @@
 import { Text } from "@chakra-ui/react";
 import type React from "react";
 import type { TraceListItem } from "../../../../../types/trace";
-import { formatVerboseRelative } from "../../../../../utils/formatters";
+import { useVerboseRelativeTime } from "../../../../../utils/useRelativeTime";
 import type { CellDef } from "../../types";
 import { TimeHoverCard } from "./TimeHoverCard";
 
@@ -14,19 +14,26 @@ import { TimeHoverCard } from "./TimeHoverCard";
 const SinceText: React.FC<{ timestamp: number; comfortable?: boolean }> = ({
   timestamp,
   comfortable,
-}) => (
-  <TimeHoverCard timestamp={timestamp}>
-    <Text
-      as="span"
-      textStyle={comfortable ? "sm" : "xs"}
-      color="fg.muted"
-      cursor="help"
-      whiteSpace="nowrap"
-    >
-      {formatVerboseRelative(timestamp)}
-    </Text>
-  </TimeHoverCard>
-);
+}) => {
+  // Self-updates at the next minute / hour / day boundary so a row
+  // open through a tick reads "4 minutes ago" once the wall clock
+  // crosses 4*60_000ms past the trace, not "3 minutes ago" until the
+  // next render.
+  const relative = useVerboseRelativeTime(timestamp);
+  return (
+    <TimeHoverCard timestamp={timestamp}>
+      <Text
+        as="span"
+        textStyle={comfortable ? "sm" : "xs"}
+        color="fg.muted"
+        cursor="help"
+        whiteSpace="nowrap"
+      >
+        {relative}
+      </Text>
+    </TimeHoverCard>
+  );
+};
 
 export const SinceCell = {
   id: "since",

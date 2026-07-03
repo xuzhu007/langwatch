@@ -14,23 +14,24 @@ import { ExperimentType } from "@prisma/client";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { z } from "zod";
-import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
-import type { Permission } from "~/server/api/rbac";
-import {
-  enforceApiKeyCeiling,
-  extractCredentials,
-  apiKeyCeilingDenialResponse,
-} from "~/server/api-key/auth-middleware";
-import { TokenResolver } from "~/server/api-key/token-resolver";
 import {
   createInitialUIState,
   type EvaluationsV3State,
 } from "~/experiments-v3/types";
 import { persistedEvaluationsV3StateSchema } from "~/experiments-v3/types/persistence";
 import type { TypedAgent } from "~/server/agents/agent.repository";
+import type { Permission } from "~/server/api/rbac";
 import { hasProjectPermission } from "~/server/api/rbac";
+import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
+import {
+  apiKeyCeilingDenialResponse,
+  enforceApiKeyCeiling,
+  extractCredentials,
+} from "~/server/api-key/auth-middleware";
+import { TokenResolver } from "~/server/api-key/token-resolver";
 import { getServerAuthSession } from "~/server/auth";
 import { prisma } from "~/server/db";
+import { ExperimentService } from "~/server/experiments/experiment.service";
 import { abortManager } from "~/server/experiments-v3/execution/abortManager";
 import { loadExecutionData } from "~/server/experiments-v3/execution/dataLoader";
 import {
@@ -38,18 +39,17 @@ import {
   runOrchestrator,
 } from "~/server/experiments-v3/execution/orchestrator";
 import { runStateManager } from "~/server/experiments-v3/execution/runStateManager";
-import { ExperimentRunService } from "~/server/experiments-v3/services/experiment-run.service";
-import { ExperimentService } from "~/server/experiments/experiment.service";
 import {
-  executionRequestSchema,
   type EvaluationV3Event,
+  executionRequestSchema,
 } from "~/server/experiments-v3/execution/types";
-import type { VersionedPrompt } from "~/server/prompt-config/prompt.service";
+import { ExperimentRunService } from "~/server/experiments-v3/services/experiment-run.service";
 import { trackServerEvent } from "~/server/posthog";
-import { fireExperimentRanNurturing } from "../../../ee/billing/nurturing/hooks/featureAdoption";
+import type { VersionedPrompt } from "~/server/prompt-config/prompt.service";
 import { generateHumanReadableId } from "~/utils/humanReadableId";
 import { createLogger } from "~/utils/logger/server";
-import { captureException } from "~/utils/posthogErrorCapture";
+import { captureException, toError } from "~/utils/posthogErrorCapture";
+import { fireExperimentRanNurturing } from "../../../ee/billing/nurturing/hooks/featureAdoption";
 import type { NextRequestShim as any } from "./types";
 
 const logger = createLogger("langwatch:experiments-v3");
@@ -67,7 +67,10 @@ const apiKeyAuth = handlerManagedAuth(
 export const legacyAliasApp = new Hono().basePath("/api/evaluations/v3");
 legacyAliasApp.all("/*", (c) => {
   const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace(/^\/api\/evaluations\/v3/, "/api/experiments");
+  url.pathname = url.pathname.replace(
+    /^\/api\/evaluations\/v3/,
+    "/api/experiments",
+  );
   return app.fetch(new Request(url.toString(), c.req.raw));
 });
 
@@ -152,151 +155,157 @@ const getRunUrl = (
 
 // ── POST /execute ────────────────────────────────────────────────────
 
-secured.access(sessionAuth).post("/execute", zValidator("json", executionRequestSchema), async (c) => {
-  const request = await c.req.json();
-  const { projectId } = request;
+secured
+  .access(sessionAuth)
+  .post("/execute", zValidator("json", executionRequestSchema), async (c) => {
+    const request = await c.req.json();
+    const { projectId } = request;
 
-  logger.info(
-    { projectId, scope: request.scope },
-    "Starting experiment execution",
-  );
-
-  const session = await getServerAuthSession({ req: c.req.raw as any });
-  if (!session) {
-    return c.json(
-      { error: "You must be logged in to access this endpoint." },
-      { status: 401 },
+    logger.info(
+      { projectId, scope: request.scope },
+      "Starting experiment execution",
     );
-  }
 
-  const hasPermission = await hasProjectPermission(
-    { prisma, session },
-    projectId,
-    "evaluations:manage",
-  );
-  if (!hasPermission) {
-    return c.json(
-      { error: "You do not have permission to access this endpoint." },
-      { status: 403 },
+    const session = await getServerAuthSession({ req: c.req.raw as any });
+    if (!session) {
+      return c.json(
+        { error: "You must be logged in to access this endpoint." },
+        { status: 401 },
+      );
+    }
+
+    const hasPermission = await hasProjectPermission(
+      { prisma, session },
+      projectId,
+      "evaluations:manage",
     );
-  }
+    if (!hasPermission) {
+      return c.json(
+        { error: "You do not have permission to access this endpoint." },
+        { status: 403 },
+      );
+    }
 
-  const dataResult = await loadExecutionData(
-    projectId,
-    request.dataset,
-    request.targets,
-    request.evaluators,
-  );
-
-  if ("error" in dataResult) {
-    return c.json(
-      { error: dataResult.error },
-      { status: dataResult.status as 400 | 404 },
+    const dataResult = await loadExecutionData(
+      projectId,
+      request.dataset,
+      request.targets,
+      request.evaluators,
     );
-  }
 
-  const {
-    datasetRows,
-    datasetColumns,
-    loadedPrompts,
-    loadedAgents,
-    loadedEvaluators,
-  } = dataResult;
+    if ("error" in dataResult) {
+      return c.json(
+        { error: dataResult.error },
+        { status: dataResult.status as 400 | 404 },
+      );
+    }
 
-  const state: EvaluationsV3State = {
-    name: request.name,
-    datasets: [request.dataset],
-    activeDatasetId: request.dataset.id ?? "dataset-1",
-    targets: request.targets as EvaluationsV3State["targets"],
-    evaluators: request.evaluators as EvaluationsV3State["evaluators"],
-    results: {
-      status: "running",
-      targetOutputs: {},
-      targetMetadata: {},
-      evaluatorResults: {},
-      errors: {},
-    },
-    pendingSavedChanges: {},
-    ui: createInitialUIState(),
-  };
+    const {
+      datasetRows,
+      datasetColumns,
+      loadedPrompts,
+      loadedAgents,
+      loadedEvaluators,
+    } = dataResult;
 
-  return streamSSE(c, async (stream) => {
-    let streamRunId: string | undefined;
-    try {
-      const isFullRun = request.scope.type === "full";
+    const state: EvaluationsV3State = {
+      name: request.name,
+      datasets: [request.dataset],
+      activeDatasetId: request.dataset.id ?? "dataset-1",
+      targets: request.targets as EvaluationsV3State["targets"],
+      evaluators: request.evaluators as EvaluationsV3State["evaluators"],
+      results: {
+        status: "running",
+        targetOutputs: {},
+        targetMetadata: {},
+        evaluatorResults: {},
+        errors: {},
+      },
+      pendingSavedChanges: {},
+      ui: createInitialUIState(),
+    };
 
-      const orchestrator = runOrchestrator({
-        projectId,
-        experimentId: request.experimentId,
-        scope: request.scope,
-        state,
-        datasetRows,
-        datasetColumns,
-        loadedPrompts,
-        loadedAgents,
-        loadedEvaluators,
-        concurrency: request.concurrency,
-      });
+    return streamSSE(c, async (stream) => {
+      let streamRunId: string | undefined;
+      try {
+        const isFullRun = request.scope.type === "full";
 
-      for await (const event of orchestrator) {
-        if (event.type === "execution_started") {
-          streamRunId = event.runId;
-          await runStateManager.createRun({
-            runId: event.runId,
-            projectId,
-            experimentId: request.experimentId,
-            experimentSlug:
-              request.experimentSlug ?? request.experimentId ?? "workbench",
-            total: event.total,
-          });
-        }
-
-        if (streamRunId) {
-          await runStateManager.addEvent(streamRunId, event);
-        }
-        await stream.writeSSE({
-          data: JSON.stringify(event),
+        const orchestrator = runOrchestrator({
+          projectId,
+          experimentId: request.experimentId,
+          scope: request.scope,
+          state,
+          datasetRows,
+          datasetColumns,
+          loadedPrompts,
+          loadedAgents,
+          loadedEvaluators,
+          concurrency: request.concurrency,
+          seedTargetOutputs: request.seedTargetOutputs,
         });
 
-        if (event.type === "done" || event.type === "stopped") {
-          if (event.type === "done") {
-            await runStateManager.completeRun(event.summary.runId, event.summary);
-          } else if (streamRunId) {
-            await runStateManager.stopRun(streamRunId);
-          }
-          if (session?.user?.id) {
-            trackServerEvent({
-              userId: session.user.id,
-              event: "evaluation_ran",
+        for await (const event of orchestrator) {
+          if (event.type === "execution_started") {
+            streamRunId = event.runId;
+            await runStateManager.createRun({
+              runId: event.runId,
               projectId,
+              experimentId: request.experimentId,
+              experimentSlug:
+                request.experimentSlug ?? request.experimentId ?? "workbench",
+              total: event.total,
             });
-            if (request.experimentId && isFullRun) {
-              fireExperimentRanNurturing({
+          }
+
+          if (streamRunId) {
+            await runStateManager.addEvent(streamRunId, event);
+          }
+          await stream.writeSSE({
+            data: JSON.stringify(event),
+          });
+
+          if (event.type === "done" || event.type === "stopped") {
+            if (event.type === "done") {
+              await runStateManager.completeRun(
+                event.summary.runId,
+                event.summary,
+              );
+            } else if (streamRunId) {
+              await runStateManager.stopRun(streamRunId);
+            }
+            if (session?.user?.id) {
+              trackServerEvent({
                 userId: session.user.id,
-                experimentId: request.experimentId,
+                event: "evaluation_ran",
                 projectId,
               });
+              if (request.experimentId && isFullRun) {
+                fireExperimentRanNurturing({
+                  userId: session.user.id,
+                  experimentId: request.experimentId,
+                  projectId,
+                });
+              }
             }
+            break;
           }
-          break;
         }
-      }
-    } catch (error) {
-      logger.error({ error, projectId }, "Orchestrator error");
-      captureException(error, { extra: { projectId } });
-      if (streamRunId) {
-        await runStateManager.failRun(streamRunId, (error as Error).message);
-      }
+      } catch (error) {
+        logger.error({ error, projectId }, "Orchestrator error");
+        captureException(toError(error), { extra: { projectId } });
+        if (streamRunId) {
+          await runStateManager.failRun(streamRunId, (error as Error).message);
+        }
 
-      await stream.writeSSE({
-        data: JSON.stringify({
-          type: "error",
-          message: (error as Error).message,
-        }),
-      });
-    }
+        await stream.writeSSE({
+          data: JSON.stringify({
+            type: "error",
+            message: (error as Error).message,
+          }),
+        });
+      }
+    });
   });
-});
 
 // ── POST /abort ──────────────────────────────────────────────────────
 
@@ -311,7 +320,10 @@ secured.access(sessionAuth).post("/abort", async (c) => {
   const { projectId, runId } = body;
   if (!projectId || !runId) {
     return c.json(
-      { error: "Invalid request body", details: "projectId and runId are required" },
+      {
+        error: "Invalid request body",
+        details: "projectId and runId are required",
+      },
       { status: 400 },
     );
   }
@@ -339,10 +351,18 @@ secured.access(sessionAuth).post("/abort", async (c) => {
   // Ownership check: holding evaluations:manage on `projectId` does NOT grant
   // the right to abort a run that belongs to a different project. The runId is
   // attacker-controlled, so verify the run is owned by the authenticated
-  // project before signaling an abort (mirrors GET /runs/:runId). Without this,
-  // a user could abort another tenant's experiment run by guessing its runId.
-  const runState = await runStateManager.getRunState(runId);
-  if (!runState || runState.projectId !== projectId) {
+  // project before signaling an abort. Without this, a user could abort another
+  // tenant's experiment run by guessing its runId.
+  //
+  // In-flight runs register their owner via abortManager.setRunning, which
+  // covers the interactive workbench SSE path — that path streams results
+  // directly and never creates a polling run-state record, so consulting only
+  // runStateManager would 404 every workbench abort. runStateManager remains
+  // the fallback for the CI/CD polling path.
+  const ownerProjectId =
+    (await abortManager.getRunningProjectId(runId)) ??
+    (await runStateManager.getRunState(runId))?.projectId;
+  if (!ownerProjectId || ownerProjectId !== projectId) {
     return c.json({ error: "Run not found" }, { status: 404 });
   }
 
@@ -383,7 +403,10 @@ secured.access(apiKeyAuth).post("/:slug/run", async (c) => {
       { slug, errors: parseResult.error.errors },
       "Invalid workbenchState",
     );
-    return c.json({ error: "Invalid experiment configuration" }, { status: 400 });
+    return c.json(
+      { error: "Invalid experiment configuration" },
+      { status: 400 },
+    );
   }
 
   const workbenchState = parseResult.data;
@@ -457,7 +480,9 @@ secured.access(apiKeyAuth).post("/:slug/run", async (c) => {
           { error, projectId: project.id, slug },
           "Orchestrator error",
         );
-        captureException(error, { extra: { projectId: project.id, slug } });
+        captureException(toError(error), {
+          extra: { projectId: project.id, slug },
+        });
 
         await stream.writeSSE({
           data: JSON.stringify({
@@ -507,7 +532,7 @@ secured.access(apiKeyAuth).post("/:slug/run", async (c) => {
         { error, projectId: project.id, slug, runId },
         "Execution error",
       );
-      captureException(error, {
+      captureException(toError(error), {
         extra: { projectId: project.id, slug, runId },
       });
       await runStateManager.failRun(runId, (error as Error).message);

@@ -72,6 +72,54 @@ interface OnboardingState {
    * path clears it so we don't sticky-trap real users in the demo.
    */
   tourActive: boolean;
+  /**
+   * Per-project epoch-ms timestamp of when the integration CTA card
+   * was dismissed. The card reappears after 14 days so users who
+   * integrate later still get a reminder if they haven't sent traces
+   * yet. Keyed on projectId. Persisted to localStorage.
+   */
+  integrationCtaDismissedAtByProject: Record<string, number>;
+  /**
+   * In-memory toggle for the "See sample data" toolbar button. When
+   * true, sample preview traces are injected into the table alongside
+   * (or instead of) real ones, with a SampleDataBanner ribbon as the
+   * marker. Defaults to false. Not persisted — the toolbar button is
+   * the explicit opt-in each session.
+   */
+  showSamplePreview: boolean;
+  /**
+   * Phase 2 spotlight tour — whether the contextual spotlight overlay
+   * is currently rendered. Decoupled from `tourActive` (the legacy
+   * journey state-machine flag, now dormant). Flipped on by the
+   * "Show me around" toolbar button or by parsing `#sp=<id>` from the
+   * URL fragment on mount.
+   */
+  spotlightsActive: boolean;
+  /**
+   * The id of the spotlight currently shown. Must match one of the
+   * `id` fields in `TRACE_EXPLORER_SPOTLIGHTS`. When `spotlightsActive`
+   * is true and this is null, the overlay starts from the first entry.
+   */
+  currentSpotlightId: string | null;
+  /**
+   * Global per-browser flag: has the spotlight tour been auto-started
+   * for the first real trace yet? Flipped to true the first time
+   * `hasAnyTraces` transitions false → true in ANY project, so seeing
+   * the tour once suppresses it everywhere on this browser — it's no
+   * longer keyed by project. Persisted so a refresh doesn't replay it.
+   * See
+   * specs/traces-v2/tour-visibility-and-persistence.feature
+   */
+  firstTraceSpotlightFired: boolean;
+  /**
+   * Per-browser map of drawer spotlight ids that have been displayed at
+   * least once. Drawer spotlights are show-once: the moment one renders
+   * it's marked seen here, so it never repeats — even if the user
+   * dismisses the queue mid-way. Not keyed by project: the features
+   * being introduced (conversation strip, I/O section, …) are the same
+   * everywhere. Persisted to localStorage.
+   */
+  seenDrawerSpotlights: Record<string, boolean>;
 
   setStage: (stage: StageId) => void;
   goBack: () => void;
@@ -86,6 +134,24 @@ interface OnboardingState {
   setSetupDismissedForProject: (projectId: string, dismissed: boolean) => void;
   setSetupDisengaged: (disengaged: boolean) => void;
   setTourActive: (active: boolean) => void;
+  setIntegrationCtaDismissedAt: (projectId: string, ts: number) => void;
+  clearIntegrationCtaDismissed: (projectId: string) => void;
+  setShowSamplePreview: (show: boolean) => void;
+  setSpotlightsActive: (active: boolean) => void;
+  setCurrentSpotlightId: (id: string | null) => void;
+  /**
+   * One-shot global: call when `hasAnyTraces` transitions false → true
+   * so we can auto-start the spotlight tour on the browser's first real
+   * trace. Idempotent — re-calling is safe; the consumer should still
+   * gate on `firstTraceSpotlightFired` to avoid re-triggering the
+   * overlay every render.
+   */
+  markFirstTraceSpotlightFired: () => void;
+  /**
+   * Mark a drawer spotlight as displayed. Idempotent; persists to
+   * localStorage so the show-once guarantee survives reloads.
+   */
+  markDrawerSpotlightSeen: (id: string) => void;
 }
 
 const STORAGE_KEY = "langwatch:traces-v2:onboarding:state:v1";
@@ -100,11 +166,37 @@ const LEGACY_UI_STORE_KEY = "langwatch:traces-v2:ui";
 
 interface PersistedShape {
   setupDismissedByProject: Record<string, boolean>;
+  integrationCtaDismissedAtByProject: Record<string, number>;
+  firstTraceSpotlightFired: boolean;
+  seenDrawerSpotlights: Record<string, boolean>;
 }
 
 const DEFAULT_PERSISTED: PersistedShape = {
   setupDismissedByProject: {},
+  integrationCtaDismissedAtByProject: {},
+  firstTraceSpotlightFired: false,
+  seenDrawerSpotlights: {},
 };
+
+/**
+ * Resolve the global first-trace-tour flag from a persisted blob,
+ * migrating the old per-project map: if the stored shape predates the
+ * global flag, treat "fired in any project" as globally seen so existing
+ * users on this browser aren't re-toured after the migration.
+ */
+function firstTraceFiredFrom(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.firstTraceSpotlightFired === "boolean") {
+    return obj.firstTraceSpotlightFired;
+  }
+  const legacy = obj.firstTraceSpotlightFiredByProject;
+  return (
+    typeof legacy === "object" &&
+    legacy !== null &&
+    Object.values(legacy as Record<string, unknown>).some(Boolean)
+  );
+}
 
 function loadPersisted(): PersistedShape {
   if (typeof window === "undefined") return DEFAULT_PERSISTED;
@@ -117,7 +209,20 @@ function loadPersisted(): PersistedShape {
         parsed.setupDismissedByProject &&
         typeof parsed.setupDismissedByProject === "object"
       ) {
-        return { setupDismissedByProject: parsed.setupDismissedByProject };
+        return {
+          setupDismissedByProject: parsed.setupDismissedByProject,
+          integrationCtaDismissedAtByProject:
+            parsed.integrationCtaDismissedAtByProject &&
+            typeof parsed.integrationCtaDismissedAtByProject === "object"
+              ? parsed.integrationCtaDismissedAtByProject
+              : {},
+          firstTraceSpotlightFired: firstTraceFiredFrom(parsed),
+          seenDrawerSpotlights:
+            parsed.seenDrawerSpotlights &&
+            typeof parsed.seenDrawerSpotlights === "object"
+              ? parsed.seenDrawerSpotlights
+              : {},
+        };
       }
     }
     // Migrate from the old uiStore shape on first load. The old
@@ -131,7 +236,12 @@ function loadPersisted(): PersistedShape {
         parsed.setupDismissedByProject &&
         typeof parsed.setupDismissedByProject === "object"
       ) {
-        return { setupDismissedByProject: parsed.setupDismissedByProject };
+        return {
+          setupDismissedByProject: parsed.setupDismissedByProject,
+          integrationCtaDismissedAtByProject: {},
+          firstTraceSpotlightFired: false,
+          seenDrawerSpotlights: {},
+        };
       }
     }
   } catch {
@@ -140,10 +250,23 @@ function loadPersisted(): PersistedShape {
   return DEFAULT_PERSISTED;
 }
 
-function persist(snapshot: PersistedShape): void {
+function persist({
+  setupDismissedByProject,
+  integrationCtaDismissedAtByProject,
+  firstTraceSpotlightFired,
+  seenDrawerSpotlights,
+}: PersistedShape): void {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        setupDismissedByProject,
+        integrationCtaDismissedAtByProject,
+        firstTraceSpotlightFired,
+        seenDrawerSpotlights,
+      }),
+    );
   } catch {
     // storage may be full / disabled
   }
@@ -159,6 +282,13 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   setupDismissedByProject: initial.setupDismissedByProject,
   setupDisengaged: false,
   tourActive: false,
+  integrationCtaDismissedAtByProject:
+    initial.integrationCtaDismissedAtByProject,
+  showSamplePreview: false,
+  spotlightsActive: false,
+  currentSpotlightId: null,
+  firstTraceSpotlightFired: initial.firstTraceSpotlightFired,
+  seenDrawerSpotlights: initial.seenDrawerSpotlights,
 
   setStage: (stage) =>
     set((s) =>
@@ -206,12 +336,75 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       // time the card renders.
       ...(dismissed ? {} : { setupDisengaged: false }),
     });
-    persist({ setupDismissedByProject: next });
+    persist({
+      setupDismissedByProject: next,
+      integrationCtaDismissedAtByProject:
+        get().integrationCtaDismissedAtByProject,
+      firstTraceSpotlightFired: get().firstTraceSpotlightFired,
+      seenDrawerSpotlights: get().seenDrawerSpotlights,
+    });
   },
 
   setSetupDisengaged: (disengaged) => set({ setupDisengaged: disengaged }),
 
   setTourActive: (active) => set({ tourActive: active }),
+
+  setIntegrationCtaDismissedAt: (projectId, ts) => {
+    const next = {
+      ...get().integrationCtaDismissedAtByProject,
+      [projectId]: ts,
+    };
+    set({ integrationCtaDismissedAtByProject: next });
+    persist({
+      setupDismissedByProject: get().setupDismissedByProject,
+      integrationCtaDismissedAtByProject: next,
+      firstTraceSpotlightFired: get().firstTraceSpotlightFired,
+      seenDrawerSpotlights: get().seenDrawerSpotlights,
+    });
+  },
+
+  clearIntegrationCtaDismissed: (projectId) => {
+    const next = { ...get().integrationCtaDismissedAtByProject };
+    delete next[projectId];
+    set({ integrationCtaDismissedAtByProject: next });
+    persist({
+      setupDismissedByProject: get().setupDismissedByProject,
+      integrationCtaDismissedAtByProject: next,
+      firstTraceSpotlightFired: get().firstTraceSpotlightFired,
+      seenDrawerSpotlights: get().seenDrawerSpotlights,
+    });
+  },
+
+  setShowSamplePreview: (show) => set({ showSamplePreview: show }),
+
+  setSpotlightsActive: (active) => set({ spotlightsActive: active }),
+  setCurrentSpotlightId: (id) => set({ currentSpotlightId: id }),
+
+  markFirstTraceSpotlightFired: () => {
+    if (get().firstTraceSpotlightFired) return;
+    set({ firstTraceSpotlightFired: true });
+    persist({
+      setupDismissedByProject: get().setupDismissedByProject,
+      integrationCtaDismissedAtByProject:
+        get().integrationCtaDismissedAtByProject,
+      firstTraceSpotlightFired: true,
+      seenDrawerSpotlights: get().seenDrawerSpotlights,
+    });
+  },
+
+  markDrawerSpotlightSeen: (id) => {
+    const current = get().seenDrawerSpotlights;
+    if (current[id]) return;
+    const next = { ...current, [id]: true };
+    set({ seenDrawerSpotlights: next });
+    persist({
+      setupDismissedByProject: get().setupDismissedByProject,
+      integrationCtaDismissedAtByProject:
+        get().integrationCtaDismissedAtByProject,
+      firstTraceSpotlightFired: get().firstTraceSpotlightFired,
+      seenDrawerSpotlights: next,
+    });
+  },
 }));
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,12 @@ Feature: Span field mapping when adding traces to a dataset
     When I select "spans" as the source and choose "Research.aexecute_stream"
     Then I can map its input, output, params and contexts subfields
 
+  Scenario: The span name dropdown is searchable for large projects
+    Given my project has so many span names that scanning the list is slow
+    When I select "spans" as the source for a column
+    And I type part of a span name into the dropdown
+    Then the dropdown filters down to the matching span names
+
   # ============================================================================
   # Server never silently truncates the available names or spans
   # ============================================================================
@@ -88,3 +94,64 @@ Feature: Span field mapping when adding traces to a dataset
     And the trace I opened the "Add to Dataset" drawer on has no such event
     When I select "events" as the source for a column
     Then "thumbs_up" is offered as an event type to map
+
+  # ============================================================================
+  # Span expansion behaviour (the "One row per span" toggle). Locked because
+  # saved automations persist these expansion keys; the toggle enabled means
+  # "normalize / expand", producing one row per span, not one row for all spans.
+  # ============================================================================
+
+  Scenario: Expanding spans produces one dataset row per span
+    Given a trace with three spans mapped with the spans source
+    And the "One row per span" expansion is enabled
+    When the trace is converted to dataset rows
+    Then it produces three rows, one per span
+
+  Scenario: Without the span expansion the trace stays a single row
+    Given a trace with three spans mapped with the spans source
+    And no expansion is enabled
+    When the trace is converted to dataset rows
+    Then it produces a single row whose spans field is the array of all spans
+
+  # ============================================================================
+  # The mapping preview renders with the SAME cells as the evaluations
+  # workbench dataset table: same heights, JSON values formatted, double-click
+  # opens the editor. Mapping a span-heavy trace into a column used to dump
+  # the whole blob as one flat line, unreadable and slow.
+  # ============================================================================
+
+  Scenario: JSON values render formatted in the preview
+    Given a column is mapped to a JSON value such as a span list
+    When the mapping preview renders that row
+    Then the cell shows the value as indented JSON, not one flat line
+
+  Scenario: A heavy mapped value stays bounded in the preview cell
+    Given a column is mapped to a value far larger than the display cap
+    When the mapping preview renders that row
+    Then the cell renders a bounded, truncated view of the value
+
+  Scenario: Double-clicking a preview cell opens it for editing
+    Given a preview cell holds a mapped value
+    When I double-click that cell
+    Then an editor opens with the full value
+    And saving it updates the row that will be added
+
+  Scenario: Preview cells without an edit handler stay read-only
+    Given a dataset preview that does not allow editing
+    When I double-click a cell
+    Then no editor opens
+
+  Scenario: Selecting a single preview row toggles only that row
+    Given the mapping preview lists rows with selection checkboxes
+    When I check the checkbox for one row
+    Then only that row's selection is toggled
+
+  Scenario: The header checkbox toggles every preview row
+    Given the mapping preview lists rows with selection checkboxes
+    When I check the header select-all checkbox
+    Then every row's selection is toggled
+
+  Scenario: Bulk-selecting more than twenty traces still opens the preview
+    Given I selected twenty-five traces in the traces table
+    When I open the "Add to Dataset" drawer
+    Then the mapping preview loads rows for all twenty-five traces

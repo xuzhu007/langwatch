@@ -1,8 +1,12 @@
 import { performance } from "node:perf_hooks";
-import { context as otelContext, SpanKind, trace, TraceFlags } from "@opentelemetry/api";
+import {
+  context as otelContext,
+  SpanKind,
+  trace,
+  TraceFlags,
+} from "@opentelemetry/api";
 import fastq from "fastq";
-import type IORedis from "ioredis";
-import type { Cluster } from "ioredis";
+import { Cluster, Redis as IORedis } from "ioredis";
 import { getLangWatchTracer } from "langwatch";
 import type { SemConvAttributes } from "langwatch/observability";
 import { createLogger } from "../../../../utils/logger/server";
@@ -13,13 +17,24 @@ import {
   runWithContext,
 } from "../../../context/asyncContext";
 import { connection } from "../../../redis";
+import {
+  decodeJobEnvelope,
+  encodeJobEnvelope,
+  readEnvelopeBlobId,
+} from "./jobEnvelope";
+import { RedisJobBlobStore } from "./redisJobBlobStore";
 import type {
   DeduplicationConfig,
   EventSourcedQueueDefinition,
   EventSourcedQueueProcessor,
   QueueSendOptions,
 } from "../../queues";
-import { categorizeError, ConfigurationError, ErrorCategory, QueueError } from "../../services/errorHandling";
+import {
+  categorizeError,
+  ConfigurationError,
+  ErrorCategory,
+  QueueError,
+} from "../../services/errorHandling";
 import { JOB_RETRY_CONFIG, getBackoffMs } from "../shared";
 import { GroupQueueDispatcher } from "./dispatcher";
 import {
@@ -37,7 +52,11 @@ import {
   gqJobDurationMilliseconds,
 } from "./metrics";
 import { GroupQueueMetricsCollector } from "./metricsCollector";
-import { type DispatchResult, type DrainedJob, GroupStagingScripts } from "./scripts";
+import {
+  type DispatchResult,
+  type DrainedJob,
+  GroupStagingScripts,
+} from "./scripts";
 import {
   TenantRateTracker,
   tenantIdFromGroupId,
@@ -49,8 +68,7 @@ import { featureFlagService } from "../../../featureFlag";
  */
 const GROUP_QUEUE_CONFIG = {
   /** Default global concurrency (max parallel groups) */
-  defaultGlobalConcurrency:
-    Number(process.env.GLOBAL_QUEUE_CONCURRENCY) || 100,
+  defaultGlobalConcurrency: Number(process.env.GLOBAL_QUEUE_CONCURRENCY) || 100,
   /** TTL for the active key (safety net for crashes), in seconds */
   activeTtlSec: 300,
   /** BRPOP timeout in seconds (fallback polling interval) */
@@ -69,7 +87,13 @@ const GROUP_QUEUE_CONFIG = {
 const DEFAULT_DEDUPLICATION_TTL_MS = 200;
 
 /** Internal fields attached to job data that must be stripped before processing. */
-const INTERNAL_FIELDS = ["__context", "__groupId", "__stagedJobId", "__dispatchScore", "__attempt"] as const;
+const INTERNAL_FIELDS = [
+  "__context",
+  "__groupId",
+  "__stagedJobId",
+  "__dispatchScore",
+  "__attempt",
+] as const;
 
 /**
  * Group Queue Processor that provides per-group FIFO with cross-group parallelism.
@@ -105,6 +129,7 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
   private readonly redisConnection: IORedis | Cluster;
   private readonly blockingConnection: IORedis | Cluster;
   private readonly scripts: GroupStagingScripts;
+  private readonly blobs: RedisJobBlobStore;
   private readonly rateTracker!: TenantRateTracker;
   private readonly globalConcurrency: number;
   private readonly consumerEnabled: boolean;
@@ -152,12 +177,15 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
     this.consumerEnabled = options?.consumerEnabled ?? true;
     // Dedicated connection for BRPOP to avoid blocking the shared connection.
     // Only needed when the dispatcher loop runs (consumer mode).
-    this.blockingConnection = this.consumerEnabled
-      ? "duplicate" in effectiveConnection &&
-        typeof effectiveConnection.duplicate === "function"
-        ? effectiveConnection.duplicate()
-        : effectiveConnection
-      : effectiveConnection;
+    // IORedis.duplicate() takes an options override; Cluster.duplicate() takes no
+    // args (maxRetriesPerRequest: null is already set inside Cluster's redisOptions).
+    this.blockingConnection = !this.consumerEnabled
+      ? effectiveConnection
+      : effectiveConnection instanceof IORedis
+        ? effectiveConnection.duplicate({ maxRetriesPerRequest: null })
+        : effectiveConnection instanceof Cluster
+          ? effectiveConnection.duplicate()
+          : effectiveConnection;
     this.spanAttributes = spanAttributes;
     this.delay = delay;
     this.deduplication = deduplication;
@@ -177,6 +205,13 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
       this.redisConnection,
       this.queueName,
     );
+
+    // Offloaded envelope bodies (ADR-026): large payloads live under
+    // standalone blob keys so their bulk never transits the Lua scripts.
+    this.blobs = new RedisJobBlobStore({
+      redis: this.redisConnection,
+      queueName: this.queueName,
+    });
 
     // Advertise this queue in the registry set so the ops dashboard enumerates
     // it via SMEMBERS instead of an O(keyspace) `SCAN MATCH *:gq:ready`.
@@ -293,16 +328,27 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
       span.setAttributes({ ...customAttributes });
     }
 
-    const isNew = await this.scripts.stage({
+    const { isNew, orphanedValue } = await this.scripts.stage({
       stagedJobId,
       groupId,
       dispatchAfterMs,
       dedupId,
       dedupTtlMs,
-      jobDataJson: JSON.stringify(payloadWithContext),
+      jobDataJson: await encodeJobEnvelope({
+        jobData: payloadWithContext,
+        blobs: this.blobs,
+      }),
       shouldExtend,
       shouldReplace,
     });
+
+    // A dedup squash displaced a staged payload; reclaim its offloaded blob so
+    // it does not leak until the 7-day TTL (the 2026-06-11 capacity incident).
+    // Fire-and-forget (matches the worker reclaim paths); a no-op for inline
+    // payloads (readEnvelopeBlobId yields null) and new stages (orphanedValue "").
+    if (orphanedValue) {
+      this.deleteEnvelopeBlobs([orphanedValue]);
+    }
 
     if (isNew) {
       gqJobsStagedTotal.inc({ queue_name: this.queueName });
@@ -357,38 +403,50 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
     const shouldExtend = dedup ? dedup.extend !== false : true;
     const shouldReplace = dedup ? dedup.replace !== false : true;
 
-    const jobsToStage = payloads.map((payload, index) => {
-      const groupId = this.groupKey(payload);
-      const stagedJobId = this.generateStagedJobId(payload);
-      const score = this.score?.(payload) ?? now;
-      // Add index to ensure FIFO order within the batch even if timestamps are identical
-      const dispatchAfterMs = score + (delay ?? 0) + index;
+    const jobsToStage = await Promise.all(
+      payloads.map(async (payload, index) => {
+        const groupId = this.groupKey(payload);
+        const stagedJobId = this.generateStagedJobId(payload);
+        const score = this.score?.(payload) ?? now;
+        // Add index to ensure FIFO order within the batch even if timestamps are identical
+        const dispatchAfterMs = score + (delay ?? 0) + index;
 
-      let dedupId = "";
-      let dedupTtlMs = 0;
-      if (dedup) {
-        dedupId = dedup.makeId(payload).replaceAll(":", ".");
-        dedupTtlMs = dedup.ttlMs ?? DEFAULT_DEDUPLICATION_TTL_MS;
-      }
+        let dedupId = "";
+        let dedupTtlMs = 0;
+        if (dedup) {
+          dedupId = dedup.makeId(payload).replaceAll(":", ".");
+          dedupTtlMs = dedup.ttlMs ?? DEFAULT_DEDUPLICATION_TTL_MS;
+        }
 
-      const payloadWithContext = {
-        ...(payload as Record<string, unknown>),
-        __context: contextMetadata,
-      };
+        const payloadWithContext = {
+          ...(payload as Record<string, unknown>),
+          __context: contextMetadata,
+        };
 
-      return {
-        stagedJobId,
-        groupId,
-        dispatchAfterMs,
-        dedupId,
-        dedupTtlMs,
-        jobDataJson: JSON.stringify(payloadWithContext),
-        shouldExtend,
-        shouldReplace,
-      };
-    });
+        return {
+          stagedJobId,
+          groupId,
+          dispatchAfterMs,
+          dedupId,
+          dedupTtlMs,
+          jobDataJson: await encodeJobEnvelope({
+            jobData: payloadWithContext,
+            blobs: this.blobs,
+          }),
+          shouldExtend,
+          shouldReplace,
+        };
+      }),
+    );
 
-    const newStagedCount = await this.scripts.stageBatch(jobsToStage);
+    const { newStagedCount, orphanedValues } =
+      await this.scripts.stageBatch(jobsToStage);
+
+    // Reclaim blobs displaced by any in-batch dedup squashes (see send()).
+    const orphans = orphanedValues.filter((value) => value.length > 0);
+    if (orphans.length > 0) {
+      this.deleteEnvelopeBlobs(orphans);
+    }
 
     const dedupedCount = payloads.length - newStagedCount;
     if (newStagedCount > 0) {
@@ -397,7 +455,10 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
       if (effectiveDelay && effectiveDelay > 0) {
         gqJobsDelayedTotal.inc({ queue_name: this.queueName }, newStagedCount);
         for (let i = 0; i < newStagedCount; i++) {
-          gqJobDelayMilliseconds.observe({ queue_name: this.queueName }, effectiveDelay);
+          gqJobDelayMilliseconds.observe(
+            { queue_name: this.queueName },
+            effectiveDelay,
+          );
         }
       }
       // Per-tenant rate tracking. The Lua script may have deduped some
@@ -440,7 +501,10 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
     // Parse the stored job data
     let jobData: Record<string, unknown>;
     try {
-      jobData = JSON.parse(jobDataJson) as Record<string, unknown>;
+      jobData = await decodeJobEnvelope({
+        value: jobDataJson,
+        blobs: this.blobs,
+      });
     } catch {
       this.logger.error(
         { queueName: this.queueName, stagedJobId, groupId },
@@ -448,15 +512,22 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
       );
       // Complete the group slot so it's not stuck
       await this.scripts.complete({ groupId, stagedJobId });
+      this.deleteEnvelopeBlobs([jobDataJson]);
       return;
     }
 
     const contextMetadata = jobData.__context as JobContextMetadata | undefined;
-    const attempt = typeof jobData.__attempt === "number" ? jobData.__attempt : 1;
+    const attempt =
+      typeof jobData.__attempt === "number" ? jobData.__attempt : 1;
     const pipelineName = (jobData.__pipelineName as string) ?? "unknown";
     const jobType = (jobData.__jobType as string) ?? "unknown";
     const jobName = (jobData.__jobName as string) ?? "unknown";
-    const routingLabels = { queue_name: this.queueName, pipeline_name: pipelineName, job_type: jobType, job_name: jobName };
+    const routingLabels = {
+      queue_name: this.queueName,
+      pipeline_name: pipelineName,
+      job_type: jobType,
+      job_name: jobName,
+    };
     const payload = this.stripInternalFields(jobData);
 
     // Opt-in batch coalescing: if this job type supports it, drain additional
@@ -488,11 +559,14 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
         drainedSiblings = [];
       }
       if (drainedSiblings.length > 0) {
-        const siblingPayloads: Payload[] = [];
-        for (const sibling of drainedSiblings) {
-          const parsed = this.parseDrainedPayload(sibling, groupId);
-          if (parsed) siblingPayloads.push(parsed);
-        }
+        const parsedSiblings = await Promise.all(
+          drainedSiblings.map((sibling) =>
+            this.parseDrainedPayload({ sibling, groupId }),
+          ),
+        );
+        const siblingPayloads = parsedSiblings.filter(
+          (parsed) => parsed !== null,
+        ) as Payload[];
         if (siblingPayloads.length > 0) {
           batchPayloads = [payload, ...siblingPayloads];
         }
@@ -519,7 +593,12 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
         try {
           const custom = this.spanAttributes(payload);
           for (const [key, value] of Object.entries(custom)) {
-            if (value !== undefined && (typeof value === "string" || typeof value === "number" || typeof value === "boolean")) {
+            if (
+              value !== undefined &&
+              (typeof value === "string" ||
+                typeof value === "number" ||
+                typeof value === "boolean")
+            ) {
               spanAttributes[key] = value;
             }
           }
@@ -549,7 +628,10 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
 
             // Add business context attributes
             if (contextMetadata?.organizationId) {
-              span.setAttribute("organization.id", contextMetadata.organizationId);
+              span.setAttribute(
+                "organization.id",
+                contextMetadata.organizationId,
+              );
             }
             if (contextMetadata?.projectId) {
               span.setAttribute("tenant.id", contextMetadata.projectId);
@@ -563,7 +645,10 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
               const requestContext = createContextFromJobData(contextMetadata);
               await runWithContext(requestContext, async () => {
                 if (batchPayloads && this.processBatch) {
-                  span.setAttribute("queue.coalesced_batch_size", batchPayloads.length);
+                  span.setAttribute(
+                    "queue.coalesced_batch_size",
+                    batchPayloads.length,
+                  );
                   await this.processBatch(batchPayloads);
                 } else {
                   await this.process(payload);
@@ -574,6 +659,10 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
               // removed from staging during the drain, so completing the
               // dispatched job is enough to free the group.
               await this.scripts.complete({ groupId, stagedJobId, jobName });
+              this.deleteEnvelopeBlobs([
+                jobDataJson,
+                ...drainedSiblings.map((sibling) => sibling.jobDataJson),
+              ]);
               gqJobsCompletedTotal.inc(routingLabels);
 
               this.logger.debug(
@@ -606,10 +695,13 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
                 gqRetryAttempt.observe(routingLabels, attempt);
                 gqRetryBackoffMilliseconds.observe(routingLabels, backoffMs);
                 const newStagedJobId = `${stagedJobId}/r/${attempt}`;
-                const retryJobData = JSON.stringify({
-                  ...(payload as Record<string, unknown>),
-                  __context: contextMetadata,
-                  __attempt: attempt + 1,
+                const retryJobData = await encodeJobEnvelope({
+                  jobData: {
+                    ...(payload as Record<string, unknown>),
+                    __context: contextMetadata,
+                    __attempt: attempt + 1,
+                  },
+                  blobs: this.blobs,
                 });
 
                 await this.scripts.retryRestage({
@@ -620,6 +712,11 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
                   jobDataJson: retryJobData,
                   backoffMs,
                 });
+                // The re-stage wrote a fresh envelope (and blob, if large);
+                // the dispatched value's blob is now unreferenced. Drained
+                // siblings were re-staged with their ORIGINAL values, so
+                // their blobs stay.
+                this.deleteEnvelopeBlobs([jobDataJson]);
 
                 this.logger.warn(
                   {
@@ -661,6 +758,7 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
                   contextMetadata,
                   routingLabels,
                 });
+                this.deleteEnvelopeBlobs([jobDataJson]);
               }
             }
           },
@@ -700,6 +798,23 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
   }
 
   /**
+   * Best-effort reclamation of offloaded bodies whose staged values are retired
+   * (drained, completed, retried, or displaced by a dedup squash). Inline and
+   * legacy values yield no blob id and are skipped. Fire-and-forget: the blob
+   * TTL is the correctness backstop, so a failed delete only means the blob
+   * lingers until expiry. Producer (send/sendBatch) and worker paths alike call
+   * this without awaiting, to keep the hot path off the extra round-trip.
+   */
+  private deleteEnvelopeBlobs(values: string[]): void {
+    for (const value of values) {
+      const blobId = readEnvelopeBlobId(value);
+      if (blobId) {
+        void this.blobs.delete({ id: blobId }).catch(() => {});
+      }
+    }
+  }
+
+  /**
    * Strips internal metadata fields from job data, returning the clean payload.
    */
   private stripInternalFields(jobData: Record<string, unknown>): Payload {
@@ -716,13 +831,26 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
    * here and recoverable via event replay, mirroring the dispatched job's own
    * parse-failure handling).
    */
-  private parseDrainedPayload(sibling: DrainedJob, groupId: string): Payload | null {
+  private async parseDrainedPayload({
+    sibling,
+    groupId,
+  }: {
+    sibling: DrainedJob;
+    groupId: string;
+  }): Promise<Payload | null> {
     try {
-      const jobData = JSON.parse(sibling.jobDataJson) as Record<string, unknown>;
+      const jobData = await decodeJobEnvelope({
+        value: sibling.jobDataJson,
+        blobs: this.blobs,
+      });
       return this.stripInternalFields(jobData);
     } catch {
       this.logger.error(
-        { queueName: this.queueName, groupId, stagedJobId: sibling.stagedJobId },
+        {
+          queueName: this.queueName,
+          groupId,
+          stagedJobId: sibling.stagedJobId,
+        },
         "Failed to parse drained sibling job data — dropping (recoverable via replay)",
       );
       return null;
@@ -825,9 +953,12 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
 
     // Re-stage with a new ID
     const newStagedJobId = `${stagedJobId}/r/${Date.now()}`;
-    const jobDataJson = JSON.stringify({
-      ...(payload as Record<string, unknown>),
-      __context: contextMetadata,
+    const jobDataJson = await encodeJobEnvelope({
+      jobData: {
+        ...(payload as Record<string, unknown>),
+        __context: contextMetadata,
+      },
+      blobs: this.blobs,
     });
 
     // Atomically: block the group, re-stage the job, update ready score, store error
@@ -881,7 +1012,51 @@ export class GroupQueueProcessor<Payload extends Record<string, unknown>>
   }
 
   async waitUntilReady(): Promise<void> {
-    // No-op — Redis connection is already established, fastq needs no setup.
+    const bc = this.blockingConnection;
+    // The shared connection's readiness is owned by whoever created it.
+    if (bc === this.redisConnection) return;
+    if (bc.status === "ready") return;
+    // `end` is ioredis's terminal state — it fires only when no further
+    // reconnection will be attempted. If we already missed the window, fail
+    // fast rather than wait for an event that will never come.
+    if (bc.status === "end") {
+      throw new Error("Blocking Redis connection ended before ready");
+    }
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        bc.off("ready", onReady);
+        bc.off("end", onEnd);
+        bc.off("error", onError);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onEnd = () => {
+        cleanup();
+        reject(new Error("Blocking Redis connection ended before ready"));
+      };
+      // Transient reconnect events are EXPECTED while ioredis retries with
+      // maxRetriesPerRequest: null — on an unavailable endpoint it emits
+      // `error` → `close` → `reconnecting` and can later recover with `ready`.
+      // Rejecting on `error`/`close` would turn a recoverable Redis blip into a
+      // pipeline-startup failure (the regression this guards). So we do NOT
+      // listen for `close` at all, and the `error` listener only absorbs the
+      // error (keeping a listener attached so ioredis' emit is never unhandled)
+      // and keeps waiting. Only the terminal `end` event fails readiness.
+      const onError = (err: unknown) => {
+        this.logger.debug(
+          {
+            queueName: this.queueName,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "Blocking connection error while awaiting readiness; awaiting reconnect",
+        );
+      };
+      bc.once("ready", onReady);
+      bc.once("end", onEnd);
+      bc.on("error", onError);
+    });
   }
 
   async close(): Promise<void> {

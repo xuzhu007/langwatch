@@ -195,6 +195,24 @@ describe("clickHouseFilterConditions", () => {
       expect(result.sql).toContain("sp.SpanAttributes['langwatch.span.type']");
       expect(result.params).toEqual({ f0_values: ["llm", "tool"] });
     });
+
+    it("does not bound StartTime when no spanTimeBound option is given", () => {
+      const builder = clickHouseFilterConditions["spans.type"];
+      const result = builder!(["llm"], "f0");
+      expect(result.sql).not.toContain("sp.StartTime");
+    });
+
+    it("injects the spanTimeBound fragment when provided", () => {
+      const builder = clickHouseFilterConditions["spans.type"];
+      const bound =
+        " AND sp.StartTime >= fromUnixTimestamp64Milli({spanWindowStart:UInt64}) AND sp.StartTime <= fromUnixTimestamp64Milli({spanWindowEnd:UInt64})";
+      const result = builder!(["llm"], "f0", undefined, undefined, {
+        spanTimeBound: bound,
+      });
+      expect(result.sql).toContain("sp.StartTime >=");
+      expect(result.sql).toContain("spanWindowStart");
+      expect(result.sql).toContain("spanWindowEnd");
+    });
   });
 
   describe("events.event_type", () => {
@@ -202,11 +220,10 @@ describe("clickHouseFilterConditions", () => {
       const builder = clickHouseFilterConditions["events.event_type"];
       expect(builder).not.toBeNull();
       const result = builder!(["thumbs_up_down", "feedback"], "f0");
-
-      expect(result.sql).toContain("ts.TraceId IN");
-      expect(result.sql).toContain("stored_spans");
+      expect(result.sql).toContain("EXISTS (");
+      expect(result.sql).toContain("stored_spans sp");
       expect(result.sql).toContain(
-        'hasAny("Events.Name", {f0_values:Array(String)})',
+        'hasAny(sp."Events.Name", {f0_values:Array(String)})',
       );
       expect(result.sql).not.toContain("SpanAttributes['event.type']");
       expect(result.params).toEqual({
@@ -584,6 +601,68 @@ describe("generateClickHouseFilterConditions", () => {
       expect(result.conditions.length).toBe(1);
       // Single condition should not have extra OR wrapping
       expect(result.conditions[0]).not.toContain(" OR ");
+    });
+  });
+
+  describe("stored_spans partition pruning via time window", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    it("bounds the span EXISTS subquery to the buffered window", () => {
+      const filters: Partial<Record<FilterField, FilterParam>> = {
+        "spans.type": ["llm"],
+      };
+      const startDate = 10 * DAY;
+      const endDate = 20 * DAY;
+      const result = generateClickHouseFilterConditions(filters, {
+        startDate,
+        endDate,
+      });
+
+      expect(result.conditions[0]).toContain("sp.StartTime >=");
+      expect(result.conditions[0]).toContain("sp.StartTime <=");
+      // +/- 2 day buffer around the dashboard window.
+      expect(result.params).toHaveProperty(
+        "spanWindowStart",
+        startDate - 2 * DAY,
+      );
+      expect(result.params).toHaveProperty("spanWindowEnd", endDate + 2 * DAY);
+    });
+
+    it("clamps the lower bound at zero", () => {
+      const result = generateClickHouseFilterConditions(
+        { "spans.type": ["llm"] },
+        { startDate: 0, endDate: 5 * DAY },
+      );
+      expect(result.params).toHaveProperty("spanWindowStart", 0);
+    });
+
+    it("also bounds event.* filters that probe stored_spans", () => {
+      const result = generateClickHouseFilterConditions(
+        { "events.event_type": ["thumbs_up"] },
+        { startDate: 10 * DAY, endDate: 20 * DAY },
+      );
+      expect(result.conditions[0]).toContain("stored_spans sp");
+      expect(result.conditions[0]).toContain("sp.StartTime >=");
+    });
+
+    it("leaves queries unbounded when no window is passed (backwards compat)", () => {
+      const result = generateClickHouseFilterConditions({
+        "spans.type": ["llm"],
+      });
+      expect(result.conditions[0]).not.toContain("sp.StartTime");
+      expect(result.params).not.toHaveProperty("spanWindowStart");
+    });
+
+    it("does not inject StartTime SQL when the filter set has no span probe", () => {
+      const result = generateClickHouseFilterConditions(
+        { "topics.topics": ["t1"] },
+        { startDate: 10 * DAY, endDate: 20 * DAY },
+      );
+      // The span-window params are still emitted when a window is passed (they
+      // are harmless and unreferenced here), but no filter probes stored_spans,
+      // so no StartTime predicate is injected.
+      expect(result.conditions[0]).not.toContain("sp.StartTime");
+      expect(result.params).toHaveProperty("spanWindowStart");
     });
   });
 });

@@ -53,6 +53,23 @@ describe("aggregation-builder", () => {
       expect(result.sql).toContain("'previous'");
     });
 
+    // A span/event facet filter resolves to a `... FROM stored_spans ...`
+    // subquery. stored_spans is partitioned by toYearWeek(StartTime) and tiered
+    // to S3, so the subquery must carry a StartTime predicate or it cold-scans
+    // every weekly partition. The envelope reuses the query's own date params.
+    it("bounds the stored_spans facet subquery to the date envelope by StartTime", () => {
+      const input = {
+        ...baseInput,
+        filters: { "spans.type": ["llm"] },
+      };
+      const result = buildTimeseriesQuery(input);
+
+      expect(result.sql).toContain("FROM stored_spans");
+      // The subquery prunes partitions instead of cold-scanning S3.
+      expect(result.sql).toContain("StartTime >= {previousStart:DateTime64(3)}");
+      expect(result.sql).toContain("StartTime < {currentEnd:DateTime64(3)}");
+    });
+
     it("includes date truncation for timescale", () => {
       const result = buildTimeseriesQuery(baseInput);
 
@@ -1243,6 +1260,24 @@ describe("aggregation-builder", () => {
       expect(result.sql).toContain("JOIN stored_spans");
     });
 
+    it("prunes the stored_spans join to the StartTime partition window", () => {
+      const result = buildTopDocumentsQuery(projectId, startDate, endDate);
+
+      // stored_spans is partitioned by toYearWeek(StartTime); without a
+      // StartTime bound the join scans every weekly partition (incl. cold S3).
+      // Both the top-10 and the total-count parts must carry the predicate.
+      expect(
+        result.sql.match(
+          /ss\.StartTime >= \{startDate:DateTime64\(3\)\} - INTERVAL 2 DAY/g,
+        ) ?? [],
+      ).toHaveLength(2);
+      expect(
+        result.sql.match(
+          /ss\.StartTime < \{endDate:DateTime64\(3\)\} \+ INTERVAL 2 DAY/g,
+        ) ?? [],
+      ).toHaveLength(2);
+    });
+
     it("includes query for total unique documents", () => {
       const result = buildTopDocumentsQuery(projectId, startDate, endDate);
 
@@ -1332,6 +1367,19 @@ describe("aggregation-builder", () => {
       expect(result.sql).toContain('Events.Timestamp"');
       expect(result.sql).toContain('Events.Name"');
       expect(result.sql).toContain('Events.Attributes"');
+    });
+
+    it("prunes the stored_spans join to the StartTime partition window", () => {
+      const result = buildFeedbacksQuery(projectId, startDate, endDate);
+
+      // Same partition-pruning rationale as the documents query: bound the
+      // stored_spans scan to the date window instead of every weekly partition.
+      expect(result.sql).toContain(
+        "ss.StartTime >= {startDate:DateTime64(3)} - INTERVAL 2 DAY",
+      );
+      expect(result.sql).toContain(
+        "ss.StartTime < {endDate:DateTime64(3)} + INTERVAL 2 DAY",
+      );
     });
 
     it("includes filters when provided with parameterized values", () => {

@@ -1,8 +1,4 @@
 import { Box, HStack, Link, Text } from "@chakra-ui/react";
-import type {
-  EvaluatorField,
-  EvaluatorWithFields,
-} from "~/server/evaluators/evaluator.service";
 import {
   type ColumnDef,
   type ColumnSizingState,
@@ -15,29 +11,36 @@ import { nanoid } from "nanoid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { AddOrEditDatasetDrawer } from "~/components/AddOrEditDatasetDrawer";
+import { datasetTableCss } from "~/components/datasets/editor/datasetTableStyles";
+import type { ColumnType } from "~/components/datasets/editor/TableCell";
+import { useTableKeyboardNavigation } from "~/components/datasets/editor/useTableKeyboardNavigation";
+import { VirtualizedTableBody } from "~/components/datasets/editor/VirtualizedTableBody";
+import type { FieldMapping as UIFieldMapping } from "~/components/variables";
 import { setFlowCallbacks, useDrawer } from "~/hooks/useDrawer";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import type {
+  Field,
+  HttpComponentConfig,
+} from "~/optimization_studio/types/dsl";
 import type { TypedAgent } from "~/server/agents/agent.repository";
-import type { EvaluatorTypes } from "~/server/evaluations/evaluators.generated";
-import { api } from "~/utils/api";
-
-import type { FieldMapping as UIFieldMapping } from "~/components/variables";
-import type { Field, HttpComponentConfig } from "~/optimization_studio/types/dsl";
 import type { DatasetColumnType } from "~/server/datasets/types";
+import type { EvaluatorTypes } from "~/server/evaluations/evaluators";
+import type {
+  EvaluatorField,
+  EvaluatorWithFields,
+} from "~/server/evaluators/evaluator.service";
+import { api } from "~/utils/api";
 import { DRAWER_WIDTH } from "../constants";
+import { resolveTargetNameFromCache } from "../hooks/resolveTargetName";
 import { useDatasetSync } from "../hooks/useDatasetSync";
-import {
-  buildInputsFromBodyTemplate,
-  convertHttpComponentConfig,
-} from "../utils/httpAgentUtils";
 import { useEvaluationsV3Store } from "../hooks/useEvaluationsV3Store";
 import { useExecuteEvaluation } from "../hooks/useExecuteEvaluation";
+import { useOpenEvaluatorEditor } from "../hooks/useOpenEvaluatorEditor";
 import {
   scrollToTargetColumn,
   useOpenTargetEditor,
 } from "../hooks/useOpenTargetEditor";
 import { useDatasetSelectionLoader } from "../hooks/useSavedDatasetLoader";
-import { useTableKeyboardNavigation } from "../hooks/useTableKeyboardNavigation";
 import type {
   DatasetColumn,
   DatasetReference,
@@ -56,10 +59,16 @@ import {
   convertFromUIMapping,
   convertToUIMapping,
 } from "../utils/fieldMappingConverters";
+import {
+  buildInputsFromBodyTemplate,
+  convertHttpComponentConfig,
+} from "../utils/httpAgentUtils";
+import { evaluatorHasMissingMappings } from "../utils/mappingValidation";
 import { createPromptEditorCallbacks } from "../utils/promptEditorCallbacks";
 import { ColumnTypeIcon } from "./ColumnTypeIcon";
-import { type ColumnType } from "./DatasetSection/TableCell";
 import { DatasetSuperHeader } from "./DatasetSuperHeader";
+import { EvaluationsV3DatasetTableProvider } from "./EvaluationsV3DatasetTableProvider";
+import { PairwiseCompareCell } from "./PairwiseCompareCell";
 import { SelectionToolbar } from "./SelectionToolbar";
 import {
   CheckboxCellFromMeta,
@@ -68,7 +77,6 @@ import {
   TargetHeaderFromMeta,
 } from "./TableMetaWrappers";
 import { TargetSuperHeader } from "./TargetSuperHeader";
-import { VirtualizedTableBody } from "./VirtualizedTableBody";
 
 // Max rows for expanded mode (disable virtualization above this)
 const MAX_ROWS_FOR_FIT_MODE = 100;
@@ -234,9 +242,7 @@ export function EvaluationsV3Table({
     (targetId: string): boolean => {
       const outputs = results.targetOutputs[targetId];
       if (!outputs) return false;
-      return outputs.some(
-        (output) => output !== undefined && output !== null,
-      );
+      return outputs.some((output) => output !== undefined && output !== null);
     },
     [results.targetOutputs],
   );
@@ -274,8 +280,21 @@ export function EvaluationsV3Table({
   const { openTargetEditor, buildAvailableSources, isDatasetSource } =
     useOpenTargetEditor();
 
+  // Hook for opening the grading-evaluator mapping drawer. Used to guide the
+  // user to unmapped fields right after adding an evaluator (see Issue A).
+  const openEvaluatorEditor = useOpenEvaluatorEditor();
+
   // Track pending mappings for new prompts (before they become targets)
   const pendingMappingsRef = useRef<Record<string, UIFieldMapping>>({});
+
+  // Track pairwise variant selections made inside the creation evaluatorEditor
+  // so handleSelectEvaluatorAsTarget can apply them on save instead of empty defaults.
+  const pendingPairwiseRef = useRef<{
+    variantA: string;
+    variantB: string;
+    goldenField: string;
+    includeMetrics: ("cost" | "duration")[];
+  } | null>(null);
 
   // Track target being switched (null when adding new, target ID when switching)
   const switchingTargetIdRef = useRef<string | null>(null);
@@ -312,7 +331,9 @@ export function EvaluationsV3Table({
       if (isHttpAgent) {
         // HTTP agent: extract inputs from body template
         const httpComponentConfig = config as HttpComponentConfig;
-        targetInputs = buildInputsFromBodyTemplate(httpComponentConfig.bodyTemplate);
+        targetInputs = buildInputsFromBodyTemplate(
+          httpComponentConfig.bodyTemplate,
+        );
         httpConfig = convertHttpComponentConfig(httpComponentConfig);
 
         // Fall back to default input if bodyTemplate has no variables
@@ -329,7 +350,9 @@ export function EvaluationsV3Table({
       const targetConfig: TargetConfig = {
         id: `target_${Date.now()}`, // Generate unique ID for the workbench
         type: "agent", // This is a target of type "agent" (code/workflow/http)
-        agentType: isHttpAgent ? "http" : (savedAgent.type as TargetConfig["agentType"]),
+        agentType: isHttpAgent
+          ? "http"
+          : (savedAgent.type as TargetConfig["agentType"]),
         dbAgentId: savedAgent.id, // Reference to the database agent
         inputs: targetInputs,
         outputs: (config.outputs as TargetConfig["outputs"]) ?? [
@@ -363,6 +386,18 @@ export function EvaluationsV3Table({
         type: field.type as Field["type"],
       }));
 
+      // Pairwise column-target (#5100): seed an empty pairwise config so the
+      // column owns its variantA/variantB/goldenField selections — this is the
+      // discriminator the Run flow and validation use to render the clean
+      // PairwiseConfigForm instead of the generic per-row mappings UI. Strictly
+      // additive: only set when the underlying evaluator is pairwise_compare,
+      // so every other evaluator-as-target keeps its current behavior.
+      const config = (evaluator.config ?? null) as {
+        evaluatorType?: string;
+      } | null;
+      const isPairwiseEvaluator =
+        config?.evaluatorType === "langevals/pairwise_compare";
+
       const targetConfig: TargetConfig = {
         id: `target_${Date.now()}`,
         type: "evaluator",
@@ -370,11 +405,29 @@ export function EvaluationsV3Table({
         inputs,
         outputs,
         mappings: {},
+        ...(isPairwiseEvaluator && {
+          pairwise: pendingPairwiseRef.current ?? {
+            variantA: "",
+            variantB: "",
+            goldenField: "",
+            includeMetrics: [],
+          },
+        }),
       };
+      pendingPairwiseRef.current = null;
       addOrReplaceTarget(targetConfig);
-      closeDrawer();
+      // For pairwise-as-target, open the PairwiseConfigForm immediately so the
+      // user can configure Variant A / Variant B / Golden field without having
+      // to find and click the target chip again.
+      if (isPairwiseEvaluator) {
+        // openTargetEditor reads fresh store state, so the target we just added
+        // is visible when the drawer opens.
+        void openTargetEditor(targetConfig);
+      } else {
+        closeDrawer();
+      }
     },
-    [addOrReplaceTarget, closeDrawer],
+    [addOrReplaceTarget, closeDrawer, openTargetEditor],
   );
 
   // Handler for when a prompt is selected from the drawer
@@ -459,9 +512,12 @@ export function EvaluationsV3Table({
    * Helper to add an evaluator to the workbench from an EvaluatorWithFields.
    * Used by both onSelect (existing evaluator) and onSave (newly created evaluator).
    * Fields are pre-computed by the API including type and optional flag.
+   *
+   * Returns the new workbench config id, or null when the evaluator was already
+   * present (so callers can skip the post-add auto-open).
    */
   const addEvaluatorToWorkbench = useCallback(
-    (evaluator: EvaluatorWithFields) => {
+    (evaluator: EvaluatorWithFields): string | null => {
       // Extract evaluator config from the Prisma evaluator
       const config = evaluator.config as EvaluatorDbConfig | null;
 
@@ -472,7 +528,7 @@ export function EvaluationsV3Table({
 
       // If already exists, no need to add again (it applies to all targets)
       if (existingEvaluator) {
-        return;
+        return null;
       }
 
       // Create a new EvaluatorConfig from the evaluator
@@ -490,10 +546,89 @@ export function EvaluationsV3Table({
         dbEvaluatorId: evaluator.id,
       };
 
-      // Add the evaluator globally (applies to all targets automatically)
+      // Add the evaluator globally (applies to all targets automatically).
+      // The store runs auto-inference on add, so any auto-mappable fields are
+      // already mapped by the time we read it back below.
       addEvaluator(evaluatorConfig);
+      return evaluatorConfig.id;
     },
     [evaluators, addEvaluator],
+  );
+
+  /**
+   * After adding an evaluator, decide whether to close the picker or guide the
+   * user to its mapping drawer. Auto-inference cannot always satisfy every
+   * required input (e.g. the dataset has no column for a required field), so
+   * silently closing would leave a freshly added evaluator with no signpost to
+   * where the missing mapping lives. When fields remain unmapped we open the
+   * evaluator's mapping drawer instead (see Issue A).
+   */
+  const guideOrCloseAfterAdd = useCallback(
+    (addedId: string | null, isCodeEvaluator: boolean) => {
+      // Read fresh state: the just-added config (with inferred mappings) is not
+      // yet reflected in this closure's `evaluators`.
+      const state = useEvaluationsV3Store.getState();
+      const added = state.evaluators.find((e) => e.id === addedId);
+      // The first target provides the mapping context for the drawer.
+      const firstTarget = state.targets[0];
+
+      if (!addedId || !added) {
+        closeDrawer();
+        return;
+      }
+
+      // Pairwise evaluators always open their dedicated target-picker form
+      // (PairwiseConfigForm), regardless of whether targets exist yet.
+      // useOpenEvaluatorEditor routes pairwise_compare to PairwiseConfigForm
+      // and ignores the `target` / `targetName` params, so we pass a stub
+      // when no real target exists yet.
+      if (added.evaluatorType === "langevals/pairwise_compare") {
+        const stubTarget: TargetConfig = firstTarget ?? {
+          id: "",
+          type: "prompt",
+          inputs: [],
+          outputs: [],
+          mappings: {},
+        };
+        openEvaluatorEditor({
+          evaluator: added,
+          target: stubTarget,
+          targetName: firstTarget
+            ? (resolveTargetNameFromCache({
+                target: firstTarget,
+                utils: trpcUtils,
+                projectId: project?.id,
+              }) ?? "")
+            : "",
+          isCodeEvaluator: false,
+        });
+        return;
+      }
+
+      if (
+        firstTarget &&
+        evaluatorHasMissingMappings(
+          added,
+          state.activeDatasetId,
+          firstTarget.id,
+        )
+      ) {
+        openEvaluatorEditor({
+          evaluator: added,
+          target: firstTarget,
+          targetName:
+            resolveTargetNameFromCache({
+              target: firstTarget,
+              utils: trpcUtils,
+              projectId: project?.id,
+            }) ?? "",
+          isCodeEvaluator,
+        });
+        return;
+      }
+      closeDrawer();
+    },
+    [openEvaluatorEditor, closeDrawer, trpcUtils, project?.id],
   );
 
   // Handler for opening the evaluator selector (evaluators apply to ALL targets)
@@ -502,8 +637,8 @@ export function EvaluationsV3Table({
     // Note: EvaluatorListDrawer does NOT navigate after onSelect - caller must handle it
     setFlowCallbacks("evaluatorList", {
       onSelect: (evaluator) => {
-        addEvaluatorToWorkbench(evaluator);
-        closeDrawer(); // Close drawer after adding evaluator to workbench
+        const addedId = addEvaluatorToWorkbench(evaluator);
+        guideOrCloseAfterAdd(addedId, evaluator.type === "code");
       },
     });
 
@@ -511,7 +646,7 @@ export function EvaluationsV3Table({
     // When user creates a new evaluator via the editor drawer, we need to:
     // 1. Fetch the newly created evaluator from DB
     // 2. Add it to the workbench
-    // 3. Close the drawer
+    // 3. Either close the drawer, or open its mapping drawer if fields are unmapped
     setFlowCallbacks(
       "evaluatorEditor",
       createEvaluatorEditorCallbacks({
@@ -523,9 +658,11 @@ export function EvaluationsV3Table({
           });
 
           if (evaluator) {
-            addEvaluatorToWorkbench(evaluator);
+            const addedId = addEvaluatorToWorkbench(evaluator);
+            guideOrCloseAfterAdd(addedId, evaluator.type === "code");
+          } else {
+            closeDrawer();
           }
-          closeDrawer(); // Close drawer after adding evaluator to workbench
           return true; // Indicate navigation was handled to prevent default back behavior
         },
       }),
@@ -536,6 +673,7 @@ export function EvaluationsV3Table({
     openDrawer,
     closeDrawer,
     addEvaluatorToWorkbench,
+    guideOrCloseAfterAdd,
     trpcUtils.evaluators.getById,
     project?.id,
   ]);
@@ -675,6 +813,21 @@ export function EvaluationsV3Table({
     setFlowCallbacks("evaluatorList", {
       onSelect: handleSelectEvaluatorAsTarget,
     });
+    // Build pairwiseContext so TargetTypeSelectorDrawer can pass it to
+    // evaluatorEditor when "Pairwise Compare" is selected — this makes the
+    // creation form show Variant A / Variant B / Golden field immediately,
+    // matching the edit-mode experience (see #5195).
+    pendingPairwiseRef.current = null;
+    const state = useEvaluationsV3Store.getState();
+    const variantOptions = state.targets.filter((t) => t.type !== "evaluator");
+    const activeDs = state.datasets.find((d) => d.id === state.activeDatasetId);
+    const pairwiseContext = {
+      initialPairwise: undefined,
+      targets: variantOptions,
+      datasetColumns:
+        activeDs?.columns.map((c) => ({ id: c.id, name: c.name })) ?? [],
+    };
+
     // Set up flow callback for when a NEW evaluator is created during the target flow
     // This handles: add comparison > evaluator > create new > category > fill form > create
     setFlowCallbacks(
@@ -696,9 +849,12 @@ export function EvaluationsV3Table({
           handleSelectEvaluatorAsTarget(evaluator);
           return true; // Indicate navigation was handled to prevent default back behavior
         },
+        onPairwiseChange: (next) => {
+          pendingPairwiseRef.current = next;
+        },
       }),
     );
-    openDrawer("targetTypeSelector");
+    openDrawer("targetTypeSelector", { pairwiseContext });
   }, [
     buildAvailableSources,
     openDrawer,
@@ -739,7 +895,12 @@ export function EvaluationsV3Table({
         openDrawer("evaluatorList");
       }
     },
-    [openDrawer, handleSelectPrompt, handleSelectSavedAgent, handleSelectEvaluatorAsTarget],
+    [
+      openDrawer,
+      handleSelectPrompt,
+      handleSelectSavedAgent,
+      handleSelectEvaluatorAsTarget,
+    ],
   );
 
   // Dataset handlers for drawer integration
@@ -934,14 +1095,24 @@ export function EvaluationsV3Table({
             {
               output: results.targetOutputs[target.id]?.[index] ?? null,
               // All evaluators apply to all targets
-              evaluators: Object.fromEntries(
-                evaluators.map((evaluator) => [
+              evaluators: Object.fromEntries([
+                ...evaluators.map((evaluator) => [
                   evaluator.id,
                   results.evaluatorResults[target.id]?.[evaluator.id]?.[
                     index
                   ] ?? null,
                 ]),
-              ),
+                ...(target.pairwise
+                  ? [
+                      [
+                        target.id,
+                        results.evaluatorResults[target.id]?.[target.id]?.[
+                          index
+                        ] ?? null,
+                      ],
+                    ]
+                  : []),
+              ] as Array<[string, unknown]>),
               // Error for this target/row
               error: results.errors[target.id]?.[index] ?? null,
               // Loading if this specific cell is in the executing set AND has no output/error yet
@@ -977,10 +1148,31 @@ export function EvaluationsV3Table({
   // Build columns - columnHelper is stable (useMemo to prevent recreating)
   const columnHelper = useMemo(() => createColumnHelper<TableRowData>(), []);
 
-  // Extract target IDs for stable column structure
-  // Only recreate when the actual IDs change, not when target data changes
-  const targetIdsKey = targets.map((r) => r.id).join(",");
-  const targetIds = useMemo(() => targets.map((r) => r.id), [targetIdsKey]);
+  // Extract target IDs for stable column structure.
+  // Sort so non-evaluator targets (prompts/agents) always precede evaluator
+  // targets (pairwise, custom evals) — giving the logical left-to-right order:
+  // Target A | Target B | Pairwise.
+  const targetIdsKey = targets
+    .slice()
+    .sort((a, b) => {
+      if (a.type === "evaluator" && b.type !== "evaluator") return 1;
+      if (a.type !== "evaluator" && b.type === "evaluator") return -1;
+      return 0;
+    })
+    .map((r) => r.id)
+    .join(",");
+  const targetIds = useMemo(
+    () =>
+      targets
+        .slice()
+        .sort((a, b) => {
+          if (a.type === "evaluator" && b.type !== "evaluator") return 1;
+          if (a.type !== "evaluator" && b.type === "evaluator") return -1;
+          return 0;
+        })
+        .map((r) => r.id),
+    [targetIdsKey],
+  );
 
   // Similarly stabilize dataset columns - include type in key so icon updates when type changes
   const datasetColumnsKey = datasetColumns
@@ -989,6 +1181,31 @@ export function EvaluationsV3Table({
   const stableDatasetColumns = useMemo(
     () => datasetColumns,
     [datasetColumnsKey],
+  );
+
+  // Stabilize pairwise evaluators — only those with both variants configured.
+  // Only recreate columns when the set of configured pairwise evaluators changes.
+  const pairwiseEvaluatorsKey = evaluators
+    .filter(
+      (e) =>
+        e.evaluatorType === "langevals/pairwise_compare" &&
+        e.pairwise?.variantA &&
+        e.pairwise?.variantB &&
+        e.pairwise?.goldenField,
+    )
+    .map((e) => `${e.id}:${e.pairwise?.variantA}:${e.pairwise?.variantB}`)
+    .join(",");
+  const stablePairwiseEvaluators = useMemo(
+    () =>
+      evaluators.filter(
+        (e) =>
+          e.evaluatorType === "langevals/pairwise_compare" &&
+          e.pairwise?.variantA &&
+          e.pairwise?.variantB &&
+          e.pairwise?.goldenField,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pairwiseEvaluatorsKey],
   );
 
   // Build table meta for passing dynamic data to headers/cells
@@ -1181,12 +1398,62 @@ export function EvaluationsV3Table({
       );
     }
 
+    // Dedicated pairwise result columns — one per fully-configured pairwise
+    // evaluator, rendered AFTER all target columns (Target A, Target B, Pairwise).
+    // The orchestrator anchors Phase-2 results on variantA's cell.
+    for (const pwEval of stablePairwiseEvaluators) {
+      const evaluatorId = pwEval.id;
+      const variantAId = pwEval.pairwise!.variantA;
+      const variantBId = pwEval.pairwise!.variantB;
+      cols.push(
+        columnHelper.accessor(
+          (row) => row.targets[variantAId]?.evaluators[evaluatorId],
+          {
+            id: `pairwise.${evaluatorId}`,
+            header: (context) => {
+              const meta = context.table.options.meta as TableMeta | undefined;
+              const evaluator = meta?.evaluatorsMap.get(evaluatorId);
+              return (
+                <HStack gap={1}>
+                  <Text fontSize="13px" fontWeight="medium">
+                    🏆 {evaluator?.localEvaluatorConfig?.name ?? "Pairwise"}
+                  </Text>
+                </HStack>
+              );
+            },
+            cell: (info) => {
+              if (info.row.original.isEmpty) return null;
+              const meta = info.table.options.meta as TableMeta | undefined;
+              const variantATarget = meta?.targetsMap.get(variantAId);
+              const variantBTarget = meta?.targetsMap.get(variantBId);
+              const rowData = info.row.original.targets[variantAId];
+              return (
+                <PairwiseCompareCell
+                  result={info.getValue()}
+                  isLoading={rowData?.isLoading}
+                  variantATarget={variantATarget}
+                  variantBTarget={variantBTarget}
+                />
+              );
+            },
+            size: TARGET_COL_DEFAULT_PCT,
+            minSize: 10,
+            meta: {
+              columnType: "pairwise" as ColumnType,
+              columnId: `pairwise.${evaluatorId}`,
+            },
+          },
+        ) as ColumnDef<TableRowData>,
+      );
+    }
+
     return cols;
   }, [
     // ONLY structural dependencies - columns should almost never change
     // All dynamic data goes through tableMeta
     targetIds,
     stableDatasetColumns,
+    stablePairwiseEvaluators,
     columnHelper,
   ]);
 
@@ -1305,7 +1572,9 @@ export function EvaluationsV3Table({
   const handleResizeDoubleClick = useCallback(
     (columnId: string, columnType: string) => {
       const defaultPct =
-        columnType === "dataset" ? DATASET_COL_DEFAULT_PCT : TARGET_COL_DEFAULT_PCT;
+        columnType === "dataset"
+          ? DATASET_COL_DEFAULT_PCT
+          : TARGET_COL_DEFAULT_PCT;
 
       setColumnSizing((prev) => ({
         ...prev,
@@ -1395,6 +1664,7 @@ export function EvaluationsV3Table({
       minWidth={`calc(100vw - ${MENU_PLUS_PADDING}px + ${DRAWER_WIDTH}px)`}
       minHeight="full"
       css={{
+        ...datasetTableCss,
         "& table": {
           // Table width = max(100%, sum of column percentages) + fixed widths (checkbox + drawer)
           // This allows columns to exceed 100% and trigger horizontal scroll
@@ -1417,16 +1687,6 @@ export function EvaluationsV3Table({
           top: `${SUPER_HEADER_HEIGHT}px`,
           zIndex: 10,
           backgroundColor: "var(--chakra-colors-bg-panel)",
-        },
-        "& th": {
-          borderBottom: "1px solid var(--chakra-colors-border)",
-          borderRight: "1px solid var(--chakra-colors-border-muted)",
-          padding: "8px 12px",
-          textAlign: "left",
-          backgroundColor: "var(--chakra-colors-bg-panel)",
-          fontWeight: "medium",
-          fontSize: "13px",
-          position: "relative",
         },
         // Resize handle styles - wider hit area, narrow visible indicator
         "& .resizer": {
@@ -1456,31 +1716,11 @@ export function EvaluationsV3Table({
         "& .resizer:hover::after, & .resizer.isResizing::after": {
           opacity: 1,
         },
-        "& td": {
-          borderBottom: "1px solid var(--chakra-colors-border-muted)",
-          borderRight: "1px solid var(--chakra-colors-border-muted)",
-          padding: "8px 12px",
-          fontSize: "13px",
-          verticalAlign: "top",
-          // CSS variable for fade overlay gradient
-          "--cell-bg": "var(--chakra-colors-bg-panel)",
-        },
-        "& tr:hover td": {
-          backgroundColor: "var(--chakra-colors-bg-subtle)",
-          // Update CSS variable for fade overlay on hover
-          "--cell-bg": "var(--chakra-colors-bg-subtle)",
-        },
-        // Selected row styling
-        "& tr[data-selected='true'] td": {
-          backgroundColor: "var(--chakra-colors-blue-subtle)",
-          "--cell-bg": "var(--chakra-colors-blue-subtle)",
-          "border-color": "var(--chakra-colors-blue-muted)",
-        },
-        "& tr:has(+ tr[data-selected='true']) td": {
-          "border-bottom-color": "var(--chakra-colors-blue-muted)",
-        },
       }}
     >
+      {/* Pairwise scoreboard moved into the column header — the top bar was
+          redundant with the column's mini-summary. CSV export + filter chips
+          will move into the column header's overflow menu in a follow-up. */}
       <table ref={tableRef}>
         {/* Define column widths with colgroup for table-layout: fixed */}
         <colgroup>
@@ -1540,7 +1780,11 @@ export function EvaluationsV3Table({
                   <th
                     key={header.id}
                     style={{
-                      width: getColumnWidth(header.id, columnType, isFixedWidth),
+                      width: getColumnWidth(
+                        header.id,
+                        columnType,
+                        isFixedWidth,
+                      ),
                     }}
                     // Add data attribute for target columns to enable scroll-to behavior
                     {...(targetId && { "data-target-column": targetId })}
@@ -1556,7 +1800,10 @@ export function EvaluationsV3Table({
                     {!isFixedWidth && header.id !== "select" && (
                       <div
                         onMouseDown={createResizeHandler(header.id, columnType)}
-                        onTouchStart={createResizeHandler(header.id, columnType)}
+                        onTouchStart={createResizeHandler(
+                          header.id,
+                          columnType,
+                        )}
                         onDoubleClick={() =>
                           handleResizeDoubleClick(header.id, columnType)
                         }
@@ -1588,24 +1835,30 @@ export function EvaluationsV3Table({
               ) : (
                 <>
                   {/* Filler column - absorbs remaining space */}
-                  <th colSpan={2} style={{ width: "auto", minWidth: DRAWER_WIDTH }}></th>
+                  <th
+                    colSpan={2}
+                    style={{ width: "auto", minWidth: DRAWER_WIDTH }}
+                  ></th>
                 </>
               )}
             </tr>
           ))}
         </thead>
         <tbody>
-          <VirtualizedTableBody
-            rows={table.getRowModel().rows}
-            scrollContainer={scrollContainer}
-            columnCount={table.getAllColumns().length + 2}
-            selectedRows={selectedRows}
-            activeDatasetId={activeDatasetId}
-            isLoading={isLoadingExperiment || isLoadingDatasets}
-            shouldVirtualize={shouldVirtualize}
-            disableVirtualization={disableVirtualization}
-            displayRowCount={displayRowCount}
-          />
+          <EvaluationsV3DatasetTableProvider>
+            <VirtualizedTableBody
+              rows={table.getRowModel().rows}
+              scrollContainer={scrollContainer}
+              columnCount={table.getAllColumns().length + 2}
+              selectedRows={selectedRows}
+              activeDatasetId={activeDatasetId}
+              isLoading={isLoadingExperiment || isLoadingDatasets}
+              shouldVirtualize={shouldVirtualize}
+              disableVirtualization={disableVirtualization}
+              displayRowCount={displayRowCount}
+              trailingSpacerWidth={DRAWER_WIDTH}
+            />
+          </EvaluationsV3DatasetTableProvider>
         </tbody>
       </table>
 

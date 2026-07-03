@@ -8,7 +8,7 @@
  *
  * On Unix we use spawn() with stdio:'inherit'; signals (Ctrl-C,
  * SIGTERM) propagate via the child process group. We do NOT use
- * execve replacement — Node's child_process never replaces the
+ * execve replacement - Node's child_process never replaces the
  * current process, but this is functionally equivalent for the
  * end-user (same exit code, same terminal handling) and works on
  * Windows where execve doesn't exist.
@@ -17,11 +17,21 @@
 import { spawn } from "node:child_process";
 import type { GovernanceConfig } from "./config";
 import { loadConfig, saveConfig, isLoggedIn } from "./config";
+import { lwTag } from "./brand";
 import { checkBudget, renderBudgetExceeded } from "./budget";
-import { getCliBootstrap } from "./cli-api";
+import { getCliBootstrap, GovernanceCliError } from "./cli-api";
 import { runDeviceFlowLogin } from "./login-flow";
+import { resolvePlatformToolPolicy } from "./platform-tool-policy";
 import { maybeOfferIngestionShellRcPersist } from "./shell-rc";
 import { resolveWrapperMode } from "./wrapper-mode";
+import { createCodexIOStreamer } from "./codex-rollout-otlp";
+import { parseToolModeFlag, resolveWrapperPath } from "./wrapper-path-choice";
+
+/**
+ * How often the wrapper polls codex's append-only rollout while the session
+ * runs, streaming each completed turn's I/O instead of one burst on exit.
+ */
+const CODEX_IO_POLL_MS = 2_500;
 
 export interface ToolEnv {
   /** Env-var name → value pairs to inject into the child process. */
@@ -32,7 +42,7 @@ export interface ToolEnv {
    * user has exported in their shell (e.g. ANTHROPIC_API_KEY set
    * from a previous direct-Anthropic workflow) that would otherwise
    * race with the gateway-routed auth (ANTHROPIC_AUTH_TOKEN) we
-   * inject — claude-code 2.x detects both and warns
+   * inject - claude-code 2.x detects both and warns
    * "auth may not work as expected", so we have to actively unset
    * the conflicting twin rather than just pile on top of it.
    * Unset BEFORE the merge so a tool that intentionally sets both
@@ -123,7 +133,7 @@ export function envForTool(cfg: GovernanceConfig, tool: string): ToolEnv {
       // to the configured base URL WITHOUT prepending `/v1`. So opencode
       // needs the base to ALREADY include `/v1`, unlike claude-code +
       // codex which append it themselves. Verified via `--log-level
-      // DEBUG` — opencode hit `${ANTHROPIC_BASE_URL}/messages` and
+      // DEBUG` - opencode hit `${ANTHROPIC_BASE_URL}/messages` and
       // got a gateway 404 because the gateway exposes `/v1/messages`.
       //
       // Also: opencode's provider auto-detection at init time gates on
@@ -149,7 +159,7 @@ export function envForTool(cfg: GovernanceConfig, tool: string): ToolEnv {
 
 /**
  * Provider families the tool needs upstream. Used by `preflightWrapper`
- * to verify the org has at least one matching provider configured —
+ * to verify the org has at least one matching provider configured -
  * otherwise the gateway can authenticate the VK but has nothing to
  * route the request to, surfacing as a confusing tool-side error.
  *
@@ -167,6 +177,28 @@ export interface PreflightResult {
   ok: boolean;
   /** Human-readable, action-oriented message rendered to stderr on failure. */
   message?: string;
+  /**
+   * Set on a failure a later retry might clear on its own - the gateway data
+   * plane is momentarily unreachable. When absent/false the gateway path is
+   * structurally unusable for this account/org (no virtual key, no provider
+   * configured), so a remembered gateway choice is worth forgetting to re-offer
+   * direct OTLP next time.
+   */
+  retryable?: boolean;
+}
+
+/**
+ * Whether to forget a remembered gateway path choice after a failed gateway
+ * preflight. True only when the user had pinned gateway AND the failure is
+ * structural (no virtual key / no provider) rather than a retryable
+ * gateway-down, so the next run re-prompts and can offer direct OTLP instead
+ * of dead-ending on the same pinned choice every time.
+ */
+export function shouldForgetGatewayPin(args: {
+  pinnedMode: string | undefined;
+  retryable: boolean | undefined;
+}): boolean {
+  return args.pinnedMode === "gateway" && args.retryable !== true;
 }
 
 export interface PreflightOptions {
@@ -194,11 +226,11 @@ function renderContactFooter(adminEmail: string | null | undefined): string {
  * Pre-exec probe for `langwatch <tool>` wrappers. Three layered checks,
  * each gracefully degrading rather than blocking on transient hiccups:
  *
- *   1. `cfg.default_personal_vk?.secret` present — without it the
+ *   1. `cfg.default_personal_vk?.secret` present - without it the
  *      wrapper would silently inject no env vars and the underlying
  *      tool would call the upstream provider directly (api.anthropic.com
- *      etc.), surfacing as the wrong error or — when there's stale
- *      env from a prior session — a confusing ConnectionRefused
+ *      etc.), surfacing as the wrong error or - when there's stale
+ *      env from a prior session - a confusing ConnectionRefused
  *      against a stale base URL.
  *   2. `GET <gateway_url>/healthz` reachable. Catches "data plane not
  *      running" and bad `LANGWATCH_GATEWAY_URL` overrides. Fatal: if
@@ -254,6 +286,7 @@ export async function preflightWrapper(
     if (!res.ok) {
       return {
         ok: false,
+        retryable: true,
         message:
           `AI Gateway at ${gw} returned HTTP ${res.status}.\n` +
           `The wrapper cannot route \`langwatch ${tool}\` requests until the\n` +
@@ -264,6 +297,7 @@ export async function preflightWrapper(
   } catch (err) {
     return {
       ok: false,
+      retryable: true,
       message:
         `Cannot reach AI Gateway at ${gw}\n` +
         `  ${(err as Error).message}\n` +
@@ -273,23 +307,45 @@ export async function preflightWrapper(
     };
   }
 
+  // The gateway program is opt-in per tool: an org enables it for a coding
+  // assistant by publishing that tool's coding-assistant tile in the AI Tools
+  // catalog. Without a tile for THIS tool the org hasn't turned the gateway on
+  // for it (direct OTLP ingestion stays available separately), so don't route
+  // a virtual key through it. `tools` undefined => legacy server that can't
+  // report the catalog; skip the gate for back-compat.
+  if (Array.isArray(bootstrap?.tools)) {
+    const published = bootstrap.tools.some((t) => t.slug === tool);
+    if (!published) {
+      return {
+        ok: false,
+        message:
+          `The gateway isn't enabled for \`${tool}\` in your organization.\n` +
+          `An admin needs to publish a ${tool} coding-assistant tile in the\n` +
+          `AI Tools catalog (with the gateway path enabled):\n` +
+          `  ${cp}/settings/governance/tool-catalog\n` +
+          renderContactFooter(adminEmail),
+      };
+    }
+  }
+
+  // The gateway routes through CONFIGURED provider credentials, not the curated
+  // model_provider catalog tiles (those only gate the /me one-click "mint your
+  // own VK" surface). Prefer the credential-derived families; fall back to the
+  // tile list only on legacy servers that don't send `gatewayProviders`.
   const need = TOOL_PROVIDER_FAMILIES[tool];
-  if (
-    need &&
-    need.length > 0 &&
-    bootstrap &&
-    Array.isArray(bootstrap.providers)
-  ) {
-    const have = new Set(bootstrap.providers.map((p) => p.name.toLowerCase()));
+  const configured =
+    bootstrap?.gatewayProviders ?? bootstrap?.providers?.map((p) => p.name);
+  if (need && need.length > 0 && Array.isArray(configured)) {
+    const have = new Set(configured.map((n) => n.toLowerCase()));
     const matches = need.filter((n) => have.has(n));
     if (matches.length === 0) {
       const list = need.map((n) => `\`${n}\``).join(" or ");
       return {
         ok: false,
         message:
-          `No ${list} provider is configured for your organization.\n` +
-          `\`langwatch ${tool}\` needs at least one to route requests through the gateway.\n` +
-          `If you're an admin, configure one at\n` +
+          `No ${list} provider credential is configured for your organization.\n` +
+          `\`langwatch ${tool}\` needs at least one enabled provider to route\n` +
+          `requests through the gateway. If you're an admin, add one at\n` +
           `  ${cp}/settings/model-providers\n` +
           renderContactFooter(adminEmail),
       };
@@ -341,12 +397,12 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
       process.exit(1);
     }
     if (!isLoggedIn(cfg)) {
-      process.stderr.write("login did not complete — exiting\n");
+      process.stderr.write("login did not complete - exiting\n");
       process.exit(1);
     }
   }
 
-  // Budget pre-check — render Screen-8 box + exit 2 BEFORE exec.
+  // Budget pre-check - render Screen-8 box + exit 2 BEFORE exec.
   const exceeded = await checkBudget(cfg);
   if (exceeded) {
     process.stderr.write(renderBudgetExceeded(exceeded));
@@ -356,10 +412,37 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
         saveConfig(cfg);
       } catch {
         // Config write failure shouldn't change the spec'd exit
-        // code — the next `langwatch request-increase` falls back
+        // code - the next `langwatch request-increase` falls back
         // to the static page.
       }
     }
+    process.exit(2);
+  }
+
+  // Strip the wrapper-only `--tool-mode` flag from the args BEFORE anything
+  // forwards them to the real tool, and resolve any explicit override.
+  // Everything else stays verbatim + in order for the child invocation.
+  const { args: toolArgs, override: pathOverride } = parseToolModeFlag(args);
+
+  // Decide Path A (gateway) vs Path B (ingestion) for this run. Prompts
+  // (and remembers the answer) only when the org policy allows BOTH paths,
+  // stdin/stdout is a TTY, and there's no pinned preference / override.
+  // Runs BEFORE env injection + spawn so the prompt owns stdin.
+  let pathChoice;
+  try {
+    pathChoice = await resolveWrapperPath({
+      cfg,
+      tool,
+      args: toolArgs,
+      override: pathOverride,
+      // Re-check the org policy at run time so a path the admin disabled
+      // after login is respected without a re-login. Best-effort: on any
+      // failure resolveWrapperPath keeps the login-cached policy map.
+      refreshPolicies: (c) =>
+        getCliBootstrap(c).then((b) => b?.toolPolicies ?? null),
+    });
+  } catch (err) {
+    process.stderr.write(`path selection failed: ${(err as Error).message}\n`);
     process.exit(2);
   }
 
@@ -368,10 +451,48 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
   const gatewayClears = toolEnv.clears ?? [];
   let modeResult;
   try {
-    modeResult = await resolveWrapperMode(cfg, tool, gatewayVars, gatewayClears);
+    modeResult = await resolveWrapperMode(
+      cfg,
+      tool,
+      gatewayVars,
+      gatewayClears,
+      pathChoice.mode,
+    );
   } catch (err) {
-    process.stderr.write(`mode resolution failed: ${(err as Error).message}\n`);
-    process.exit(2);
+    // Path B (ingestion) setup can fail at mint time - e.g. the user has
+    // no personal workspace yet, or the control plane is unreachable. If
+    // the gateway path is allowed for this tool, surface a clear message
+    // and fall back to it rather than dead-ending. The both-paths-off
+    // `tool_disabled` policy error is NOT a mint failure, so it never
+    // falls back; it exits with the admin hint.
+    const isToolDisabled =
+      err instanceof GovernanceCliError && err.code === "tool_disabled";
+    const policy = resolvePlatformToolPolicy(tool, cfg.tool_policies);
+    if (pathChoice.mode === "ingestion" && policy.allowVk && !isToolDisabled) {
+      process.stderr.write(
+        `${lwTag()} couldn't set up direct OTLP ingestion for ${tool} ` +
+          `(${(err as Error).message}). Falling back to the gateway path.\n`,
+      );
+      try {
+        modeResult = await resolveWrapperMode(
+          cfg,
+          tool,
+          gatewayVars,
+          gatewayClears,
+          "gateway",
+        );
+      } catch (err2) {
+        process.stderr.write(
+          `mode resolution failed: ${(err2 as Error).message}\n`,
+        );
+        process.exit(2);
+      }
+    } else {
+      process.stderr.write(
+        `mode resolution failed: ${(err as Error).message}\n`,
+      );
+      process.exit(2);
+    }
   }
 
   // Surface any platform-policy path change (e.g. the org admin turned
@@ -385,16 +506,39 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
     const probe = await preflightWrapper(cfg, tool);
     if (!probe.ok) {
       process.stderr.write(probe.message ?? "preflight failed\n");
+      // A remembered gateway choice that can't actually serve this account/org
+      // (no virtual key / no provider configured) would re-fail every run. Drop
+      // the pin so the next run re-asks and the user can pick direct OTLP. A
+      // transient gateway-down failure keeps the pin (a retry may succeed).
+      if (
+        shouldForgetGatewayPin({
+          pinnedMode: cfg.tool_mode?.[tool],
+          retryable: probe.retryable,
+        })
+      ) {
+        const toolMode = { ...cfg.tool_mode };
+        delete toolMode[tool];
+        cfg.tool_mode = toolMode;
+        try {
+          saveConfig(cfg);
+          process.stderr.write(
+            `${lwTag()} cleared the saved gateway path for \`${tool}\`; ` +
+              `you'll be asked again next time so you can pick direct OTLP.\n`,
+          );
+        } catch {
+          // Best-effort: a config write failure just leaves the pin in place.
+        }
+      }
       process.exit(2);
     }
     if (modeResult.codexConfigPath) {
       process.stderr.write(
-        `langwatch: wired [model_providers.langwatch] in ${modeResult.codexConfigPath}.\n`,
+        `${lwTag()} wired [model_providers.langwatch] in ${modeResult.codexConfigPath}.\n`,
       );
     }
     if (modeResult.codexProfilePath) {
       process.stderr.write(
-        `langwatch: wrote profile body to ${modeResult.codexProfilePath}.\n`,
+        `${lwTag()} wrote profile body to ${modeResult.codexProfilePath}.\n`,
       );
     }
   } else {
@@ -402,12 +546,12 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
     // the wrapper just did on their behalf.
     if (modeResult.newKeyMinted) {
       process.stderr.write(
-        `langwatch: minted a personal ingestion key for ${tool}.\n`,
+        `${lwTag()} minted a personal ingestion key for ${tool}.\n`,
       );
     }
     if (modeResult.codexConfigPath) {
       process.stderr.write(
-        `langwatch: wrote [otel] activation block to ${modeResult.codexConfigPath}.\n`,
+        `${lwTag()} wrote [otel] activation block to ${modeResult.codexConfigPath}.\n`,
       );
     }
 
@@ -435,33 +579,118 @@ export async function runWrapped(tool: string, args: string[]): Promise<never> {
     delete parentEnv[key];
   }
   const env = { ...parentEnv, ...modeResult.vars };
-  const finalArgs = [...(modeResult.extraArgs ?? []), ...args];
-  // npm installs claude/codex/cursor/gemini as `.cmd` shims on Windows;
-  // bare spawn() can't resolve them without a shell. shell:true is safe
-  // here because `tool` is whitelisted (claude/codex/cursor/gemini) and
-  // `args` is forwarded from the user's own terminal invocation — same
-  // trust boundary as if they'd typed `claude …` directly.
-  const child = spawn(tool, finalArgs, {
-    stdio: "inherit",
-    env,
-    shell: process.platform === "win32",
-  });
+  // Forward the user's args verbatim and in order, minus the stripped
+  // wrapper flag (`--tool-mode`). Any mode-specific prepends (e.g. codex
+  // `--profile langwatch-gateway`) lead.
+  const finalArgs = [...(modeResult.extraArgs ?? []), ...toolArgs];
+
+  // Resolve the tool the way the user's own shell would: route it through
+  // their interactive login shell (zsh/bash) so aliases AND functions are
+  // honored - e.g. `alias claude='claude --dangerously-skip-permissions'`,
+  // not just the bare PATH binary. `-i` sources the rc file where aliases
+  // live; the wrapper's env (mode vars + clears) is re-applied *after* that
+  // so a user's rc can't clobber the gateway / OTLP wiring. Args ride
+  // positional params ("$@") and are never re-quoted. `tool` is whitelisted
+  // (claude/codex/cursor/gemini/opencode) so the command string is safe.
+  const shellName = (process.env.SHELL ?? "").split("/").pop() ?? "";
+  const aliasShell =
+    process.platform !== "win32" && (shellName === "zsh" || shellName === "bash")
+      ? process.env.SHELL!
+      : null;
+
+  const notFoundMessage = `${tool} not found in PATH - install it first (https://docs.langwatch.ai/ai-gateway/governance/admin-setup#cli-device-flow-rest-api)`;
+
+  // Stamp the session start so the codex rollout harvest only reads rollout
+  // files this run produced (codex names them by start time + mtime).
+  const sessionStartMs = Date.now();
+
+  // Codex never puts the prompt or the assistant reply on the wire (its OTLP
+  // spans carry tokens + model only), but it writes the full transcript to an
+  // append-only rollout file whose per-turn `task_started` records the exact
+  // OTLP trace_id. Poll it WHILE codex runs and emit each turn the moment it
+  // completes, so content streams in per turn instead of one multi-megabyte
+  // burst on exit. The poll plus a final sweep on close are idempotent (the
+  // per-turn span id is trace_id-derived), so overlap dedups server-side.
+  const codexStreamer =
+    tool === "codex" &&
+    modeResult.mode === "ingestion" &&
+    modeResult.endpoint &&
+    modeResult.ingestionToken
+      ? createCodexIOStreamer({
+          sinceMs: sessionStartMs,
+          endpoint: `${modeResult.endpoint.replace(/\/+$/, "")}/v1/traces`,
+          token: modeResult.ingestionToken,
+        })
+      : null;
+  let codexPoll: ReturnType<typeof setInterval> | null = null;
+  if (codexStreamer) {
+    let inFlight = false;
+    codexPoll = setInterval(() => {
+      // Skip a tick if the previous harvest (file read + POST, ≤5s) is still
+      // running so slow ticks can't pile up.
+      if (inFlight) return;
+      inFlight = true;
+      void codexStreamer
+        .harvest(Date.now())
+        .catch(() => 0)
+        .finally(() => {
+          inFlight = false;
+        });
+    }, CODEX_IO_POLL_MS);
+    // The child process drives the lifecycle; never let the poll keep the event
+    // loop alive on its own.
+    codexPoll.unref?.();
+  }
+
+  let child;
+  if (aliasShell) {
+    const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const reapply = [
+      ...(modeResult.clears ?? []).map((k) => `unset ${k}`),
+      ...Object.entries(modeResult.vars).map(([k, v]) => `export ${k}=${q(v)}`),
+    ].join("; ");
+    // Resolve the tool inside the same login shell before handing over so a
+    // missing tool surfaces our actionable message rather than a bare
+    // `command not found`. `command -v` honors the aliases/functions/PATH the
+    // spawn below would use. The direct-spawn branch relies on ENOENT instead.
+    const guard = `command -v -- ${q(tool)} >/dev/null 2>&1 || { printf '%s\\n' ${q(notFoundMessage)} >&2; exit 127; }`;
+    const command = `${reapply ? `${reapply}; ` : ""}${guard}; ${tool} "$@"`;
+    child = spawn(aliasShell, ["-i", "-c", command, tool, ...finalArgs], {
+      stdio: "inherit",
+      env,
+    });
+  } else {
+    // Windows (npm installs the tools as `.cmd` shims, so resolve via the
+    // shell) or a shell we don't special-case (fish, etc.): spawn directly.
+    child = spawn(tool, finalArgs, {
+      stdio: "inherit",
+      env,
+      shell: process.platform === "win32",
+    });
+  }
   child.on("error", (err) => {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      process.stderr.write(
-        `${tool} not found in PATH — install it first (https://docs.langwatch.ai/ai-gateway/governance/admin-setup#cli-device-flow-rest-api)\n`,
-      );
+      process.stderr.write(`${notFoundMessage}\n`);
       process.exit(127);
     }
     process.stderr.write(`exec ${tool}: ${err.message}\n`);
     process.exit(1);
   });
-  await new Promise<void>((resolve) => {
-    child.on("close", (code) => {
-      process.exit(code ?? 1);
-      resolve();
-    });
+  const exitCode = await new Promise<number>((resolve) => {
+    child.on("close", (code) => resolve(code ?? 1));
   });
-  // unreachable
-  process.exit(0);
+
+  // Stop polling and do one final sweep so the last turn (completed between the
+  // last poll and exit) still lands. Best-effort: a coding session must never
+  // fail or stall on the content harvest.
+  if (codexPoll) clearInterval(codexPoll);
+  if (codexStreamer) {
+    try {
+      await codexStreamer.harvest(Date.now());
+    } catch {
+      /* content recovery is non-essential; never block exit on it */
+    }
+  }
+
+  process.exit(exitCode);
 }

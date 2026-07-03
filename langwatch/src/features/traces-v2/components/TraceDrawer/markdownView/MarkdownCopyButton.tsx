@@ -1,15 +1,10 @@
 import { Button, Icon, Text } from "@chakra-ui/react";
-import { useState } from "react";
 import { LuCheck, LuCopy } from "react-icons/lu";
-import { copyToClipboard } from "~/utils/clipboard";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 
 export function MarkdownCopyButton({ markdown }: { markdown: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = () => {
-    void copyToClipboard(markdown);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
+  const { copied, copy } = useCopyToClipboard();
+  const handleCopy = () => copy(markdown);
   return (
     <Button
       size="xs"

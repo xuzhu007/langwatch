@@ -6,7 +6,6 @@ import {
   getLLMModelCosts,
   type MaybeStoredLLMModelCost,
 } from "../../../modelProviders/llmModelCost";
-import { isBuildOrNoRedis } from "../../../redis";
 
 const logger = createLogger("langwatch:workers:collector:cost");
 
@@ -133,6 +132,13 @@ export const normalizeModelName = (model: string): string => {
 const regexCache = new Map<string, RegExp | null>();
 
 /**
+ * The cost-rule preview feeds user keystrokes through the matcher, so the
+ * pattern space is unbounded, reset the cache when it grows past any
+ * plausible working set instead of leaking entries forever.
+ */
+const REGEX_CACHE_MAX_ENTRIES = 5_000;
+
+/**
  * Returns a cached, safe-checked RegExp for the given pattern.
  * Unsafe or invalid patterns are cached as null and warned once.
  */
@@ -143,6 +149,9 @@ const getSafeRegex = (pattern: string): RegExp | null => {
   const re = compileSafeRegex(pattern);
   if (!re) {
     logger.warn({ pattern }, "skipping unsafe regex in model cost matching");
+  }
+  if (regexCache.size >= REGEX_CACHE_MAX_ENTRIES) {
+    regexCache.clear();
   }
   regexCache.set(pattern, re);
   return re;
@@ -155,7 +164,7 @@ const getSafeRegex = (pattern: string): RegExp | null => {
  */
 const safeRegexTest = (pattern: string, input: string): boolean => {
   const re = getSafeRegex(pattern);
-  return re !== null && re.test(input);
+  return re?.test(input) ?? false;
 };
 
 /**
@@ -176,11 +185,15 @@ export function stripProviderSubtype(model: string): string {
  *   [<region>.]<vendor>.<model>[-v<N>][:<version>]
  * e.g. `eu.anthropic.claude-haiku-4-5-20251001-v1:0` →
  *      `anthropic/claude-haiku-4-5-20251001`
- * The registry regexes already match dated Claude/Nova slugs, so
- * stripping just the Bedrock envelope is enough.
+ * litellm-style clients report the same id behind a `bedrock/` provider
+ * prefix (`bedrock/eu.anthropic.claude-sonnet-4-6`); that prefix is part
+ * of the envelope and is stripped too. The registry regexes already match
+ * dated Claude/Nova slugs, so stripping just the Bedrock envelope is enough.
  */
 export function normalizeBedrockModelId(model: string): string {
   let normalized = model;
+  // 0. Strip the litellm-style `bedrock/` provider prefix.
+  normalized = normalized.replace(/^bedrock\//i, "");
   // 1. Strip `:<version>` suffix (`:0`, `:1`, `:latest`).
   normalized = normalized.replace(/:[0-9a-z.]+$/i, "");
   // 2. Strip `-v<N>` revision marker (`-v1`, `-v2`).
@@ -188,12 +201,16 @@ export function normalizeBedrockModelId(model: string): string {
   // 3. Strip cross-region inference prefix (`eu.`, `us.`, `apac.`,
   //    `ap.`, `eu-west-*.`, ...). Only the leading region segment;
   //    vendor segment keeps its own dots untouched.
-  normalized = normalized.replace(/^[a-z]{2,}(?:-[a-z0-9]+)*\.(?=[a-z]+\.)/i, "");
+  normalized = normalized.replace(
+    /^[a-z]{2,}(?:-[a-z0-9]+)*\.(?=[a-z]+\.)/i,
+    "",
+  );
   // 4. Vendor-dot → vendor-slash. First dot only — any dots in the
   //    vendor-model half (e.g. `claude-opus-4.5`) stay.
   const firstDot = normalized.indexOf(".");
   if (firstDot > 0 && !normalized.slice(0, firstDot).includes("/")) {
-    normalized = normalized.slice(0, firstDot) + "/" + normalized.slice(firstDot + 1);
+    normalized =
+      normalized.slice(0, firstDot) + "/" + normalized.slice(firstDot + 1);
   }
   return normalized;
 }
@@ -271,13 +288,11 @@ export const getMatchingLLMModelCost = async (
   return matchModelCostWithFallbacks(model, llmModelCosts);
 };
 
-// Pre-warm most used models
+// Pre-warm most used models. Invoked explicitly by the collector worker on
+// startup (see collectorWorker.ts) — NOT as a module-load side effect. An
+// eager import-time prewarm fired an un-awaited tiktoken BPE-rank fetch whose
+// socket/WASM-load outlived vitest teardown, wedging the unit-test worker under
+// --coverage and timing out CI (#4476). The worker owns the prewarm lifecycle.
 export const prewarmTiktokenModels = async () => {
   await tiktokenClient.prewarm(["gpt-4", "gpt-4o"]);
 };
-
-if (isBuildOrNoRedis) {
-  prewarmTiktokenModels().catch((error) => {
-    logger.error({ error }, "error prewarming tiktoken models");
-  });
-}

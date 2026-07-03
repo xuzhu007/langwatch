@@ -1,16 +1,11 @@
 import { Box, HStack, Icon, Text, VStack } from "@chakra-ui/react";
-import { useCallback, useState } from "react";
-import {
-  LuArrowUpRight,
-  LuFilter,
-  LuPin,
-  LuSparkles,
-} from "react-icons/lu";
+import { useCallback } from "react";
+import { LuArrowUpRight, LuFilter, LuPin, LuSparkles } from "react-icons/lu";
 import { Tooltip } from "~/components/ui/tooltip";
-import { copyToClipboard } from "~/utils/clipboard";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import type { PinnedAttribute } from "../../../stores/pinnedAttributesStore";
-import { Chip } from "../Chip";
-import { TooltipRow } from "./TooltipRow";
+import { TooltipRow } from "../../shared/TooltipRow";
+import { Chip, type ChipTone } from "../Chip";
 
 /**
  * Thin wrapper around `<Chip>` for the duration / spans / cost / tokens /
@@ -20,8 +15,16 @@ import { TooltipRow } from "./TooltipRow";
  * pills next to the source/origin Chip strip). Routing through Chip
  * collapses them into one design language; callers keep the same API.
  */
-export function MetricPill({ label, value }: { label: string; value: string }) {
-  return <Chip label={label} value={value} tone="neutral" />;
+export function MetricPill({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: ChipTone;
+}) {
+  return <Chip label={label} value={value} tone={tone} />;
 }
 
 /**
@@ -53,16 +56,14 @@ export function PinnedMetricPill({
   onNavigate?: () => void;
   navigateLabel?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyToClipboard();
   const display = value ?? "—";
   const label = pin.label ?? pin.key;
 
   const handleCopy = useCallback(() => {
     if (value == null) return;
-    void copyToClipboard(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
-  }, [value]);
+    copy(value);
+  }, [copy, value]);
 
   const tooltipBody = (
     <VStack align="stretch" gap={0.5} minWidth="180px" maxWidth="320px">

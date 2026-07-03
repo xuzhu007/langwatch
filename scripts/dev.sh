@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/dev.sh                # interactive preset picker
 #   scripts/dev.sh all-local      # local CH+PG+Redis+app, no NLP
-#   scripts/dev.sh all-local-nlp  # all-local + langwatch_nlp + langevals
+#   scripts/dev.sh all-local-nlp  # all-local + nlpgo + langevals
 #   scripts/dev.sh dev-storage    # local CH+PG+Redis, stored-objects -> dev S3
 #   scripts/dev.sh dev-infra      # local redis + workers + app, everything else against shared dev
 #   scripts/dev.sh frontend-only  # no compose, pure pnpm dev against .env URLs
@@ -31,7 +31,7 @@ Presets — pass as the first arg or pick interactively:
                   No NLP. Stored-objects fall back to local-FS. Fast iteration
                   default.
 
-  all-local-nlp   all-local + langwatch_nlp + langevals containers.
+  all-local-nlp   all-local + nlpgo (Go NLP engine) + langevals containers.
 
   dev-storage     Local CH + PG + Redis + workers. Stored-objects route to the
                   dev S3 bucket runtime-storage-dev in lw-dev (eu-central-1).
@@ -108,11 +108,6 @@ check_env_files() {
     echo "  → cp langwatch/.env.example langwatch/.env"
     missing=1
   fi
-  if [ ! -f "langwatch_nlp/.env" ]; then
-    echo "WARNING: langwatch_nlp/.env not found (needed for all-local-nlp / full-local presets)"
-    echo "  → cp langwatch_nlp/.env.example langwatch_nlp/.env"
-    missing=1
-  fi
   if [ $missing -eq 1 ]; then
     echo ""
     read -p "Continue anyway? [y/N]: " confirm
@@ -158,6 +153,31 @@ EOF
       fi
     done
   done
+}
+
+# Predicate: is something already listening on host port 6379? Used by
+# frontend-only to decide whether to start its own redis container or reuse
+# an existing host redis. Mirrors check_host_redis_collision's detection but
+# returns a status instead of exiting.
+redis_port_in_use() {
+  if command -v lsof >/dev/null 2>&1; then
+    [ -n "$(lsof -iTCP:6379 -sTCP:LISTEN -t 2>/dev/null | head -n1)" ]
+  elif command -v ss >/dev/null 2>&1; then
+    ss -ltnH "sport = :6379" 2>/dev/null | grep -q ":6379"
+  else
+    return 1
+  fi
+}
+
+# Predicate: is the listener on host port 6379 actually a usable local Redis?
+# redis_port_in_use only proves *something* owns the port; this confirms it
+# speaks the Redis protocol with no auth/TLS gate by issuing PING and checking
+# for a PONG reply. If redis-cli is unavailable we cannot verify it, so we
+# degrade to "not usable" and the caller refuses to reuse an unverifiable
+# listener (rather than silently breaking the in-process BullMQ workers).
+redis_listener_is_usable() {
+  command -v redis-cli >/dev/null 2>&1 || return 1
+  redis-cli -u redis://localhost:6379 ping 2>/dev/null | grep -qx 'PONG'
 }
 
 # Detect a host-side process holding port 6379 before redis tries to bind.
@@ -285,7 +305,7 @@ run_all_local_nlp() {
   . "$(dirname "$0")/lib/sanitize-dev-env.sh"
   sanitize_localhost_dev_env
   write_overrides all-local-nlp
-  echo "Starting: backend + workers + langwatch_nlp + langevals (preset=all-local-nlp)"
+  echo "Starting: backend + workers + nlpgo + langevals (preset=all-local-nlp)"
   # `nlp` profile starts NLP/langevals; `workers` profile starts the worker
   # container. Both profiles must be passed — compose unions them.
   $COMPOSE --profile nlp --profile workers up
@@ -354,11 +374,52 @@ EOF
 }
 
 run_frontend_only() {
+  # frontend-only runs no app/DB/CH compose — DB, ClickHouse, NLP and S3 all
+  # come from the operator's .env (shared dev). BUT `pnpm dev` starts the
+  # BullMQ workers in-process by default (set START_WORKERS=false for pure
+  # Vite), and those workers need Redis. Bring up only the lightweight `redis`
+  # compose service locally — sharing dev Redis would collide with other
+  # developers' jobs (same reason dev-infra runs Redis locally). The overlay
+  # pins REDIS_URL=redis://localhost:6379 so the host-side `pnpm dev` reaches it.
+  #
+  # If a host process already owns 6379 (e.g. the operator runs their own
+  # redis), reuse it ONLY when it answers PING with PONG — i.e. a real,
+  # auth-free local Redis. A non-Redis listener, or a Redis that requires
+  # auth/TLS, would let `pnpm dev` start but silently break the in-process
+  # BullMQ workers later, so fail loudly instead of reusing it. If 6379 is
+  # free, bring up our own lightweight redis container.
   write_overrides frontend-only
-  echo "Preset: frontend-only — no compose. Run 'pnpm dev' from langwatch/ to start."
+  if redis_port_in_use && redis_listener_is_usable; then
+    echo "Port 6379 already has a usable Redis — reusing it for in-process workers (not starting a redis container)."
+  elif redis_port_in_use; then
+    cat >&2 <<'EOF'
+ERROR: Port 6379 has a listener, but it could not be verified as a usable
+       local Redis (redis-cli PING did not return PONG, or redis-cli is not
+       installed). frontend-only points the in-process BullMQ workers at
+       redis://localhost:6379, so reusing a non-Redis process — or a Redis
+       that needs auth/TLS — would silently break job processing. Fix one of:
+         - install redis-cli so the launcher can verify the listener, or
+         - stop whatever owns 6379 / repoint it at a plain local Redis, or
+         - free port 6379 so this launcher can start its own redis container.
+       Pure Vite with no workers: START_WORKERS=false pnpm dev.
+EOF
+    exit 1
+  else
+    echo "Starting: redis compose service (preset=frontend-only)"
+    $COMPOSE up -d redis
+    echo "Redis is running detached on localhost:6379 (for in-process workers)."
+  fi
+  echo "Preset: frontend-only — no app compose. Run 'pnpm dev' from langwatch/ to start."
   echo ""
   echo "Tip: pure UI / design / static iteration. URLs come from langwatch/.env."
   echo "     For services on top: switch to all-local, all-local-nlp, or full-local."
+  echo "     Pure Vite with no background processing: START_WORKERS=false pnpm dev."
+  echo "     Stop redis with: scripts/dev.sh down"
+  # Skip flags must be on the shell env of the pnpm dev subprocess, NOT in
+  # .env.dev-up: start:prepare:db runs the migrations before the app boots
+  # dotenv, so it reads the shell environment, not the overlay file. Frontend-only
+  # targets shared dev infra whose ClickHouse schema we don't own, so skip migrate.
+  (cd langwatch && SKIP_CLICKHOUSE_MIGRATE=true SKIP_PRISMA_MIGRATE=true pnpm dev)
 }
 
 run_migration() {
@@ -476,7 +537,7 @@ cat <<'EOF'
 Pick a preset:
 
   1) all-local       Local CH + PG + Redis + app + workers. No NLP. Fast iteration.
-  2) all-local-nlp   all-local + langwatch_nlp + langevals.
+  2) all-local-nlp   all-local + nlpgo + langevals.
   3) dev-storage     Local DBs + workers, stored-objects -> runtime-storage-dev (real AWS S3).
   4) dev-infra       Local app + Redis + workers, shared dev infra for PG/CH/NLP/S3. Most faithful e2e.
   5) frontend-only   No compose. UI / design / static iteration.

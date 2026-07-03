@@ -8,8 +8,10 @@ import { ErrorTextCell } from "./ErrorTextCell";
 import { EvaluationsCell } from "./EvaluationsCell";
 import { EventsCell } from "./EventsCell";
 import { InputCell } from "./InputCell";
+import { LabelsCell } from "./LabelsCell";
 import { ModelCell } from "./ModelCell";
 import { OutputCell } from "./OutputCell";
+import { PromptCell } from "./PromptCell";
 import { RootSpanNameCell } from "./RootSpanNameCell";
 import { RootSpanTypeCell } from "./RootSpanTypeCell";
 import { ServiceCell } from "./ServiceCell";
@@ -19,10 +21,10 @@ import {
   StatusCell,
   TokensInCell,
   TokensOutCell,
-  TtftCell,
   UserIdCell,
 } from "./SimpleCells";
 import { SinceCell } from "./SinceCell";
+import { SizeCell } from "./SizeCell";
 import { SpanCountCell } from "./SpanCountCell";
 import { TimeCell } from "./TimeCell";
 import { TimestampCell } from "./TimestampCell";
@@ -30,6 +32,7 @@ import { TokensCell } from "./TokensCell";
 import { TraceCell } from "./TraceCell";
 import { TraceIdCell } from "./TraceIdCell";
 import { TraceNameCell } from "./TraceNameCell";
+import { TtftCell } from "./TtftCell";
 
 /**
  * Cell renderers keyed by column id. Every TraceColumnId must have a cell;
@@ -58,9 +61,12 @@ export const traceCells = {
   [CostCell.id]: CostCell,
   [TokensCell.id]: TokensCell,
   [ModelCell.id]: ModelCell,
+  [LabelsCell.id]: LabelsCell,
+  [PromptCell.id]: PromptCell,
   [EvaluationsCell.id]: EvaluationsCell,
   [EventsCell.id]: EventsCell,
   [SpanCountCell.id]: SpanCountCell,
+  [SizeCell.id]: SizeCell,
   [StatusCell.id]: StatusCell,
   [TtftCell.id]: TtftCell,
   [UserIdCell.id]: UserIdCell,

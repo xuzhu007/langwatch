@@ -1,6 +1,6 @@
+import type { TraceListItem } from "../../types/trace";
 import type { ConversationGroup } from "./conversationGroups";
 import type { TraceGroup } from "./registry";
-import type { TraceListItem } from "../../types/trace";
 
 /**
  * Synthetic `TraceListItem` rows that drive the loading skeleton via
@@ -23,10 +23,13 @@ export function buildTracePlaceholderRows(count: number): TraceListItem[] {
     serviceName: "",
     durationMs: 0,
     totalCost: 0,
+    nonBilledCost: 0,
     totalTokens: 0,
     models: [],
+    labels: [],
     status: "ok",
     spanCount: 0,
+    sizeBytes: 0,
     // Non-null so addons keyed off these (IOPreviewAddon) still render.
     input: "",
     output: "",

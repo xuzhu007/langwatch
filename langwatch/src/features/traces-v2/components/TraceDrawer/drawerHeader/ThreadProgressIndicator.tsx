@@ -7,12 +7,12 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { LuCheck, LuCopy, LuFilter } from "react-icons/lu";
 import { Kbd } from "~/components/ops/shared/Kbd";
 import { Popover } from "~/components/ui/popover";
 import { Tooltip } from "~/components/ui/tooltip";
-import { copyToClipboard } from "~/utils/clipboard";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 
 interface ThreadProgressIndicatorProps {
   position: number;
@@ -44,14 +44,12 @@ export function ThreadProgressIndicator({
 }: ThreadProgressIndicatorProps) {
   const safePosition = Math.max(1, Math.min(position, total));
   const percent = total > 0 ? (safePosition / total) * 100 : 0;
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyToClipboard();
 
   const handleCopy = useCallback(() => {
     if (!conversationId) return;
-    void copyToClipboard(conversationId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
-  }, [conversationId]);
+    copy(conversationId);
+  }, [conversationId, copy]);
 
   const body = (
     <HStack
@@ -143,12 +141,7 @@ export function ThreadProgressIndicator({
                 Conversation
               </Text>
               <HStack gap={1.5} width="full">
-                <Text
-                  textStyle="xs"
-                  truncate
-                  flex={1}
-                  minWidth={0}
-                >
+                <Text textStyle="xs" truncate flex={1} minWidth={0}>
                   {conversationId}
                 </Text>
                 <Button

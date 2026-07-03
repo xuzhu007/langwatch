@@ -4,12 +4,32 @@ import type {
   TraceHeader,
 } from "~/server/api/routers/tracesV2.schemas";
 import type { EvaluationRunData } from "~/server/app-layer/evaluations/types";
-import type { ConversationTurn } from "../../hooks/useConversationContext";
+import type { RouterOutputs } from "~/utils/api";
 import type {
   TraceEvalResult,
   TraceListEvent,
   TraceListItem,
 } from "../../types/trace";
+
+/**
+ * Conversation turn exactly as the `tracesV2.conversationContext` procedure
+ * returns it (including the redaction flags), so the preview fixtures stay
+ * assignable to `utils.tracesV2.conversationContext.setData`. Preview traces are
+ * never redacted, so the fixtures fill the flags with their not-redacted values.
+ */
+type PreviewConversationTurn =
+  RouterOutputs["tracesV2"]["conversationContext"]["turns"][number];
+
+/** The not-redacted flag defaults every preview turn carries. */
+const NOT_REDACTED: Pick<
+  PreviewConversationTurn,
+  "inputRedacted" | "outputRedacted" | "inputVisibleTo" | "outputVisibleTo"
+> = {
+  inputRedacted: false,
+  outputRedacted: false,
+  inputVisibleTo: null,
+  outputVisibleTo: null,
+};
 
 /**
  * Hand-crafted client-side sample traces. **These never round-trip
@@ -57,10 +77,12 @@ interface MakeTraceArgs {
   serviceName: string;
   durationMs: number;
   models: string[];
+  labels?: string[];
   inputTokens: number;
   outputTokens: number;
   totalCost: number;
   spanCount: number;
+  sizeBytes?: number;
   input: string;
   output: string | null;
   status?: TraceListItem["status"];
@@ -79,12 +101,19 @@ function makeTrace(args: MakeTraceArgs): TraceListItem {
     serviceName: args.serviceName,
     durationMs: args.durationMs,
     totalCost: args.totalCost,
+    nonBilledCost: 0,
     totalTokens: args.inputTokens + args.outputTokens,
     inputTokens: args.inputTokens,
     outputTokens: args.outputTokens,
     models: args.models,
+    labels: args.labels ?? [],
     status: args.status ?? "ok",
     spanCount: args.spanCount,
+    // Synthetic but plausible stored-size for the sample preview: roughly the
+    // I/O text plus ~1.2 KB of attribute/metadata overhead per span.
+    sizeBytes:
+      args.sizeBytes ??
+      args.input.length + (args.output?.length ?? 0) + args.spanCount * 1200,
     input: args.input,
     output: args.output,
     error: args.error,
@@ -109,6 +138,7 @@ export const SAMPLE_PREVIEW_TRACES: readonly TraceListItem[] = [
     serviceName: "mastra-app",
     durationMs: 4820,
     models: ["claude-sonnet-4-5"],
+    labels: ["billing", "refund"],
     inputTokens: 612,
     outputTokens: 348,
     totalCost: 0.0184,
@@ -139,6 +169,7 @@ export const SAMPLE_PREVIEW_TRACES: readonly TraceListItem[] = [
     serviceName: "vercel-ai-app",
     durationMs: 1240,
     models: ["gpt-4o"],
+    labels: ["summarization"],
     inputTokens: 412,
     outputTokens: 184,
     totalCost: 0.0042,
@@ -1373,6 +1404,7 @@ function buildRichArrivalHeader(): TraceHeader {
     output: richArrival.output,
     models: richArrival.models,
     totalCost: richArrival.totalCost,
+    nonBilledCost: 0,
     totalTokens: richArrival.totalTokens,
     inputTokens: richArrival.inputTokens ?? null,
     outputTokens: richArrival.outputTokens ?? null,
@@ -1406,7 +1438,7 @@ function buildRichArrivalHeader(): TraceHeader {
 interface RichArrivalConversationContext {
   conversationId: string;
   total: number;
-  turns: ConversationTurn[];
+  turns: PreviewConversationTurn[];
 }
 
 function buildRichArrivalConversationContext(): RichArrivalConversationContext {
@@ -1424,6 +1456,7 @@ function buildRichArrivalConversationContext(): RichArrivalConversationContext {
         input: "How's the checkout funnel looking today?",
         output:
           "Conversion is sitting at 33.7% over the last 24h, materially below the 41.2% baseline. The drop concentrates in this morning's window. Want me to dig in?",
+        ...NOT_REDACTED,
       },
       {
         traceId: richArrival.traceId,
@@ -1433,6 +1466,7 @@ function buildRichArrivalConversationContext(): RichArrivalConversationContext {
         status: richArrival.status,
         input: richArrival.input,
         output: richArrival.output,
+        ...NOT_REDACTED,
       },
       {
         traceId: "lw-preview-arrival-conv-next",
@@ -1444,6 +1478,7 @@ function buildRichArrivalConversationContext(): RichArrivalConversationContext {
           "Re-enable the email-jobs runner now and ping me when it's caught up.",
         output:
           "Done — email-jobs is unpaused as of 09:42 UTC. Backlog is ~4,800 abandonment emails; estimated catch-up in 12 minutes. I'll ping you the moment the queue drains.",
+        ...NOT_REDACTED,
       },
     ],
   };
@@ -1569,5 +1604,161 @@ export function buildRichArrivalTraceDetail(): RichArrivalTraceDetail {
     spansFull: RICH_ARRIVAL_SPAN_DETAILS,
     conversation: buildRichArrivalConversationContext(),
     evaluations: buildRichArrivalEvaluations(),
+  };
+}
+
+/**
+ * Generic preview-trace detail synthesizer. Used for every sample
+ * preview trace except the rich arrival one (which has hand-built
+ * fixtures above). The drawer hooks (`useSpanTree`, `useSpanDetail`,
+ * `useConversationContext`, `useTraceHeader`, `useTraceEvents`,
+ * `useTraceEvaluations`) all have their network fetch disabled for
+ * preview IDs, so without something seeded into the tRPC cache the
+ * drawer just shows perpetual loading states. This builder
+ * synthesises just enough — a single root span, an empty events
+ * array, an empty evaluations array, and (when the trace declared a
+ * conversation id) a single-turn conversation built from the trace's
+ * own input/output — so every tab renders something meaningful when
+ * a user clicks into any sample row.
+ *
+ * Span tree is intentionally trivial (one node). We could fan out
+ * realistic child spans per trace like the rich-arrival fixture does,
+ * but the cost (10× ~50-line span tree definitions) far outweighs the
+ * value for a teaching surface — what users learn is "the drawer
+ * exists and shows the span tree shape", not the exact child layout
+ * of `mastra-app`. The rich arrival trace stays as the showpiece.
+ */
+function buildPreviewSpanDetail(trace: TraceListItem): SpanDetail {
+  return {
+    spanId: `${trace.traceId}-root`,
+    parentSpanId: null,
+    name: trace.name,
+    type: trace.rootSpanType ?? "agent",
+    startTimeMs: trace.timestamp,
+    endTimeMs: trace.timestamp + trace.durationMs,
+    durationMs: trace.durationMs,
+    status:
+      trace.status === "warning" ? "ok" : (trace.status as "ok" | "error"),
+    model: trace.models?.[0] ?? null,
+    vendor: null,
+    input: trace.input,
+    output: trace.output,
+    error: trace.error ? { message: trace.error, stacktrace: [] } : null,
+    metrics: {
+      promptTokens: trace.inputTokens ?? null,
+      completionTokens: trace.outputTokens ?? null,
+      cost: trace.totalCost ?? null,
+      tokensEstimated: false,
+    },
+    params: null,
+    events: [],
+  };
+}
+
+function buildPreviewSpanTreeNode(trace: TraceListItem): SpanTreeNode {
+  return {
+    spanId: `${trace.traceId}-root`,
+    parentSpanId: null,
+    name: trace.name,
+    type: trace.rootSpanType ?? "agent",
+    startTimeMs: trace.timestamp,
+    endTimeMs: trace.timestamp + trace.durationMs,
+    durationMs: trace.durationMs,
+    status:
+      trace.status === "warning" ? "ok" : (trace.status as "ok" | "error"),
+    model: trace.models?.[0] ?? null,
+  };
+}
+
+function buildPreviewHeader(trace: TraceListItem): TraceHeader {
+  return {
+    traceId: trace.traceId,
+    timestamp: trace.timestamp,
+    name: trace.name,
+    serviceName: trace.serviceName,
+    origin: trace.origin,
+    conversationId: trace.conversationId ?? null,
+    userId: trace.userId ?? null,
+    durationMs: trace.durationMs,
+    spanCount: trace.spanCount,
+    status: trace.status,
+    error: trace.error ?? null,
+    input: trace.input,
+    output: trace.output,
+    models: trace.models,
+    totalCost: trace.totalCost,
+    totalTokens: trace.totalTokens,
+    inputTokens: trace.inputTokens ?? null,
+    outputTokens: trace.outputTokens ?? null,
+    tokensEstimated: false,
+    ttft: null,
+    traceName: trace.name,
+    rootSpanType: trace.rootSpanType ?? "agent",
+    scenarioRunId: null,
+    containsPrompt: false,
+    selectedPromptId: null,
+    selectedPromptSpanId: null,
+    lastUsedPromptId: null,
+    lastUsedPromptVersionNumber: null,
+    lastUsedPromptVersionId: null,
+    lastUsedPromptSpanId: null,
+    nonBilledCost: 0,
+    attributes: {},
+  };
+}
+
+function buildPreviewConversation(
+  trace: TraceListItem,
+): RichArrivalConversationContext | null {
+  if (!trace.conversationId) return null;
+  // Synthesise a single conversation turn from the trace's own
+  // input/output. Users opening the Conversation tab on a sample
+  // trace that declares a conversationId would otherwise see "no
+  // turns found" because the conversation endpoint is gated off for
+  // preview ids — at least show them the shape with the data we
+  // have.
+  return {
+    conversationId: trace.conversationId,
+    total: 1,
+    turns: [
+      {
+        traceId: trace.traceId,
+        timestamp: trace.timestamp,
+        name: trace.name,
+        rootSpanType: trace.rootSpanType ?? "agent",
+        status: trace.status,
+        input: trace.input,
+        output: trace.output,
+        ...NOT_REDACTED,
+      },
+    ],
+  };
+}
+
+export function buildPreviewTraceDetail(
+  trace: TraceListItem,
+): RichArrivalTraceDetail {
+  const rootSpan = buildPreviewSpanDetail(trace);
+  return {
+    header: buildPreviewHeader(trace),
+    spanTree: [buildPreviewSpanTreeNode(trace)],
+    spanDetails: [rootSpan],
+    spansFull: [rootSpan],
+    // Empty conversation when the trace has no conversationId is fine
+    // — the Conversation tab is already gated on `!!trace.conversationId`
+    // by `DrawerHeader`, so it stays disabled in that case. When the id
+    // IS present we synthesise a single turn; without this seed the tab
+    // is enabled but lands on "no turns found", which reads as broken.
+    conversation: buildPreviewConversation(trace) ?? {
+      conversationId: trace.conversationId ?? "",
+      total: 0,
+      turns: [],
+    },
+    // Trace-level evaluations on the list-item are TraceEvalResult[],
+    // a different schema than EvaluationRunData[] (the evals tab feed).
+    // Seeding an empty array is honest: the evaluations tab just
+    // renders "no evaluations" rather than spinning forever on the
+    // disabled fetch. Real traces still get the live evals.
+    evaluations: [],
   };
 }

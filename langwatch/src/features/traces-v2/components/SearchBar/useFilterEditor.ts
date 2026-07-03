@@ -3,6 +3,7 @@ import History from "@tiptap/extension-history";
 import Paragraph from "@tiptap/extension-paragraph";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Text as TiptapText } from "@tiptap/extension-text";
+import { TextSelection } from "@tiptap/pm/state";
 import { type Editor, useEditor } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -22,7 +23,6 @@ import { handleKey } from "./handleKey";
 import {
   buildSuggestionUI,
   CLOSED_SUGGESTION,
-  highlightedLabel,
   highlightedRow,
   navigateSuggestion,
   type SuggestionUIState,
@@ -31,6 +31,19 @@ import { useLatestRef } from "./useLatestRef";
 
 const TRIGGER_TERMINATOR_REGEX = /[ \t\n()]/;
 const TRIGGER_PRECEDERS = new Set([" ", "\t", "\n", "("]);
+
+// Upper bound on what a single paste can insert into the editor. Picked
+// to match the AI prompt input cap (2000) — anything longer is almost
+// certainly an accidental log dump rather than a real filter, and lets
+// the bar grow tall enough to push the page around even with the CSS
+// height cap as a safety net.
+const PASTE_MAX_CHARS = 2000;
+
+// How long to wait after the last keystroke before pushing the typed text
+// into the global filter store (which re-renders the sidebar + chips and
+// arms the network debounce). Keeps fluent typing entirely local to the
+// editor; the rest of the page catches up once the user pauses.
+const COMMIT_SETTLE_MS = 250;
 
 /**
  * Remove the chars at `[start, end)` from `text` and clean up any operator
@@ -49,15 +62,6 @@ function sliceFallbackTokenRange(
   const after = text.slice(end).replace(/^\s*(AND|OR)\s+/i, "");
   const joined = (before + " " + after).replace(/\s{2,}/g, " ").trim();
   return joined;
-}
-
-function arraysShallowEqual<T>(a: readonly T[], b: readonly T[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }
 
 function suggestionRowsEqual(
@@ -129,6 +133,14 @@ function suggestionFromTrigger(
 export interface DynamicSuggestionItems {
   items: string[];
   counts?: Record<string, number>;
+  /**
+   * Optional human-readable labels keyed by value id. When set, the
+   * suggestion dropdown renders the label as the primary text and the
+   * id muted underneath; the inserted token is still the raw `value`
+   * so the query language stays ID-only (search-by-name is not a goal —
+   * the value is the canonical identifier).
+   */
+  labels?: Record<string, string>;
 }
 
 export type ValueResolver = (
@@ -232,23 +244,33 @@ export function useFilterEditor({
   // Tracks last reported hasContent so we only fire onHasContentChange when
   // it actually flips (not on every keystroke that keeps the state).
   const lastHasContentRef = useRef<boolean>(queryText.length > 0);
-  // Defer `applyQueryText` to the next animation frame so the keystroke
-  // handler returns immediately. Coalesces multiple keystrokes that land
-  // in the same frame into one parse+serialize pass.
-  const pendingCommitRef = useRef<number | null>(null);
+  // Committing the typed text into the GLOBAL filter store (`applyQueryText`)
+  // re-parses + re-serialises AND re-renders every store subscriber — the
+  // whole facet sidebar, the query-breakdown chips, the page title, the URL
+  // sync. Doing that on every keystroke is what made typing lag. So we keep
+  // the ProseMirror editor as the source of truth while typing and DEBOUNCE
+  // the global commit to a short settle window: during fluent typing the
+  // store (and therefore the sidebar + network) stays put; it catches up once
+  // the user pauses. The sync-back effect below already no-ops while the
+  // editor is focused, so a stale store value never clobbers in-flight typing.
+  // Blur, Enter, and facet/chip mutations still commit immediately (they call
+  // `applyQueryText` directly), so nothing waits on this timer to settle.
+  const pendingCommitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommittedTextRef = useRef<string>("");
   const scheduleCommit = useCallback(
-    (text: string) => {
-      if (pendingCommitRef.current !== null) return;
-      pendingCommitRef.current = requestAnimationFrame(() => {
+    (_text: string) => {
+      if (pendingCommitRef.current !== null) {
+        clearTimeout(pendingCommitRef.current);
+      }
+      pendingCommitRef.current = setTimeout(() => {
         pendingCommitRef.current = null;
         // Read the current editor text rather than the captured one — typing
-        // while a frame is queued may have produced more characters.
-        const fresh = editorRef.current?.getText() ?? text;
+        // after the timer armed will have produced more characters.
+        const fresh = editorRef.current?.getText() ?? "";
         if (fresh === lastCommittedTextRef.current) return;
         lastCommittedTextRef.current = fresh;
         applyQueryTextRef.current(fresh);
-      });
+      }, COMMIT_SETTLE_MS);
     },
     [applyQueryTextRef],
   );
@@ -256,7 +278,7 @@ export function useFilterEditor({
   useEffect(
     () => () => {
       if (pendingCommitRef.current !== null) {
-        cancelAnimationFrame(pendingCommitRef.current);
+        clearTimeout(pendingCommitRef.current);
       }
     },
     [],
@@ -337,8 +359,11 @@ export function useFilterEditor({
           base.state.mode === "value" &&
           valueResolverRef.current
         ) {
+          // Capture the field here, where the `mode === "value"` narrowing
+          // still holds — it's lost inside the `.map` closure below.
+          const valueField = base.state.field;
           const dynamic = valueResolverRef.current(
-            base.state.field,
+            valueField,
             base.state.query,
           );
           if (dynamic && dynamic.items.length > 0) {
@@ -348,12 +373,19 @@ export function useFilterEditor({
             );
             // Dynamic value-mode rows have no group (values aren't grouped)
             // and aren't prefix entries — wrap the bare strings into the
-            // SuggestionRow shape that the dropdown renderer now expects.
+            // SuggestionRow shape that the dropdown renderer expects.
+            // `label` carries the human-readable name when the resolver
+            // emitted one (evaluator: "Faithfulness" for the id
+            // "ragas/faithfulness"); the dropdown renders the label as
+            // the primary row and the raw id as a muted secondary line.
+            // Without this the dropdown only ever showed ids, which is
+            // what the operator was complaining about for evaluators.
             next = {
               state: base.state,
               items: dynamic.items.map((value) => ({
                 value,
-                label: value,
+                label: dynamic.labels?.[value] ?? value,
+                field: valueField,
                 group: null,
               })),
               itemCounts: dynamic.counts,
@@ -405,13 +437,40 @@ export function useFilterEditor({
     },
     onBlur: ({ editor: ed }) => {
       setIsFocused(false);
-      applyQueryTextRef.current(ed.getText().trim());
+      // Blur is an authoritative settle — flush the typed text now and drop
+      // any pending debounced commit so it can't fire a stale follow-up.
+      if (pendingCommitRef.current !== null) {
+        clearTimeout(pendingCommitRef.current);
+        pendingCommitRef.current = null;
+      }
+      const finalText = ed.getText().trim();
+      lastCommittedTextRef.current = finalText;
+      applyQueryTextRef.current(finalText);
       setSuggestion(CLOSED_SUGGESTION);
       setDropdownDismissed(false);
       triggerPosRef.current = null;
     },
     editorProps: {
       attributes: { spellcheck: "false" },
+      // Coerce paste into one flat line. The editor's schema technically
+      // allows multiple Paragraph nodes, so pasting a multi-line error
+      // creates 10+ `<p>`s and balloons the bar to push the rest of the
+      // page off-screen. Strip control chars, collapse newlines + tabs
+      // to spaces, and cap the inserted text at PASTE_MAX_CHARS so a
+      // megabyte paste can't lock the parser up. The editor's
+      // overflow-x scroll still handles wide content.
+      handlePaste: (view, event) => {
+        const text = event.clipboardData?.getData("text/plain");
+        if (!text) return false;
+        const flattened = text
+          .replace(/[\r\n\t]+/g, " ")
+          .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+          .slice(0, PASTE_MAX_CHARS);
+        if (flattened === text) return false;
+        event.preventDefault();
+        view.dispatch(view.state.tr.insertText(flattened));
+        return true;
+      },
       // Suppress PM's default cursor placement when the user clicks on a
       // chip pill or its X widget. PM otherwise drops the caret into the
       // text node *inside* the chip (between "value" and the widget), so
@@ -432,6 +491,31 @@ export function useFilterEditor({
           }
           return false;
         },
+      },
+      // Clicking in the editor's empty trailing area (the big blank space to
+      // the right of the last chip) used to drop the caret INSIDE the final
+      // chip's text node — so the next character glued onto the chip's value
+      // (`status:okx`). Snap the caret to the very end of the doc instead, so
+      // a click in the blank space always starts a fresh clause. Only fires
+      // when the click is genuinely past the content's right edge; clicks
+      // landing on real text/chips fall through to ProseMirror's default.
+      handleClick: (view, _pos, event) => {
+        const endPos = view.state.doc.content.size;
+        let endCoords: { left: number; right: number };
+        try {
+          endCoords = view.coordsAtPos(endPos);
+        } catch {
+          return false;
+        }
+        // A few px of slack so a click right at the content's edge still
+        // counts as "on the content", not the trailing void.
+        if (event.clientX <= endCoords.right + 2) return false;
+        const tr = view.state.tr.setSelection(
+          TextSelection.create(view.state.doc, endPos),
+        );
+        view.dispatch(tr);
+        view.focus();
+        return true;
       },
       handleKeyDown: (view, event) => {
         const text = view.state.doc.textContent;
@@ -502,11 +586,43 @@ export function useFilterEditor({
         switch (action.kind) {
           case "noop":
             return false;
-          case "submit":
+          case "submit": {
             event.preventDefault();
             triggerPosRef.current = null;
-            applyQueryTextRef.current(action.text.trim());
+            // Apply immediately and cancel any pending debounced commit so the
+            // settle timer doesn't fire a redundant second apply afterward.
+            if (pendingCommitRef.current !== null) {
+              clearTimeout(pendingCommitRef.current);
+              pendingCommitRef.current = null;
+            }
+            const committed = action.text.trim();
+            lastCommittedTextRef.current = committed;
+            applyQueryTextRef.current(committed);
+            // Open a fresh clause so the next keystroke starts a NEW token
+            // instead of gluing onto the just-completed one (`status:ok` + `x`
+            // → `status:okx`, the "cursor stuck inside the chip" report). This
+            // mirrors the dropdown-accept path; the submit path (Enter with no
+            // highlighted suggestion) previously left the caret flush against
+            // the last token with no boundary. Park the caret at the end and
+            // append a boundary char unless the text already ends in
+            // whitespace. The char is a NBSP (U+00A0), NOT a regular space:
+            // contenteditable/PM eat a trailing regular space the instant the
+            // next character arrives (which re-glues the tokens), whereas NBSP
+            // survives — the parser normalises it back to a space. Flagged
+            // programmatic so onUpdate doesn't re-commit the suffixed text; the
+            // editor keeps focus, so the store→editor sync (skipped while
+            // focused, trim-normalised anyway) won't clobber the boundary.
+            isProgrammaticRef.current = true;
+            let submitTr = view.state.tr.setSelection(
+              TextSelection.atEnd(view.state.doc),
+            );
+            if (!/\s$/.test(view.state.doc.textContent)) {
+              submitTr = submitTr.insertText("\u00A0");
+            }
+            view.dispatch(submitTr.scrollIntoView());
+            isProgrammaticRef.current = false;
             return true;
+          }
           case "blur":
             event.preventDefault();
             triggerPosRef.current = null;
@@ -558,9 +674,9 @@ export function useFilterEditor({
       // decoration pass; the parent receives the click rect to anchor
       // the popover. Skip when no callback is wired so chip clicks
       // still place the cursor as before.
-      const chipEl = target?.closest("[data-filter-chip-start]") as
-        | HTMLElement
-        | null;
+      const chipEl = target?.closest(
+        "[data-filter-chip-start]",
+      ) as HTMLElement | null;
       if (chipEl && onTokenClick) {
         event.preventDefault();
         event.stopPropagation();
@@ -568,12 +684,7 @@ export function useFilterEditor({
         const end = Number(chipEl.dataset.filterChipEnd);
         const field = chipEl.dataset.filterChipField ?? "";
         const value = chipEl.dataset.filterChipValue ?? "";
-        if (
-          Number.isFinite(start) &&
-          Number.isFinite(end) &&
-          field &&
-          value
-        ) {
+        if (Number.isFinite(start) && Number.isFinite(end) && field && value) {
           onTokenClick({
             rect: chipEl.getBoundingClientRect(),
             field,
@@ -588,9 +699,9 @@ export function useFilterEditor({
       // span carries the liqe-text coordinates as data attributes (set
       // by `filterHighlight`'s decoration pass) so we can flip without
       // re-parsing the AST here.
-      const opEl = target?.closest("[data-filter-op-start]") as
-        | HTMLElement
-        | null;
+      const opEl = target?.closest(
+        "[data-filter-op-start]",
+      ) as HTMLElement | null;
       if (opEl) {
         event.preventDefault();
         event.stopPropagation();
@@ -673,7 +784,9 @@ export function useFilterEditor({
       const { text, cursorPos } = readEditorContext(editor);
       // Look up whether the clicked label corresponds to a prefix row so
       // the accept handler doesn't auto-append `:` to `trace.attribute.`.
-      const matched = suggestionRef.current.items.find((r) => r.value === label);
+      const matched = suggestionRef.current.items.find(
+        (r) => r.value === label,
+      );
       const action = handleKey(
         {
           text,

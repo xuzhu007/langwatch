@@ -22,7 +22,10 @@ import { TracesMapping } from "../TracesMapping";
 // "Research.aexecute_stream" is NOT present on the loaded trace below.
 const PROJECT_SPAN_NAMES = [
   { key: "Research.aexecute_stream", label: "Research.aexecute_stream" },
-  { key: "Classification.aexecute_stream", label: "Classification.aexecute_stream" },
+  {
+    key: "Classification.aexecute_stream",
+    label: "Classification.aexecute_stream",
+  },
 ];
 
 vi.mock("~/hooks/useOrganizationTeamProject", () => ({
@@ -41,20 +44,16 @@ vi.mock("~/hooks/useProjectSpanNames", () => ({
 }));
 
 vi.mock("~/hooks/useProjectEventTypes", () => ({
-  useProjectEventTypes: () => ({ eventTypes: [], isLoading: false, error: null }),
+  useProjectEventTypes: () => ({
+    eventTypes: [],
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 vi.mock("~/hooks/useAnnotationsByTraceIds", () => ({
   useAnnotationsByTraceIds: () => ({ data: [] }),
 }));
-
-vi.mock(
-  "~/components/evaluations/wizard/hooks/evaluation-wizard-store/useEvaluationWizardStore",
-  () => ({
-    useEvaluationWizardStore: (selector: (state: unknown) => unknown) =>
-      selector({ workbenchState: { task: undefined } }),
-  }),
-);
 
 vi.mock("~/utils/api", () => ({
   api: {
@@ -97,13 +96,20 @@ function renderSpansMapping() {
   );
 }
 
+/** Open the searchable span/key dropdown (it shows "* (any span)" until opened). */
+async function openKeyDropdown(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByText("* (any span)"));
+}
+
 describe("TracesMapping spans dropdown (integration)", () => {
   afterEach(() => cleanup());
 
   describe("when a project span name is absent from the loaded trace", () => {
     /** @scenario Span names from the project are offered even when absent from the open trace */
     it("offers the project span name for mapping", async () => {
+      const user = userEvent.setup();
       renderSpansMapping();
+      await openKeyDropdown(user);
 
       expect(
         await screen.findByRole("option", {
@@ -116,7 +122,9 @@ describe("TracesMapping spans dropdown (integration)", () => {
   describe("when a span exists on the loaded trace", () => {
     /** @scenario Span names from the open trace are always offered */
     it("offers the loaded trace's span name for mapping", async () => {
+      const user = userEvent.setup();
       renderSpansMapping();
+      await openKeyDropdown(user);
 
       expect(
         await screen.findByRole("option", {
@@ -126,19 +134,37 @@ describe("TracesMapping spans dropdown (integration)", () => {
     });
   });
 
+  describe("when typing into the span dropdown", () => {
+    /** @scenario The span name dropdown is searchable for large projects */
+    it("filters the options down to the typed text", async () => {
+      const user = userEvent.setup();
+      renderSpansMapping();
+      await openKeyDropdown(user);
+
+      await user.keyboard("Classification");
+
+      expect(
+        await screen.findByRole("option", {
+          name: "Classification.aexecute_stream",
+        }),
+      ).toBeInTheDocument();
+      // A non-matching span name is filtered out of the menu.
+      expect(
+        screen.queryByRole("option", { name: "Research.aexecute_stream" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("when a project span name is selected", () => {
     /** @scenario Selecting a project span name lets me map its subfields */
     it("offers the span input, output, params and contexts subfields", async () => {
       const user = userEvent.setup();
       renderSpansMapping();
+      await openKeyDropdown(user);
 
-      const researchOption = await screen.findByRole("option", {
-        name: "Research.aexecute_stream",
-      });
-      const keySelect = researchOption.closest("select");
-      expect(keySelect).not.toBeNull();
-
-      await user.selectOptions(keySelect!, "Research.aexecute_stream");
+      await user.click(
+        await screen.findByRole("option", { name: "Research.aexecute_stream" }),
+      );
 
       // Scope the subfield assertions to the span subkey <select> (identified by
       // its "* (full span object)" option) so they don't collide with the

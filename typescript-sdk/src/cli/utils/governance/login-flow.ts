@@ -32,7 +32,12 @@ import {
 } from "./device-flow";
 import { loadConfig, saveConfig, type GovernanceConfig } from "./config";
 import { formatLoginCeremony } from "./login-ceremony";
-import { getCliBootstrap, type CliBootstrapResponse } from "./cli-api";
+import {
+  extractLookupIdFromToken,
+  getCliBootstrap,
+  listIngestionKeys,
+  type CliBootstrapResponse,
+} from "./cli-api";
 
 export interface RunUnifiedLoginOptions {
   /** Credential type to mint. Defaults to 'device_session' for back-compat. */
@@ -84,7 +89,21 @@ export async function runUnifiedLoginFlow(
 
   await openInBrowser(verifyURL, opts.browser);
 
-  const spinner = ora("Waiting for you to approve in the browser").start();
+  // discardStdin:false is load-bearing. ora's default (true) flips stdin to
+  // raw mode while the spinner runs, so Ctrl+C arrives as a raw 0x03 byte that
+  // ora swallows instead of a SIGINT — the wait becomes unkillable. Keeping
+  // stdin cooked lets the terminal deliver SIGINT; the handler stops the
+  // spinner and exits cleanly so the user can always abort the login wait.
+  const spinner = ora({
+    text: "Waiting for you to approve in the browser",
+    discardStdin: false,
+  }).start();
+  const onSigint = () => {
+    spinner.stop();
+    console.log(chalk.gray("\nLogin cancelled."));
+    process.exit(130);
+  };
+  process.once("SIGINT", onSigint);
   try {
     const result = await pollUntilDone({ baseUrl }, dc);
     if (result.kind === "device_session") {
@@ -115,10 +134,40 @@ export async function runUnifiedLoginFlow(
         saveConfig(cfg);
       }
 
+      // Reconcile cached ingestion keys (#4755): after a fresh login, drop
+      // any locally cached entries whose token was revoked on the platform.
+      // Errors are swallowed — a login must never fail on reconcile; the
+      // worst outcome is a stale cache entry that the per-invocation wrapper
+      // check will catch anyway.
+      if (cfg.default_personal_ingest_keys && Object.keys(cfg.default_personal_ingest_keys).length > 0) {
+        try {
+          const liveKeys = await listIngestionKeys(cfg);
+          const liveSet = new Set(liveKeys.map((k) => `${k.sourceType}:${k.lookupId}`));
+          const reconciled: GovernanceConfig["default_personal_ingest_keys"] = {};
+          let changed = false;
+          for (const [sourceType, entry] of Object.entries(cfg.default_personal_ingest_keys)) {
+            const lookupId = extractLookupIdFromToken(entry.secret ?? "");
+            if (lookupId && liveSet.has(`${sourceType}:${lookupId}`)) {
+              reconciled[sourceType] = entry;
+            } else {
+              // Entry is stale (revoked or lookupId missing) — omit from reconciled
+              changed = true;
+            }
+          }
+          if (changed) {
+            cfg.default_personal_ingest_keys = reconciled;
+            saveConfig(cfg);
+          }
+        } catch {
+          // Network error / older server: keep existing cache untouched
+        }
+      }
+
       console.log();
       const ceremonyLines = formatLoginCeremony({
         email: cfg.user?.email ?? result.user.email,
         organizationName: cfg.organization?.name,
+        tools: bootstrap?.tools,
         providers: bootstrap?.providers,
         budget:
           bootstrap?.budget?.monthlyLimitUsd != null
@@ -177,6 +226,8 @@ export async function runUnifiedLoginFlow(
       }
     }
     throw err;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 }
 

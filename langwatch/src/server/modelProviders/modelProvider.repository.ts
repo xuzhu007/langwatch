@@ -1,8 +1,8 @@
-import { generate } from "@langwatch/ksuid";
 import type { ModelProvider, ModelProviderScope, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
+import { generate } from "@langwatch/ksuid";
 import { KSUID_RESOURCES } from "../../utils/constants";
-import { decrypt, encrypt } from "../../utils/encryption";
+import { encrypt, decrypt } from "../../utils/encryption";
 import { resolveSingleOrganizationForScopes } from "../scopes/resolveOrganizationForScope";
 import { resolveScopeChain } from "../scopes/resolveScopeChain";
 import type { CustomModelsInput } from "./customModel.schema";
@@ -68,8 +68,18 @@ export class ModelProviderRepository {
   }
 
   /**
-   * 按组织锚定查找任意 scope 上的 ModelProvider。
-   * 删除前仍会对每个已保存 scope 做 manage 权限校验。
+   * Find a ModelProvider by id anywhere inside an organization, regardless
+   * of whether it is granted at the org, team, or a (possibly sibling)
+   * project scope. The single-org `organizationId` anchor (ADR-021) bounds
+   * the lookup to the caller's tenant, so an id from another org can't be
+   * probed.
+   *
+   * The settings list surfaces org- and sibling-project-scoped rows (see
+   * `findAllAccessibleForProject` / `findAllInOrganization`), so a
+   * PROJECT-scope lookup misses them — which is why deleting an org-scoped
+   * provider from a project view used to 404. The delete path uses this
+   * org-anchored lookup and then gates the action on the per-scope manage
+   * authz.
    */
   async findByIdForOrganization(
     id: string,

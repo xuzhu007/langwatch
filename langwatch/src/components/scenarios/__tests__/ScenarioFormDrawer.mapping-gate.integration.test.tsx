@@ -10,8 +10,9 @@
  *   mappings also opens the drawer.
  * - Clicking Save & Run with a non-workflow agent (code) proceeds normally.
  *
- * @see specs/scenarios/workflow-agent-mapping-gate.feature
+ * @see specs/features/scenarios/workflow-agent-mapping-layer.feature
  */
+import * as React from "react";
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -56,6 +57,22 @@ vi.mock("../SaveAndRunMenu", () => ({
       </button>
     </div>
   ),
+}));
+// Auto-confirm the run-model dialog so the gate flow reaches the run; the
+// dialog UI is covered in ScenarioRunModelDialog.integration.test.tsx.
+vi.mock("../ScenarioRunModelDialog", () => ({
+  ScenarioRunModelDialog: ({
+    open,
+    onConfirm,
+  }: {
+    open?: boolean;
+    onConfirm?: () => void;
+  }) => {
+    React.useEffect(() => {
+      if (open) onConfirm?.();
+    }, [open]);
+    return null;
+  },
 }));
 
 import { ScenarioFormDrawer } from "../ScenarioFormDrawer";
@@ -310,6 +327,52 @@ describe("<ScenarioFormDrawer /> mapping gate", () => {
           }),
         );
       });
+    });
+
+    /** @scenario Mapping warning links back to the agent editor */
+    it("offers an 'Open agent editor' action that reopens the editor drawer independently of the auto-open", async () => {
+      const user = userEvent.setup();
+      renderWithTarget({ type: "workflow", id: "workflow-agent-1" });
+
+      await user.click(screen.getByTestId("save-and-run-button"));
+
+      await waitFor(() => {
+        expect(mockToasterCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: expect.objectContaining({ label: "Open agent editor" }),
+          }),
+        );
+      });
+
+      const toastArg = mockToasterCreate.mock.calls.at(-1)?.[0] as {
+        action?: { label: string; onClick: () => void };
+      };
+      // AC3: the auto-open fired first (existing behavior preserved)...
+      expect(mocks.mockOpenDrawer).toHaveBeenCalledWith("agentWorkflowEditor", {
+        urlParams: { agentId: "workflow-agent-1" },
+      });
+      // ...then clear it and prove the action handler ALONE reopens the editor —
+      // the fallback affordance, functional even if the auto-open was dismissed.
+      mocks.mockOpenDrawer.mockClear();
+      toastArg.action?.onClick();
+      expect(mocks.mockOpenDrawer).toHaveBeenCalledWith("agentWorkflowEditor", {
+        urlParams: { agentId: "workflow-agent-1" },
+      });
+    });
+
+    /** @scenario Mapping warning names the missing scenario input field */
+    it("names the missing scenario input fields (input / messages) in the toast description", async () => {
+      const user = userEvent.setup();
+      renderWithTarget({ type: "workflow", id: "workflow-agent-1" });
+
+      await user.click(screen.getByTestId("save-and-run-button"));
+
+      await waitFor(() => expect(mockToasterCreate).toHaveBeenCalled());
+      const toastArg = mockToasterCreate.mock.calls.at(-1)?.[0] as {
+        description?: string;
+      };
+      expect(toastArg.description).toMatch(/input/i);
+      expect(toastArg.description).toMatch(/messages/i);
     });
   });
 

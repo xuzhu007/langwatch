@@ -1,14 +1,17 @@
-import { Box, CodeBlock, Flex } from "@chakra-ui/react";
+import { Box, CodeBlock, Flex, Spinner } from "@chakra-ui/react";
 import { useRef } from "react";
 import { useColorMode } from "~/components/ui/color-mode";
 import { Drawer } from "~/components/ui/drawer";
 import { IsolatedErrorBoundary } from "~/components/ui/IsolatedErrorBoundary";
 import { PeerCursorOverlay } from "~/features/presence/components/PeerCursorOverlay";
+import { DrawerSpotlights } from "../../onboarding/spotlights/DrawerSpotlights";
 import {
   DRAWER_DEFAULT_WIDTH_PX,
   DRAWER_MIN_WIDTH_PX,
   useDrawerStore,
 } from "../../stores/drawerStore";
+import { BlurredContentGate } from "../BlurredContentGate";
+import { ConversationContext } from "./ConversationContext";
 import { ConversationView } from "./conversationView";
 import { DrawerHeader } from "./drawerHeader";
 import { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
@@ -21,6 +24,7 @@ import { TraceDrawerEmptyState } from "./TraceDrawerEmptyState";
 import { TraceDrawerSkeleton } from "./TraceDrawerSkeleton";
 import { TraceAccordions } from "./traceAccordions";
 import { useTraceDrawerScaffold } from "./useTraceDrawerScaffold";
+import { useTraceSwitchOverlay } from "./useTraceSwitchOverlay";
 
 export interface TraceV2DrawerShellProps {
   open?: boolean;
@@ -60,11 +64,22 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
     drawerContentRef,
   } = useTraceDrawerScaffold();
 
+  // Brief refreshing overlay when switching to a *different* trace — a
+  // same-trace live update leaves this false so the surface doesn't flash.
+  const showSwitchOverlay = useTraceSwitchOverlay({ traceId, isLoading });
+
   const viewMode = useDrawerStore((s) => s.viewMode);
   const widthPx = useDrawerStore((s) => s.widthPx);
   const shortcutsOpen = useDrawerStore((s) => s.shortcutsOpen);
   const pinned = useDrawerStore((s) => s.pinned);
+  const expectedSpanCount = useDrawerStore((s) => s.expectedSpanCount);
+  const ctxPaneState = useDrawerStore((s) => s.paneState.conversationContext);
+  const togglePaneCollapsed = useDrawerStore((s) => s.togglePaneCollapsed);
   const setShortcutsOpen = useDrawerStore((s) => s.setShortcutsOpen);
+  // Summary-tab span references (eval / event / exception rows) jump into
+  // the Trace view and open the span. See
+  // specs/traces-v2/span-reference-jump-to-trace.feature
+  const openSpanInTrace = useDrawerStore((s) => s.openSpanInTrace);
 
   // `open` is hardcoded `true` because the parent (`TracesPage`'s
   // `<TraceDrawerMount>`) only mounts this shell while the drawer
@@ -197,9 +212,14 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
             display="flex"
             flexDirection="column"
             minHeight={0}
+            // Positioning context for the trace-switch refresh overlay below.
+            position="relative"
           >
             {isLoading || !trace ? (
-              <TraceDrawerSkeleton onClose={handleClose} />
+              <TraceDrawerSkeleton
+                onClose={handleClose}
+                expectedSpanCount={expectedSpanCount}
+              />
             ) : (
               <>
                 <Box
@@ -253,9 +273,8 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
                     minHeight={0}
                     minWidth={0}
                     direction="column"
+                    position="relative"
                     bg={{ base: "bg.surface", _dark: "bg.panel" }}
-                    opacity={headerQuery.isFetching ? 0.55 : 1}
-                    transition="opacity 120ms ease-out"
                   >
                     <ScenarioRoleProvider
                       isScenario={
@@ -278,6 +297,11 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
                           </Box>
                         </IsolatedErrorBoundary>
                       ) : viewMode === "summary" ? (
+                        // Summary mode shows the same conversation-context
+                        // strip the Trace view renders (via PaneLayout) so
+                        // multi-turn context isn't lost when reading the
+                        // summary. Same store-backed collapse state, so
+                        // collapsing it in one view collapses it in both.
                         // Summary mode: render the trace-scope accordion stack
                         // full-bleed (I/O, metadata, evals, events, exceptions
                         // — whatever the current `TraceSummaryAccordions`
@@ -289,12 +313,41 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
                           scope="Couldn't render trace summary"
                           resetKeys={[trace.traceId]}
                         >
+                          {trace.conversationId && (
+                            <IsolatedErrorBoundary
+                              scope="Couldn't render conversation context"
+                              resetKeys={[trace.conversationId, trace.traceId]}
+                            >
+                              {/* ConversationContext's root is height=100%
+                                  (sized by PaneLayout's resizable Panel in
+                                  Trace view). Here it sits in a plain flex
+                                  column, where 100% would claim the whole
+                                  drawer and crush the accordions below —
+                                  the wrapper gives it a natural-height,
+                                  capped, scrollable slot instead. */}
+                              <Box
+                                flexShrink={0}
+                                maxHeight="48%"
+                                overflow="auto"
+                              >
+                                <ConversationContext
+                                  conversationId={trace.conversationId}
+                                  traceId={trace.traceId}
+                                  collapsed={ctxPaneState.collapsed}
+                                  onToggleCollapsed={() =>
+                                    togglePaneCollapsed("conversationContext")
+                                  }
+                                />
+                              </Box>
+                            </IsolatedErrorBoundary>
+                          )}
                           <Box flex={1} minHeight={0} overflow="auto">
                             <TraceAccordions
                               trace={trace}
                               spans={spanTree}
                               selectedSpan={null}
                               activeTab="summary"
+                              onSelectSpan={openSpanInTrace}
                             />
                           </Box>
                         </IsolatedErrorBoundary>
@@ -303,14 +356,48 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
                           trace={trace}
                           spans={spanTree}
                           selectedSpan={selectedSpan}
-                          spansLoading={spanTreeQuery.isLoading}
+                          isSpansLoading={spanTreeQuery.isLoading}
                           layout={layout}
                         />
                       )}
                     </ScenarioRoleProvider>
+                    {trace.redactedByVisibilityWindow ? (
+                      <BlurredContentGate />
+                    ) : null}
                   </Flex>
                 </PeerCursorOverlay>
               </>
+            )}
+            {/* Trace-switch refresh overlay: a translucent blurred scrim
+                with a spinner that covers the whole body while the drawer
+                moves from one trace to another. Driven by
+                `useTraceSwitchOverlay`, which only fires on a genuine A→B
+                switch (never on a same-trace live update) and holds for a
+                short floor so even a prefetched, instant switch registers
+                as a refresh instead of popping. `pointerEvents="none"` so
+                it never traps clicks. */}
+            {showSwitchOverlay && (
+              <Box
+                position="absolute"
+                inset={0}
+                zIndex={3}
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                borderRadius="lg"
+                bg="bg.panel/60"
+                backdropFilter="blur(8px) saturate(140%)"
+                pointerEvents="none"
+                css={{
+                  animation: "tracesV2DrawerSwitchFade 140ms ease-out",
+                  "@keyframes tracesV2DrawerSwitchFade": {
+                    from: { opacity: 0 },
+                    to: { opacity: 1 },
+                  },
+                }}
+              >
+                <Spinner size="lg" color="blue.solid" borderWidth="2px" />
+              </Box>
             )}
           </Drawer.Body>
         </Drawer.Content>
@@ -319,6 +406,10 @@ export function TraceV2DrawerShell(_props: TraceV2DrawerShellProps) {
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
       />
+      {/* Show-once feature spotlights — only meaningful once a trace has
+          rendered (the anchors live in the drawer body). Keyed reads via
+          the traceId prop so the queue re-evaluates per trace. */}
+      {trace ? <DrawerSpotlights traceId={trace.traceId} /> : null}
     </Drawer.Root>
   );
 }

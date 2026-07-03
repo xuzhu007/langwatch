@@ -21,6 +21,8 @@ import type { SimulationRepository } from "./simulation.repository";
 
 const TABLE_NAME = "simulation_runs" as const;
 
+export const RUN_ID_CAP = 10000;
+
 /**
  * Returns an IN-tuple dedup predicate for simulation_runs.
  *
@@ -921,52 +923,39 @@ export class SimulationClickHouseRepository implements SimulationRepository {
     }));
   }
 
-  async getRunIdsForScope({
+  async findAllRunIdsForSet({
     projectId,
-    batchRunId,
     scenarioSetId,
   }: {
     projectId: string;
-    batchRunId?: string;
-    scenarioSetId?: string;
-  }): Promise<string[]> {
-    // Guard: a scope is mandatory. Without a batch or set predicate this would
-    // select every run in the tenant — the bulk-archive footgun this method
-    // exists to prevent. The API layer rejects the request before reaching
-    // here; this is defence in depth at the data layer.
-    if (!batchRunId && !scenarioSetId) {
-      throw new Error(
-        "getRunIdsForScope requires a batchRunId or scenarioSetId; refusing to select all runs for the tenant",
-      );
-    }
-
-    const predicates = ["TenantId = {tenantId:String}", "ArchivedAt IS NULL"];
-    const query_params: Record<string, string | string[]> = {
-      tenantId: projectId,
-    };
-    if (batchRunId) {
-      predicates.push("BatchRunId = {batchRunId:String}");
-      query_params.batchRunId = batchRunId;
-    }
-    if (scenarioSetId) {
-      // The default set is stored as '' but addressed as 'default' (and
-      // vice-versa). Expand to both storage forms so archiving the default
-      // set matches its rows — the same normalization every other
-      // set-scoped query uses via expandSetIdFilter.
-      predicates.push("ScenarioSetId IN ({scenarioSetIds:Array(String)})");
-      query_params.scenarioSetIds = expandSetIdFilter(scenarioSetId);
-    }
-
+    scenarioSetId: string;
+  }): Promise<{ runIds: string[]; reachedCap: boolean }> {
     const client = await this.getClient(projectId);
+    // The default set is stored as '' but addressed as 'default' (and
+    // vice-versa). Expand to both storage forms so archiving the default
+    // set matches its rows — the same normalization every other set-scoped
+    // query uses via expandSetIdFilter.
+    const scenarioSetIds = expandSetIdFilter(scenarioSetId);
+    // Dedup to the latest version per run before applying ArchivedAt IS NULL.
+    // simulation_runs is ReplacingMergeTree(UpdatedAt); without dedup, an
+    // older non-archived row can satisfy the filter even after the run was
+    // archived, re-dispatching deletions for already-archived runs.
     const result = await client.query({
-      query: `SELECT DISTINCT ScenarioRunId FROM ${TABLE_NAME} WHERE ${predicates.join(
-        " AND ",
-      )} LIMIT 10000`,
-      query_params,
+      query: `SELECT DISTINCT ScenarioRunId
+              FROM ${TABLE_NAME}
+              WHERE TenantId = {tenantId:String}
+                AND ScenarioSetId IN ({scenarioSetIds:Array(String)})
+                AND ArchivedAt IS NULL
+                ${simulationRunDedupPredicate(
+                  "TenantId = {tenantId:String} AND ScenarioSetId IN ({scenarioSetIds:Array(String)})",
+                )}
+              LIMIT ${RUN_ID_CAP}`,
+      query_params: { tenantId: projectId, scenarioSetIds },
       format: "JSONEachRow",
     });
     const rows = await result.json<{ ScenarioRunId: string }>();
-    return rows.map((r) => r.ScenarioRunId);
+    const runIds = rows.map((r) => r.ScenarioRunId);
+    return { runIds, reachedCap: runIds.length === RUN_ID_CAP };
   }
 
   async getDistinctExternalSetIds({
@@ -979,19 +968,32 @@ export class SimulationClickHouseRepository implements SimulationRepository {
       return new Set();
     }
 
+    // simulation_runs is a ReplacingMergeTree, so each run is read at its
+    // latest version. Rather than the IN-tuple dedup pattern — which scans the
+    // table twice (once to build the latest-version key set, once for the
+    // outer filter) and materialises a key set sized to every run — fold each
+    // run to its latest version in a single GROUP BY pass and keep the sets
+    // whose latest run is not archived. Light columns only; the distinct
+    // external set ids are identical.
+    //
+    // We fold over `argMax(ArchivedAt IS NULL, UpdatedAt)` rather than
+    // `argMax(ArchivedAt, UpdatedAt)`: ArchivedAt is Nullable, and argMax
+    // skips rows whose first argument is NULL, so a freshly un-archived run
+    // (latest ArchivedAt = NULL) would otherwise be ignored and the run would
+    // look archived. The `IS NULL` expression is non-nullable, so the fold
+    // reads the true latest version.
     const rows = await this.queryRows<{ ScenarioSetId: string }>(
       `SELECT DISTINCT IF(ScenarioSetId = '', '${DEFAULT_SET_ID}', ScenarioSetId) AS ScenarioSetId
-       FROM ${TABLE_NAME}
-       WHERE TenantId IN ({projectIds:Array(String)})
-         AND NOT startsWith(ScenarioSetId, '${INTERNAL_SET_PREFIX}')
-         AND ArchivedAt IS NULL
-         AND (TenantId, ScenarioSetId, BatchRunId, ScenarioRunId, UpdatedAt) IN (
-           SELECT TenantId, ScenarioSetId, BatchRunId, ScenarioRunId, max(UpdatedAt)
-           FROM ${TABLE_NAME}
-           WHERE TenantId IN ({projectIds:Array(String)})
-             AND NOT startsWith(ScenarioSetId, '${INTERNAL_SET_PREFIX}')
-           GROUP BY TenantId, ScenarioSetId, BatchRunId, ScenarioRunId
-         )`,
+       FROM (
+         SELECT
+           ScenarioSetId,
+           argMax(ArchivedAt IS NULL, UpdatedAt) AS latestIsActive
+         FROM ${TABLE_NAME}
+         WHERE TenantId IN ({projectIds:Array(String)})
+           AND NOT startsWith(ScenarioSetId, '${INTERNAL_SET_PREFIX}')
+         GROUP BY TenantId, ScenarioSetId, BatchRunId, ScenarioRunId
+       )
+       WHERE latestIsActive`,
       { tenantId: firstProjectId, projectIds },
     );
 

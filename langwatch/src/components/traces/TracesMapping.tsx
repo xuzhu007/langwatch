@@ -5,7 +5,6 @@ import {
   GridItem,
   HStack,
   NativeSelect,
-  Spinner,
   Text,
   VStack,
 } from "@chakra-ui/react";
@@ -13,10 +12,10 @@ import { Select as MultiSelect } from "chakra-react-select";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowRight } from "react-feather";
 import type { Trace } from "~/server/tracer/types";
-import { useOrganizationTeamProject } from "../../hooks/useOrganizationTeamProject";
 import { useAnnotationsByTraceIds } from "../../hooks/useAnnotationsByTraceIds";
-import { useProjectSpanNames } from "../../hooks/useProjectSpanNames";
+import { useOrganizationTeamProject } from "../../hooks/useOrganizationTeamProject";
 import { useProjectEventTypes } from "../../hooks/useProjectEventTypes";
+import { useProjectSpanNames } from "../../hooks/useProjectSpanNames";
 import type { Workflow } from "../../optimization_studio/types/dsl";
 import type { DatasetRecordEntry } from "../../server/datasets/types";
 import {
@@ -29,16 +28,11 @@ import {
   TRACE_MAPPINGS,
 } from "../../server/tracer/tracesMapping";
 import { api } from "../../utils/api";
-import { useEvaluationWizardStore } from "../evaluations/wizard/hooks/evaluation-wizard-store/useEvaluationWizardStore";
 import { Switch } from "../ui/switch";
 
 /** Trace field options for the threads sub-field selector, excluding thread sources themselves. */
 const THREAD_SUB_FIELD_OPTIONS = Object.keys(TRACE_MAPPINGS)
-  .filter(
-    (key) =>
-      key !== "threads" &&
-      key !== "threads_until_current",
-  )
+  .filter((key) => key !== "threads" && key !== "threads_until_current")
   .map((key) => ({ label: key, value: key }));
 
 export const DATASET_INFERRED_MAPPINGS_BY_NAME: Record<
@@ -168,9 +162,6 @@ export const TracesMapping = ({
   skipSettingDefaultEdges?: boolean;
 }) => {
   const { project } = useOrganizationTeamProject();
-  const { task } = useEvaluationWizardStore((state) => ({
-    task: state.workbenchState.task,
-  }));
 
   const annotationScores = useAnnotationsByTraceIds({
     projectId: project?.id ?? "",
@@ -280,13 +271,11 @@ export const TracesMapping = ({
     () => Object.values(mapping).some((m) => m.source === "events"),
     [mapping],
   );
-  const {
-    eventTypes: projectEventTypes,
-    isLoading: projectEventTypesLoading,
-  } = useProjectEventTypes({
-    projectId: project?.id,
-    enabled: needsProjectEventTypes,
-  });
+  const { eventTypes: projectEventTypes, isLoading: projectEventTypesLoading } =
+    useProjectEventTypes({
+      projectId: project?.id,
+      enabled: needsProjectEventTypes,
+    });
 
   // These dropdowns should offer every name the project produced in the last 30
   // days, not just the names on the loaded trace(s) — otherwise a span (or
@@ -307,8 +296,8 @@ export const TracesMapping = ({
       if (projectOptions.length === 0) {
         return baseOptions;
       }
-      return dedupeKeyOptions([...baseOptions, ...projectOptions]).sort((a, b) =>
-        a.label.localeCompare(b.label),
+      return dedupeKeyOptions([...baseOptions, ...projectOptions]).sort(
+        (a, b) => a.label.localeCompare(b.label),
       );
     },
     [
@@ -322,9 +311,8 @@ export const TracesMapping = ({
   // Check if any column uses a server-only source (e.g. formatted_trace)
   const needsFormattedDigest = useMemo(
     () =>
-      Object.values(mapping).some(
-        (m) =>
-          (SERVER_ONLY_TRACE_SOURCES as readonly string[]).includes(m.source),
+      Object.values(mapping).some((m) =>
+        (SERVER_ONLY_TRACE_SOURCES as readonly string[]).includes(m.source),
       ),
     [mapping],
   );
@@ -372,6 +360,10 @@ export const TracesMapping = ({
 
   const now = useMemo(() => new Date().getTime(), []);
   const isInitializedRef = React.useRef(false);
+  // The entries effect rebuilds a fresh array on every run; without this guard
+  // it pushes a new reference to the parent on every render and the parent's
+  // re-render feeds back into the effect, exceeding React's update depth.
+  const lastEntriesRef = React.useRef<string | null>(null);
 
   useEffect(() => {
     // Build the default mapping state with targetFields
@@ -525,6 +517,9 @@ export const TracesMapping = ({
       }
     }
 
+    const serialized = JSON.stringify(entries);
+    if (serialized === lastEntriesRef.current) return;
+    lastEntriesRef.current = serialized;
     setDatasetEntries?.(entries);
   }, [
     expansions,
@@ -538,7 +533,7 @@ export const TracesMapping = ({
     now,
   ]);
 
-  const isThreeColumns = task === "real_time" && !!dsl;
+  const isThreeColumns = !!dsl;
 
   return (
     <Grid
@@ -613,6 +608,25 @@ export const TracesMapping = ({
             (projectFieldNamesLoading &&
               PROJECT_FIELD_NAME_SOURCES.includes(source)) ||
             (projectEventTypesLoading && source === "events");
+
+          // Options for the (searchable) key dropdown: the "match everything"
+          // entry plus every project-wide / trace name for this source. These
+          // lists can be large (hundreds of span names), which is why the key
+          // dropdown is a searchable select rather than a plain <select>.
+          const hasKeys =
+            !!traceMappingDefinition && "keys" in traceMappingDefinition;
+          const keyOptions: KeyOption[] =
+            isLoadingFieldNames || !hasKeys
+              ? []
+              : [
+                  { key: "", label: FIELD_NAME_ANY_LABEL[source] ?? "* (any)" },
+                  ...mergeProjectKeyOptions(
+                    source,
+                    traceMappingDefinition.keys(traces_),
+                  ),
+                ];
+          const selectedKeyOption =
+            keyOptions.find((option) => option.key === (key ?? "")) ?? null;
 
           const targetHandle = `inputs.${targetField}`;
           const currentSourceMapping = dsl?.targetEdges
@@ -748,13 +762,15 @@ export const TracesMapping = ({
                             ))}
                           </optgroup>
                           <optgroup label="Current Thread">
-                            {["thread_id", "threads_until_current", "threads"].map(
-                              (key) => (
-                                <option key={key} value={key}>
-                                  {TRACE_MAPPING_LABELS[key] ?? key}
-                                </option>
-                              ),
-                            )}
+                            {[
+                              "thread_id",
+                              "threads_until_current",
+                              "threads",
+                            ].map((key) => (
+                              <option key={key} value={key}>
+                                {TRACE_MAPPING_LABELS[key] ?? key}
+                              </option>
+                            ))}
                           </optgroup>
                         </NativeSelect.Field>
                         <NativeSelect.Indicator />
@@ -773,60 +789,55 @@ export const TracesMapping = ({
                               borderRight={0}
                               marginLeft="12px"
                             />
-                            <NativeSelect.Root
-                              width="full"
-                              disabled={isLoadingFieldNames}
-                            >
-                              <NativeSelect.Field
-                                onChange={(e) => {
-                                  setTraceMappingState((prev) => ({
-                                    ...prev,
-                                    mapping: {
-                                      ...prev.mapping,
-                                      [targetField]: {
-                                        ...(prev.mapping[targetField] as any),
-                                        key: e.target.value,
-                                      },
+                            {/* Searchable key dropdown: these lists can hold
+                                hundreds of names, so a plain <select> is hard to
+                                scan. While project-wide names load it shows a
+                                loading placeholder with a spinner. */}
+                            <MultiSelect
+                              isDisabled={isLoadingFieldNames}
+                              isLoading={isLoadingFieldNames}
+                              options={keyOptions.map((option) => ({
+                                value: option.key,
+                                label: option.label,
+                              }))}
+                              value={
+                                selectedKeyOption
+                                  ? {
+                                      value: selectedKeyOption.key,
+                                      label: selectedKeyOption.label,
+                                    }
+                                  : null
+                              }
+                              onChange={(newValue) => {
+                                const selected = newValue as {
+                                  value: string;
+                                } | null;
+                                setTraceMappingState((prev) => ({
+                                  ...prev,
+                                  mapping: {
+                                    ...prev.mapping,
+                                    [targetField]: {
+                                      ...(prev.mapping[targetField] as any),
+                                      key: selected?.value ?? "",
                                     },
-                                  }));
-                                }}
-                                value={key}
-                              >
-                                {/* While project-wide names load, show a single
-                                    placeholder so users don't pick from an
-                                    incomplete (trace-only) list. */}
-                                {isLoadingFieldNames ? (
-                                  <option value="">
-                                    {FIELD_NAME_LOADING_LABEL[source] ??
-                                      "Loading…"}
-                                  </option>
-                                ) : (
-                                  <>
-                                    {/* "match everything" option for the source */}
-                                    <option value="">
-                                      {FIELD_NAME_ANY_LABEL[source] ?? "* (any)"}
-                                    </option>
-                                    {mergeProjectKeyOptions(
-                                      source,
-                                      traceMappingDefinition.keys(traces_),
-                                    ).map(({ key, label }: KeyOption) => (
-                                      <option key={key} value={key}>
-                                        {label}
-                                      </option>
-                                    ))}
-                                  </>
-                                )}
-                              </NativeSelect.Field>
-                              <NativeSelect.Indicator />
-                            </NativeSelect.Root>
-                            {isLoadingFieldNames && (
-                              <Spinner
-                                size="sm"
-                                flexShrink={0}
-                                marginTop="8px"
-                                color="fg.muted"
-                              />
-                            )}
+                                  },
+                                }));
+                              }}
+                              placeholder={
+                                isLoadingFieldNames
+                                  ? (FIELD_NAME_LOADING_LABEL[source] ??
+                                    "Loading…")
+                                  : (FIELD_NAME_ANY_LABEL[source] ?? "* (any)")
+                              }
+                              chakraStyles={{
+                                container: (base) => ({
+                                  ...base,
+                                  width: "100%",
+                                  minWidth: "260px",
+                                }),
+                                menu: (base) => ({ ...base, zIndex: 2 }),
+                              }}
+                            />
                           </HStack>
                         )}
                       {subkeys && subkeys.length > 0 && (

@@ -10,9 +10,9 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { AlertTriangle, Copy, Check, RotateCcw, Home } from "lucide-react";
-import { useRouter } from "~/utils/compat/next-router";
-import { captureException } from "~/utils/posthogErrorCapture";
 import { copyToClipboard } from "~/utils/clipboard";
+import { useRouter } from "~/utils/compat/next-router";
+import { captureException, toError } from "~/utils/posthogErrorCapture";
 
 export function PageErrorFallback({
   error,
@@ -28,7 +28,7 @@ export function PageErrorFallback({
   const isDev = process.env.NODE_ENV === "development";
 
   useEffect(() => {
-    captureException(error, {
+    captureException(toError(error), {
       tags: { source: "error-boundary" },
       extra: { pathname: window.location.pathname },
     });
@@ -79,12 +79,9 @@ export function PageErrorFallback({
                 variant="ghost"
                 color="fg.muted"
                 onClick={async () => {
-                  try {
-                    await copyToClipboard(stack ?? message);
+                  if (await copyToClipboard(stack ?? message)) {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
-                  } catch {
-                    // Clipboard API unavailable or denied
                   }
                 }}
               >

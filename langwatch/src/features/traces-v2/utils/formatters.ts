@@ -29,10 +29,8 @@ export function formatVerboseRelative(timestamp: number): string {
   // that are really just landing live.
   const diffMs = Math.max(0, Date.now() - timestamp);
   if (diffMs < MS_PER_MINUTE) return "just now";
-  const pick = (
-    n: number,
-    singular: string,
-  ): string => `${n} ${singular}${n === 1 ? "" : "s"} ago`;
+  const pick = (n: number, singular: string): string =>
+    `${n} ${singular}${n === 1 ? "" : "s"} ago`;
   if (diffMs < MS_PER_HOUR) {
     return pick(Math.floor(diffMs / MS_PER_MINUTE), "minute");
   }
@@ -170,6 +168,28 @@ export function formatTokens(tokens: number): string {
   return `${tokens}`;
 }
 
+/**
+ * Human-readable byte size using decimal (SI) units — bytes, kB, MB, GB, TB.
+ * Decimal, not binary (KiB), because the source is ClickHouse `byteSize(...)`
+ * which reports raw byte totals and SI units read more naturally to users
+ * ("1.4 MB"). Sub-kB renders as a plain integer ("512 B"); kB and up carry
+ * one decimal place. A zero / negative / non-finite size reads as the em-dash
+ * placeholder so an empty Size column matches the other numeric cells.
+ */
+const BYTE_UNITS = ["B", "kB", "MB", "GB", "TB"] as const;
+
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
+  if (bytes < 1_000) return `${Math.round(bytes)} B`;
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1_000 && unitIndex < BYTE_UNITS.length - 1) {
+    value /= 1_000;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${BYTE_UNITS[unitIndex]}`;
+}
+
 const MODEL_ABBREVIATIONS: ReadonlyArray<readonly [from: string, to: string]> =
   [
     ["gpt-4o-mini", "4o-mini"],
@@ -223,24 +243,6 @@ export const STATUS_COLORS: Readonly<Record<string, Tokens["colors"]>> = {
   error: "red.solid",
   warning: "yellow.solid",
   ok: "green.solid",
-};
-
-/**
- * Origin palette — kept in sync with `~/utils/originColors.ts` so the
- * filter sidebar dots, the Origin table cell, and any chip rendering
- * the trace's origin agree on what colour each origin gets. Picking
- * deterministic mappings (instead of hashing the string) avoids the
- * "evaluation just landed on orange today" surprise that prompted
- * this change.
- */
-export const ORIGIN_COLORS: Readonly<Record<string, Tokens["colors"]>> = {
-  application: "blue.solid",
-  evaluation: "green.solid",
-  simulation: "pink.solid",
-  workflow: "cyan.solid",
-  playground: "teal.solid",
-  gateway: "purple.solid",
-  sample: "gray.solid",
 };
 
 /**

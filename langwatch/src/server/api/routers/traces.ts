@@ -11,8 +11,9 @@ import {
 import { getApp } from "~/server/app-layer/app";
 import { formatSpansDigest } from "~/server/tracer/spanToReadableSpan";
 import { TraceService } from "~/server/traces/trace.service";
+import { buildTraceBlobResolutionDeps } from "~/server/traces/trace-blob-resolution.deps";
 import { createLogger } from "~/utils/logger/server";
-import { evaluatorsSchema } from "../../evaluations/evaluators.zod.generated";
+import { evaluatorsSchema } from "../../evaluations/evaluators.generated";
 import {
   buildPreconditionTraceDataFromTrace,
   checkEvaluatorRequiredFields,
@@ -58,11 +59,15 @@ export const tracesRouter = createTRPCRouter({
         projectId: input.projectId,
       });
 
-      const traceService = TraceService.create(ctx.prisma);
+      const traceService = TraceService.create(
+        ctx.prisma,
+        buildTraceBlobResolutionDeps(),
+      );
       const trace = await traceService.getById(
         input.projectId,
         input.traceId,
         protections,
+        { full: true },
       );
 
       if (!trace) {
@@ -271,17 +276,17 @@ export const tracesRouter = createTRPCRouter({
         projectId: input.projectId,
       });
 
-      const traceService = TraceService.create(ctx.prisma);
-      const traceLookupOptions = timeRange
-        ? {
-            startDate: timeRange.from,
-            ...(timeRange.live ? {} : { endDate: timeRange.to }),
-          }
-        : {};
-      return traceService.getTracesWithSpans(projectId, traceIds, protections, {
-        ...traceLookupOptions,
-        includeSpans: input.includeSpans,
-      });
+      const traceService = TraceService.create(
+        ctx.prisma,
+        buildTraceBlobResolutionDeps(),
+      );
+      return traceService.getTracesWithSpans(
+        projectId,
+        traceIds,
+        protections,
+        timeRange ? { from: timeRange.from, to: timeRange.to } : undefined,
+        { full: true, includeSpans: input.includeSpans },
+      );
     }),
 
   getFormattedSpansDigest: protectedProcedure
@@ -363,6 +368,7 @@ export const tracesRouter = createTRPCRouter({
         input.projectId,
         traceIds,
         protections,
+        { from: input.startDate, to: input.endDate },
       );
     }),
 
@@ -427,6 +433,7 @@ export const tracesRouter = createTRPCRouter({
         projectId,
         traceIds,
         protections,
+        { from: input.startDate, to: input.endDate },
       );
 
       const passedPreconditions = traceWithSpans.filter((trace) => {

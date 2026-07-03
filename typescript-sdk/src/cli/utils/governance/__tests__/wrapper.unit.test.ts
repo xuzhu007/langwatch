@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { envForTool, preflightWrapper } from "../wrapper";
+import {
+  envForTool,
+  preflightWrapper,
+  shouldForgetGatewayPin,
+} from "../wrapper";
 import type { GovernanceConfig } from "../config";
 
 const cfg: GovernanceConfig = {
@@ -16,15 +20,21 @@ const refusedFetch: typeof fetch = async () => {
 const five03Fetch: typeof fetch = async () =>
   new Response("upstream", { status: 503 });
 
+// `names` are the configured credential families (what the gateway can route
+// through). Publishes every common coding-assistant tile by default so the
+// per-tool coding-tile gate passes; pass `tools` to test the no-tile path.
 const bootstrapWith = (
   names: string[],
   adminEmail: string | null = "admin@acme.test",
+  tools: string[] = ["claude", "codex", "gemini", "cursor", "opencode"],
 ) => async () => ({
+  tools: tools.map((slug) => ({ slug, displayName: slug })),
   providers: names.map((name) => ({
     name,
     displayName: name,
-    models: [`${name}-default`],
+    configured: true,
   })),
+  gatewayProviders: names,
   budget: { monthlyLimitUsd: null, monthlyUsedUsd: 0, period: "month" },
   adminEmail,
 });
@@ -193,6 +203,8 @@ describe("preflightWrapper", () => {
       expect(r.message).not.toContain("/settings/providers\n"); // exact URL check
       expect(r.message).toContain("langwatch login --device");
       expect(r.message).toContain("admin@acme.test"); // contact footer
+      // Structural, not transient: worth forgetting a pinned gateway choice.
+      expect(r.retryable).toBeFalsy();
     });
   });
 
@@ -210,6 +222,8 @@ describe("preflightWrapper", () => {
       // never recommend a dev-only command like `make service`.
       expect(r.message).not.toContain("make service");
       expect(r.message).toContain("admin@acme.test");
+      // Transient: a retry may succeed, so a pinned gateway choice is kept.
+      expect(r.retryable).toBe(true);
     });
 
     it("treats non-2xx as fatal too", async () => {
@@ -220,6 +234,7 @@ describe("preflightWrapper", () => {
       expect(r.ok).toBe(false);
       expect(r.message).toContain("returned HTTP 503");
       expect(r.message).not.toContain("make service");
+      expect(r.retryable).toBe(true);
     });
 
     it("falls back to generic admin line when bootstrap has no admin email", async () => {
@@ -243,6 +258,9 @@ describe("preflightWrapper", () => {
       expect(r.message).toContain("`anthropic`");
       expect(r.message).toContain("/settings/model-providers");
       expect(r.message).toContain("admin@acme.test");
+      // Structural: the org has nothing to route to, so a pinned gateway
+      // choice is forgotten to re-offer direct OTLP next run.
+      expect(r.retryable).toBeFalsy();
     });
 
     it("passes cursor when either anthropic OR openai is present", async () => {
@@ -262,11 +280,67 @@ describe("preflightWrapper", () => {
     });
   });
 
+  describe("given the org has a configured credential but no model_provider tile", () => {
+    /** @scenario "Gateway works from a configured credential without a provider tile" */
+    it("passes when a coding-assistant tile exists and the credential family is configured", async () => {
+      const r = await preflightWrapper(cfg, "codex", {
+        fetchImpl: okFetch,
+        bootstrapImpl: async () => ({
+          // codex coding tile published (gateway enabled for the tool)...
+          tools: [{ slug: "codex", displayName: "Codex" }],
+          // ...no model_provider catalog tile (mint-your-own-VK list empty)...
+          providers: [],
+          // ...but the org has a live openai credential the gateway can route.
+          gatewayProviders: ["openai"],
+          budget: { monthlyLimitUsd: null, monthlyUsedUsd: 0, period: "month" },
+          adminEmail: "admin@acme.test",
+        }),
+      });
+      expect(r.ok).toBe(true);
+    });
+  });
+
+  describe("given the org has no coding-assistant tile for the tool", () => {
+    /** @scenario "Gateway is blocked when the tool has no coding-assistant tile" */
+    it("blocks the gateway and points at the tool catalog even when credentials exist", async () => {
+      const r = await preflightWrapper(cfg, "codex", {
+        fetchImpl: okFetch,
+        bootstrapImpl: async () => ({
+          // some other tool is published, but not codex
+          tools: [{ slug: "claude", displayName: "Claude" }],
+          providers: [],
+          gatewayProviders: ["openai"],
+          budget: { monthlyLimitUsd: null, monthlyUsedUsd: 0, period: "month" },
+          adminEmail: "admin@acme.test",
+        }),
+      });
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain("isn't enabled for `codex`");
+      expect(r.message).toContain("/settings/governance/tool-catalog");
+      // Structural (not transient) so a pinned gateway choice is forgotten.
+      expect(r.retryable).toBeFalsy();
+    });
+  });
+
   describe("given all probes pass", () => {
     it("returns ok=true", async () => {
       const r = await preflightWrapper(cfg, "claude", {
         fetchImpl: okFetch,
         bootstrapImpl: bootstrapWith(["anthropic", "openai"]),
+      });
+      expect(r.ok).toBe(true);
+    });
+  });
+
+  describe("given a legacy server without tools / gatewayProviders fields", () => {
+    it("skips the coding-tile gate and checks the provider tile list instead", async () => {
+      const r = await preflightWrapper(cfg, "codex", {
+        fetchImpl: okFetch,
+        bootstrapImpl: async () => ({
+          providers: [{ name: "openai", displayName: "OpenAI", configured: true }],
+          budget: { monthlyLimitUsd: null, monthlyUsedUsd: 0, period: "month" },
+          adminEmail: "admin@acme.test",
+        }),
       });
       expect(r.ok).toBe(true);
     });
@@ -281,6 +355,36 @@ describe("preflightWrapper", () => {
         },
       });
       expect(r.ok).toBe(true);
+    });
+  });
+});
+
+describe("shouldForgetGatewayPin", () => {
+  describe("when the user pinned the gateway path", () => {
+    it("forgets the pin on a structural failure (no provider / no VK)", () => {
+      expect(
+        shouldForgetGatewayPin({ pinnedMode: "gateway", retryable: false }),
+      ).toBe(true);
+      expect(
+        shouldForgetGatewayPin({ pinnedMode: "gateway", retryable: undefined }),
+      ).toBe(true);
+    });
+
+    it("keeps the pin on a transient gateway-down failure", () => {
+      expect(
+        shouldForgetGatewayPin({ pinnedMode: "gateway", retryable: true }),
+      ).toBe(false);
+    });
+  });
+
+  describe("when the gateway path was not pinned", () => {
+    it("never forgets a non-existent or ingestion pin", () => {
+      expect(
+        shouldForgetGatewayPin({ pinnedMode: undefined, retryable: false }),
+      ).toBe(false);
+      expect(
+        shouldForgetGatewayPin({ pinnedMode: "ingestion", retryable: false }),
+      ).toBe(false);
     });
   });
 });

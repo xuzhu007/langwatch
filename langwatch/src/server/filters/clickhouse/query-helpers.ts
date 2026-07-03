@@ -99,7 +99,11 @@ export function buildScopeConditions(
 
   const result = generateClickHouseFilterConditions(
     params.scopeFilters,
-    params.negateFilters,
+    params.negateFilters ?? false,
+    {
+      startDate: params.startDate,
+      endDate: params.endDate,
+    },
   );
 
   if (result.conditions.length === 0) {

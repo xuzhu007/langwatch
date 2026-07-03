@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-table";
 import type React from "react";
 import { useCallback, useMemo } from "react";
+import { useEvaluatorOptions } from "../../hooks/useEvaluatorOptions";
 import {
   getColumnSizingKey,
   useColumnSizingStore,
@@ -16,11 +17,25 @@ import {
 import { useFilterStore } from "../../stores/filterStore";
 import { type LensConfig, useViewStore } from "../../stores/viewStore";
 import type { TraceListItem } from "../../types/trace";
+import { ADD_COLUMN_ID } from "./AddColumnHeader";
 import { RegistryRow } from "./registry";
 import { SELECT_COLUMN_ID } from "./registry/cells/SelectCells";
+
+/**
+ * Module-level singleton so the `pinnedColumnIds` prop is referentially
+ * stable across renders — without it, every render would hand the
+ * shell a new Set and the SortableContext would treat its items as
+ * having changed, kicking off unnecessary re-mounts of the header row.
+ *
+ * Holds the two synthetic columns that frame the data columns: the
+ * leading row-select checkbox and the trailing "+" add-column affordance.
+ * Both are excluded from drag-reorder and sort.
+ */
+const NON_REORDERABLE_COLUMN_IDS = new Set([SELECT_COLUMN_ID, ADD_COLUMN_ID]);
+
 import { buildTracePlaceholderRows } from "./skeletonPlaceholders";
-import { TraceStatisticsProvider } from "./traceStatisticsContext";
 import { TraceTableShell } from "./TraceTableShell";
+import { TraceStatisticsProvider } from "./traceStatisticsContext";
 import { useTraceLensColumns } from "./useTraceLensColumns";
 import { useTraceLensKeyboard } from "./useTraceLensKeyboard";
 import { useTraceTableVirtualizer } from "./useTraceTableVirtualizer";
@@ -54,8 +69,10 @@ export const TraceLensBody: React.FC<TraceLensBodyProps> = ({
     () => (isLoading ? buildTracePlaceholderRows(pageSize) : traces),
     [isLoading, pageSize, traces],
   );
+  const { nameByKey: evaluatorNames } = useEvaluatorOptions();
   const { columns, registry, minWidth } = useTraceLensColumns({
     logicalColumnIds: lens.columns,
+    evaluatorNames,
   });
   const {
     selectedTraceId,
@@ -68,6 +85,7 @@ export const TraceLensBody: React.FC<TraceLensBodyProps> = ({
 
   const sortFromStore = useViewStore((s) => s.sort);
   const setSortInStore = useViewStore((s) => s.setSort);
+  const setVisibleColumns = useViewStore((s) => s.setVisibleColumns);
 
   const sizingKey = getColumnSizingKey(lens.id, "trace");
   const persistedSizing = useColumnSizingStore(
@@ -120,7 +138,7 @@ export const TraceLensBody: React.FC<TraceLensBodyProps> = ({
   // visible leaf order on every change, keeping headers and cells in
   // lockstep with the store.
   const columnOrderState = useMemo<string[]>(
-    () => [SELECT_COLUMN_ID, ...lens.columns],
+    () => [SELECT_COLUMN_ID, ...lens.columns, ADD_COLUMN_ID],
     [lens.columns],
   );
 
@@ -174,7 +192,18 @@ export const TraceLensBody: React.FC<TraceLensBodyProps> = ({
             back to the start. The wider column set (TIMESTAMP, etc.)
             makes horizontal overflow the common case rather than the
             edge case it used to be. */}
-        <TraceTableShell table={table} minWidth={minWidth} stickyFirstColumn>
+        <TraceTableShell
+          table={table}
+          minWidth={minWidth}
+          stickyFirstColumn
+          // Persist drag-reorder via viewStore.setVisibleColumns. The
+          // shell passes the new ordered list of column ids excluding
+          // the select column (pinned via pinnedColumnIds); the store
+          // marks the active lens dirty so the change shows up in
+          // the "save lens" affordance.
+          onColumnReorder={setVisibleColumns}
+          pinnedColumnIds={NON_REORDERABLE_COLUMN_IDS}
+        >
           <VirtualSpacer height={paddingTop} colSpan={colSpan} />
           {virtualItems.map((virtualItem) => {
             const row = rows[virtualItem.index];
@@ -202,9 +231,7 @@ export const TraceLensBody: React.FC<TraceLensBodyProps> = ({
                   isLoading ? undefined : () => toggleTrace(row.original)
                 }
                 onTogglePeek={
-                  isLoading
-                    ? undefined
-                    : () => togglePeek(row.original.traceId)
+                  isLoading ? undefined : () => togglePeek(row.original.traceId)
                 }
                 isLoading={isLoading}
                 isFirstOfErrorRun={
