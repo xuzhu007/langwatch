@@ -19,6 +19,7 @@ import type { MappingState } from "../server/tracer/tracesMapping";
 import { AddOrEditDatasetDrawer } from "./AddOrEditDatasetDrawer";
 import { DatasetMappingPreview } from "./datasets/DatasetMappingPreview";
 import { DatasetSelector } from "./datasets/DatasetSelector";
+import { traceBatching } from "./traces/traceBatching";
 import { Drawer } from "./ui/drawer";
 import { Link } from "./ui/link";
 import { toaster } from "./ui/toaster";
@@ -196,13 +197,17 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
   // Combine trace IDs from props into a single array
   const traceIds = useMemo(
     () =>
-      [
-        ...(props.selectedTraceSelection?.traceIds ?? []),
-        ...(Array.isArray(props.selectedTraceIds)
-          ? props.selectedTraceIds
-          : [props.selectedTraceIds]),
-        props?.traceId ?? "",
-      ].filter(Boolean) as string[],
+      Array.from(
+        new Set(
+          [
+            ...(props.selectedTraceSelection?.traceIds ?? []),
+            ...(Array.isArray(props.selectedTraceIds)
+              ? props.selectedTraceIds
+              : [props.selectedTraceIds]),
+            props?.traceId ?? "",
+          ].filter(Boolean) as string[],
+        ),
+      ),
     [
       props.selectedTraceIds,
       props.selectedTraceSelection?.traceIds,
@@ -210,19 +215,41 @@ export function AddDatasetRecordDrawerV2(props: AddDatasetDrawerProps) {
     ],
   );
 
-  // Fetch traces with spans data
-  const tracesWithSpans = api.traces.getTracesWithSpans.useQuery(
-    {
-      projectId: project?.id ?? "",
-      traceIds: traceIds,
-      timeRange: selectedTraceTimeRange,
-      includeSpans: includeSpansForDataset,
-    },
-    {
-      enabled: !!project && !!selectedDataset && traceIds.length > 0,
-      refetchOnWindowFocus: false,
-    },
+  // tRPC 查询通过 GET 传参，批量 ID 必须拆分，避免单次请求超过 URL 上限。
+  const traceIdChunks = useMemo(
+    () => traceBatching.chunkTraceIds(traceIds),
+    [traceIds],
   );
+  const traceQueries = api.useQueries((trpc) =>
+    traceIdChunks.map((traceIdChunk) =>
+      trpc.traces.getTracesWithSpans(
+        {
+          projectId: project?.id ?? "",
+          traceIds: traceIdChunk,
+          timeRange: selectedTraceTimeRange,
+          includeSpans: includeSpansForDataset,
+        },
+        {
+          enabled: !!project && !!selectedDataset,
+          refetchOnWindowFocus: false,
+        },
+      ),
+    ),
+  );
+  const tracesWithSpans = useMemo(() => {
+    const data = traceQueries.every((query) => query.data !== undefined)
+      ? traceBatching.mergeTraceBatches(
+          traceIds,
+          traceQueries.map((query) => query.data),
+        )
+      : undefined;
+
+    return {
+      data,
+      isLoading: traceQueries.some((query) => query.isLoading),
+      isError: traceQueries.some((query) => query.isError),
+    };
+  }, [traceIds, traceQueries]);
 
   /**
    * Handle successful dataset creation

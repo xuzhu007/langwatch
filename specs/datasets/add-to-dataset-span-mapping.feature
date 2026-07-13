@@ -151,7 +151,15 @@ Feature: Span field mapping when adding traces to a dataset
     When I check the header select-all checkbox
     Then every row's selection is toggled
 
-  Scenario: Bulk-selecting more than twenty traces still opens the preview
-    Given I selected twenty-five traces in the traces table
+  Scenario: Bulk-selecting one hundred traces still opens the preview
+    Given I selected one hundred traces in the traces table
     When I open the "Add to Dataset" drawer
-    Then the mapping preview loads rows for all twenty-five traces
+    Then the trace details are fetched in URL-safe batches
+    And the mapping preview loads rows for all one hundred traces
+
+  Scenario: A selected trace disappears before the mapping preview loads
+    Given I selected multiple traces in the traces table
+    And one selected trace is no longer returned by the trace details query
+    When I open the "Add to Dataset" drawer
+    Then the missing trace is omitted from the mapping preview
+    And the available traces are mapped without an error
