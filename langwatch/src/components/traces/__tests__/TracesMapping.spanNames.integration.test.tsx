@@ -84,11 +84,11 @@ const traceWithoutResearchSpan = {
   ],
 } as unknown as Trace;
 
-function renderSpansMapping() {
+function renderSpansMapping(traces: Trace[] = [traceWithoutResearchSpan]) {
   return render(
     <ChakraProvider value={defaultSystem}>
       <TracesMapping
-        traces={[traceWithoutResearchSpan]}
+        traces={traces}
         traceMapping={{ mapping: {}, expansions: [] }}
         targetFields={["spans"]}
       />
@@ -103,6 +103,16 @@ async function openKeyDropdown(user: ReturnType<typeof userEvent.setup>) {
 
 describe("TracesMapping spans dropdown (integration)", () => {
   afterEach(() => cleanup());
+  describe("when runtime trace data contains an empty item", () => {
+    it("ignores the empty item and renders the valid trace", () => {
+      expect(() =>
+        renderSpansMapping([
+          undefined as unknown as Trace,
+          traceWithoutResearchSpan,
+        ]),
+      ).not.toThrow();
+    });
+  });
 
   describe("when a project span name is absent from the loaded trace", () => {
     /** @scenario Span names from the project are offered even when absent from the open trace */
