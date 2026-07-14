@@ -126,7 +126,7 @@ const dedupeKeyOptions = (options: KeyOption[]): KeyOption[] => {
 
 export const TracesMapping = ({
   titles,
-  traces,
+  traces: runtimeTraces,
   traceMapping,
   dsl,
   targetFields,
@@ -162,6 +162,14 @@ export const TracesMapping = ({
   skipSettingDefaultEdges?: boolean;
 }) => {
   const { project } = useOrganizationTeamProject();
+  const traces = useMemo(
+    () =>
+      runtimeTraces.filter(
+        (trace) =>
+          typeof trace?.trace_id === "string" && trace.trace_id.length > 0,
+      ),
+    [runtimeTraces],
+  );
 
   const annotationScores = useAnnotationsByTraceIds({
     projectId: project?.id ?? "",
