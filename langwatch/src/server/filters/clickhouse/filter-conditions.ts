@@ -279,10 +279,9 @@ export const clickHouseFilterConditions: Record<
 
   // Events - using stored_spans event arrays
   "events.event_type": (values, paramId, _key, _subkey, options) => ({
-    sql: `EXISTS (
-      SELECT 1 FROM stored_spans sp
-      WHERE sp.TenantId = ts.TenantId
-        AND sp.TraceId = ts.TraceId${options?.spanTimeBound ?? ""}
+    sql: `ts.TraceId IN (
+      SELECT sp.TraceId FROM stored_spans sp
+      WHERE sp.TenantId = {tenantId:String}${options?.spanTimeBound ?? ""}
         AND hasAny(sp."Events.Name", {${paramId}_values:Array(String)})
     )`,
     params: { [`${paramId}_values`]: values },
