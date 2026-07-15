@@ -216,12 +216,14 @@ describe("clickHouseFilterConditions", () => {
   });
 
   describe("events.event_type", () => {
-    it("uses stored_spans Events.Name array", () => {
+    it("uses a non-correlated stored_spans subquery", () => {
       const builder = clickHouseFilterConditions["events.event_type"];
       expect(builder).not.toBeNull();
       const result = builder!(["thumbs_up_down", "feedback"], "f0");
-      expect(result.sql).toContain("EXISTS (");
+      expect(result.sql).toContain("ts.TraceId IN (");
+      expect(result.sql).not.toContain("EXISTS (");
       expect(result.sql).toContain("stored_spans sp");
+      expect(result.sql).toContain("sp.TenantId = {tenantId:String}");
       expect(result.sql).toContain(
         'hasAny(sp."Events.Name", {f0_values:Array(String)})',
       );
