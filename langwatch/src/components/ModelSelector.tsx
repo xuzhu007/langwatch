@@ -183,7 +183,7 @@ export const useModelSelectionOptions = (
 };
 
 export const ModelSelector = React.memo(function ModelSelector({
-  model,
+  model = "",
   options,
   onChange,
   size = "md",
@@ -191,7 +191,7 @@ export const ModelSelector = React.memo(function ModelSelector({
   showConfigureAction = false,
   forFeatureLabel,
 }: {
-  model: string;
+  model?: string;
   options: string[];
   onChange: (model: string) => void;
   size?: "sm" | "md" | "full";
