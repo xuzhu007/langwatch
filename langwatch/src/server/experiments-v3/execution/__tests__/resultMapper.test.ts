@@ -9,6 +9,7 @@ import {
   mapEvaluatorResult,
   mapNlpEvent,
   mapTargetResult,
+  mapWorkflowEvaluatorResult,
   parseNodeId,
 } from "../resultMapper";
 
@@ -58,7 +59,9 @@ describe("resultMapper", () => {
     });
 
     it("returns output field when present (backward compatible)", () => {
-      expect(extractTargetOutput({ output: "hello world" })).toBe("hello world");
+      expect(extractTargetOutput({ output: "hello world" })).toBe(
+        "hello world",
+      );
     });
 
     it("returns full object when output field is present with other fields", () => {
@@ -342,6 +345,39 @@ describe("resultMapper", () => {
       }
     });
 
+    describe("given the evaluator failed with provider auth", () => {
+      /** @scenario Judge auth failures are serialized as domain errors */
+      it("serializes a domain error for raw 403 responses", () => {
+        const result = mapEvaluatorResult("target-1.eval-1", 0, {
+          status: "error",
+          error: '403 {\n  "message": "Missing Authentication Token"\n}',
+        });
+
+        expect(result.type).toBe("evaluator_result");
+        if (result.type === "evaluator_result") {
+          expect(result.result.domainError).toMatchObject({
+            kind: "evaluator_execution_error",
+            meta: { httpStatus: 403 },
+          });
+          expect(result.result.details).toContain(
+            "Missing Authentication Token",
+          );
+        }
+      });
+
+      it("does not reclassify non-auth error strings", () => {
+        const result = mapEvaluatorResult("target-1.eval-1", 0, {
+          status: "error",
+          error: "Evaluator timeout",
+        });
+
+        expect(result.type).toBe("evaluator_result");
+        if (result.type === "evaluator_result") {
+          expect(result.result.domainError).toBeUndefined();
+        }
+      });
+    });
+
     it("maps evaluator error result from outputs.status === 'error'", () => {
       // This covers the case where the NLP execution succeeds but the evaluator
       // returns an error in its outputs (e.g., langevals returns 404)
@@ -586,6 +622,47 @@ describe("resultMapper", () => {
           traceback: [],
         });
       }
+    });
+  });
+
+  describe("mapWorkflowEvaluatorResult", () => {
+    describe("when the evaluator node has a display name", () => {
+      it("carries the name on the event so results show it over the raw node id", () => {
+        const result = mapWorkflowEvaluatorResult(
+          0,
+          "workflow-target",
+          "evaluator_node_abc",
+          "Exact Match",
+          { status: "success", outputs: { passed: true, score: 1 } },
+        );
+
+        expect(result.type).toBe("evaluator_result");
+        if (result.type === "evaluator_result") {
+          expect(result.evaluatorId).toBe("evaluator_node_abc");
+          expect(result.evaluatorName).toBe("Exact Match");
+          expect(result.result).toMatchObject({
+            status: "processed",
+            passed: true,
+          });
+        }
+      });
+    });
+
+    describe("when the evaluator node has no display name", () => {
+      it("leaves the name undefined so storage falls back to null", () => {
+        const result = mapWorkflowEvaluatorResult(
+          1,
+          "workflow-target",
+          "evaluator_node_xyz",
+          undefined,
+          { status: "success", outputs: { score: 0.5 } },
+        );
+
+        expect(result.type).toBe("evaluator_result");
+        if (result.type === "evaluator_result") {
+          expect(result.evaluatorName).toBeUndefined();
+        }
+      });
     });
   });
 

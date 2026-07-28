@@ -1,3 +1,12 @@
+# Standalone workspace: mcp-server is installed on its own in CI, the
+# release workflow, and its Dockerfile. Shared source-only contract packages
+# are bundled by tsup for publish.
+packages:
+  - .
+  - ../packages/handled-error
+  - ../langwatch/packages/redaction
+  - ../langwatch/packages/ssrf
+
 minimumReleaseAge: 10080
 
 overrides:
@@ -13,8 +22,13 @@ overrides:
   "esbuild@<0.28.1": ">=0.28.1"
   # Security: vite dev-server file read / middleware path bypass
   "vite@>=7.0.0 <7.3.5": ">=7.3.5 <8"
+  # Security: hono request smuggling / path confusion
+  "hono@<4.12.25": ">=4.12.25"
   # Security: fast-uri path traversal + host confusion
   "fast-uri@<3.1.2": "3.1.2"
   liquidjs: ">=10.26.0"
   # Security: uuid missing buffer bounds check in v3/v5/v6 (GHSA-w5hq-g745-h8pq)
   "uuid@<11.1.1": ">=11.1.1 <12"
+
+onlyBuiltDependencies:
+  - node-pty

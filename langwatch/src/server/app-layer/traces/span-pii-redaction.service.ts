@@ -1,10 +1,4 @@
 import { env } from "~/env.mjs";
-import {
-  batchPresidioClearPII as defaultBatchPresidioClearPII,
-  googleDLPClearPII,
-  type PIICheckOptions,
-  PRESIDIO_STRICT_ENTITIES,
-} from "~/server/background/workers/collector/piiCheck";
 import type {
   PiiLevel,
   ResolvedDataPrivacy,
@@ -19,6 +13,12 @@ import {
 } from "~/server/data-privacy/redaction/applyContentRedaction";
 import { ESSENTIAL_PII_ENTITIES } from "~/server/data-privacy/redaction/essentialPii";
 import type { TenantId } from "~/server/event-sourcing/domain/tenantId";
+import {
+  batchPresidioClearPII as defaultBatchPresidioClearPII,
+  googleDLPClearPII,
+  type PIICheckOptions,
+  PRESIDIO_STRICT_ENTITIES,
+} from "~/server/tracer/collector/piiCheck";
 
 /**
  * Identifiers the strict analyzer detects that the native engine cannot
@@ -31,8 +31,8 @@ const STRICT_ONLY_PII_ENTITIES: readonly string[] =
     (entity) => !new Set<string>(ESSENTIAL_PII_ENTITIES).has(entity),
   );
 
+import { createLogger } from "@langwatch/observability";
 import { featureFlagService } from "~/server/featureFlag";
-import { createLogger } from "~/utils/logger/server";
 import {
   DEFAULT_PII_REDACTION_LEVEL,
   type PIIRedactionLevel,

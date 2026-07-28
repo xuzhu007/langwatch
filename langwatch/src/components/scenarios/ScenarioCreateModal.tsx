@@ -7,6 +7,7 @@ import { useModelProvidersSettings } from "~/hooks/useModelProvidersSettings";
 import { useLicenseEnforcement } from "~/hooks/useLicenseEnforcement";
 import { api } from "~/utils/api";
 import { isHandledByGlobalHandler } from "~/utils/trpcError";
+import { ResolvedModelCaption } from "./ResolvedModelCaption";
 import { generateScenarioWithAI } from "./services/scenarioGeneration";
 import { storePromptForScenario } from "./services/scenarioPromptStorage";
 import type { ScenarioFormData, ScenarioInitialData } from "./ScenarioForm";
@@ -30,7 +31,7 @@ export interface ScenarioCreateModalProps {
 const MODAL_TITLE = "Create new scenario";
 const MODAL_PLACEHOLDER =
   "Explain your agent, its goals and what behavior you want to test.";
-const GENERATING_TEXT = "Generating scenario...";
+const GENERATING_TEXT = "Drafting your scenario…";
 
 const EXAMPLE_TEMPLATES: ExampleTemplate[] = [
   {
@@ -57,7 +58,10 @@ const EXAMPLE_TEMPLATES: ExampleTemplate[] = [
  * Opens the ScenarioFormDrawer with initial data via complexProps.
  * No DB record is created until the user clicks "Save" in the drawer.
  */
-export function ScenarioCreateModal({ open, onClose }: ScenarioCreateModalProps) {
+export function ScenarioCreateModal({
+  open,
+  onClose,
+}: ScenarioCreateModalProps) {
   const { project } = useOrganizationTeamProject();
   const { openDrawer } = useDrawer();
   const { checkAndProceed } = useLicenseEnforcement("scenarios");
@@ -87,11 +91,11 @@ export function ScenarioCreateModal({ open, onClose }: ScenarioCreateModalProps)
         {
           ...initialData,
         },
-        { resetStack: true }
+        { resetStack: true },
       );
       onClose();
     },
-    [openDrawer, onClose]
+    [openDrawer, onClose],
   );
 
   const handleGenerate = useCallback(
@@ -101,7 +105,10 @@ export function ScenarioCreateModal({ open, onClose }: ScenarioCreateModalProps)
       }
 
       try {
-        const generatedData = await generateScenarioWithAI(description, project.id);
+        const generatedData = await generateScenarioWithAI(
+          description,
+          project.id,
+        );
         storePromptForScenario(description);
         openEditorWithData(generatedData);
       } catch (error) {
@@ -109,7 +116,7 @@ export function ScenarioCreateModal({ open, onClose }: ScenarioCreateModalProps)
         throw error;
       }
     },
-    [project?.id, openEditorWithData]
+    [project?.id, openEditorWithData],
   );
 
   const handleSkip = useCallback(() => {
@@ -140,6 +147,16 @@ export function ScenarioCreateModal({ open, onClose }: ScenarioCreateModalProps)
       onGenerate={(desc) => checkAndProceed(() => handleGenerate(desc))}
       onSkip={() => checkAndProceed(handleSkip)}
       generatingText={GENERATING_TEXT}
+      footerHint={<ResolvedModelCaption model={resolvedDefault.data?.model} />}
+      assistant={{
+        name: "AI",
+        description:
+          "Describe the behavior you care about. AI will turn it into an editable situation and success criteria.",
+        promptLabel: "What should this simulation prove?",
+        generateLabel: "Draft with AI",
+        reviewHint:
+          "AI is shaping the situation and criteria. You will review everything before it is saved.",
+      }}
     />
   );
 }

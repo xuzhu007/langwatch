@@ -1,6 +1,5 @@
-# 固定 Node/Alpine 版本，避免 `docker build --pull` 拉取浮动 node:24-alpine 后引入宿主机相关的写入回归。
+# 固定 Node/Alpine 版本，避免 `docker build --pull` 拉取浮动镜像后引入构建漂移。
 ARG NODE_IMAGE=node:24.13.0-alpine3.22
-
 # ── Stage 1: build ──────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS builder
 RUN apk --no-cache add curl python3 make gcc g++ openssl bash
@@ -28,42 +27,43 @@ WORKDIR /app
 
 # Skip Prisma checksum verification for air-gapped builds
 ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
-# 注意：pnpm 不识别 PNPM_CONFIG_* 前缀的环境变量，必须使用 npm_config_* 前缀才会生效。
-# 使用 copy 方式导入依赖，避免硬链接/克隆在部分宿主机存储驱动（ZFS、fuse-overlayfs 等）上的兼容性问题
+# pnpm 必须使用 npm_config_* 环境变量读取这些设置。
 ENV npm_config_package_import_method=copy
-# 部分宿主机内核/seccomp 配置与 libuv 的 io_uring 交互会导致异步文件写入返回 EPERM，显式禁用以提高兼容性
+# 部分宿主机内核或 seccomp 配置会让 libuv 的 io_uring 写入返回 EPERM。
 ENV UV_USE_IO_URING=0
-# 网络健壮性加固：构建机常处于公司代理/EDR/受限网络下，pnpm 并发拉取上千个依赖时，
-# 连接重置/超时会让进程持续失败（BuildKit 报 exit code 255），整条命令重试也无法恢复
-# 持续性的网络抖动。提高单请求重试次数与超时、降低并发，既减少网络瞬断导致的
-# 失败，也降低并行解压的峰值内存。
+# 降低并发并扩大重试窗口，兼容代理、EDR 和受限构建网络。
 ENV npm_config_fetch_retries=5
 ENV npm_config_fetch_retry_mintimeout=20000
 ENV npm_config_fetch_retry_maxtimeout=120000
 ENV npm_config_fetch_timeout=300000
 ENV npm_config_network_concurrency=4
 
-# mcp-server 是 langwatch 的 workspace 成员（见 langwatch/pnpm-workspace.yaml 的 ../mcp-server）。
-# 与上游一致：整个目录拷入，由 langwatch 的 workspace 安装统一链接，并由其 `pnpm run build`
-# （start:prepare:files → build:mcp-server）自动构建；无需单独 install/build。
-# （单独安装会多出一个独立步骤并放大宿主机的 EPERM/网络问题，是之前 exit 255 的根源。）
+# mcp-server is a workspace member — copy it early so pnpm install can link it.
+# Its build runs automatically as part of langwatch's `pnpm run build`
+# (via start:prepare:files → build:mcp-server).
 COPY mcp-server ./mcp-server
-# pnpm install 会先为 workspace 包创建 bin 链接，此时正式构建尚未生成 dist/index.js。
-# 先放一个占位入口避免 bin 链接阶段读取缺失文件；后续 build:mcp-server 会覆盖它。
+# pnpm 安装 workspace 时会先创建 bin 链接，而正式构建尚未生成入口文件。
 RUN mkdir -p mcp-server/dist && \
   printf '#!/usr/bin/env node\n' > mcp-server/dist/index.js
 COPY langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
+COPY packages ./packages
+COPY skills ./skills
+COPY Dockerfile.langyagent ./Dockerfile.langyagent
+COPY feature-map.json ./feature-map.json
 
 COPY langwatch/package.json langwatch/pnpm-lock.yaml langwatch/pnpm-workspace.yaml ./langwatch/
+# The `packages/*` workspace members (e.g. @langwatch/observability, @langwatch/api)
+# are consumed as source, so pnpm install must see their package.json to link them
+# and install their own dependencies (pino, pino-pretty, ...) into
+# packages/*/node_modules. Without this the app bundle build fails to resolve those
+# deps (e.g. "Rolldown failed to resolve import 'pino'"). Same reason mcp-server is
+# copied early above. node_modules is dockerignored, so only source is copied here.
+COPY langwatch/packages ./langwatch/packages
 COPY langwatch/vendor ./langwatch/vendor
 # https://stackoverflow.com/questions/70154568/pnpm-equivalent-command-for-npm-ci
-# 同上：失败时自动重试一次，应对宿主机环境造成的瞬时 EPERM
 RUN cd langwatch && \
   { CI=true pnpm install --frozen-lockfile || \
     { echo "pnpm install 失败，重试一次..."; CI=true pnpm install --frozen-lockfile; }; }
-# SDK package files needed by generate-sdk-versions.sh during build
-COPY typescript-sdk/package.json ./typescript-sdk/package.json
-COPY python-sdk/pyproject.toml ./python-sdk/pyproject.toml
 COPY langwatch ./langwatch
 RUN cd langwatch && NODE_OPTIONS=--max-old-space-size=4096 pnpm run build
 
@@ -84,11 +84,25 @@ WORKDIR /app
 # Copy built artifacts from builder.
 # mcp-server must be copied alongside langwatch because pnpm workspace
 # symlinks langwatch/node_modules/@langwatch/mcp-server -> ../../../mcp-server.
+# langy and handled-error are other root workspace packages linked the same
+# way. Both are loaded by migration tasks as well as the running server —
+# handled-error is imported for side effects by the server and worker entry
+# points, so omitting it fails the boot outright.
 COPY --from=builder /app/langwatch ./langwatch
 COPY --from=builder /app/mcp-server ./mcp-server
-COPY --from=builder /app/typescript-sdk/package.json ./typescript-sdk/package.json
-COPY --from=builder /app/python-sdk/pyproject.toml ./python-sdk/pyproject.toml
+COPY --from=builder /app/packages/langy/package.json ./packages/langy/package.json
+COPY --from=builder /app/packages/langy/src ./packages/langy/src
+COPY --from=builder /app/packages/handled-error/package.json ./packages/handled-error/package.json
+COPY --from=builder /app/packages/handled-error/src ./packages/handled-error/src
+# langy and handled-error deliberately declare zod / @opentelemetry/api as
+# peers. Because the workspace packages live outside /app/langwatch, expose the
+# app's production copies at the nearest shared node_modules boundary after dev
+# dependencies have been pruned.
+RUN mkdir -p ./node_modules/@opentelemetry \
+  && ln -s ../langwatch/node_modules/zod ./node_modules/zod \
+  && ln -s ../../langwatch/node_modules/@opentelemetry/api ./node_modules/@opentelemetry/api
 COPY --from=builder /app/langevals/ts-integration/evaluators.generated.ts ./langevals/ts-integration/evaluators.generated.ts
+COPY --from=builder /app/feature-map.json ./feature-map.json
 
 ENV NODE_ENV=production
 EXPOSE 5560

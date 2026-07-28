@@ -37,9 +37,39 @@ vi.mock("../../../hooks/useTraceFacets", () => ({
   useTraceFacets: () => ({ data: [], isLoading: false }),
 }));
 
+// SearchBar mounts TokenValuePicker, which now calls useFacetSearch at the
+// top level. These tests don't wrap with a tRPC provider, so stub the hook
+// out — server search is covered by its own dedicated suite.
+vi.mock("../../../hooks/useFacetSearch", () => ({
+  useFacetSearch: () => ({ values: [], totalDistinct: 0, isLoading: false }),
+}));
+
 vi.mock("@paper-design/shaders-react", () => ({
   MeshGradient: () => null,
 }));
+
+// These banner tests exercise the inline Ask AI composer path, so Langy is
+// gated off — the gate hooks carry session/tRPC wiring this suite doesn't
+// mount. The Langy-owned affordance is covered by SearchBar.integration.
+vi.mock("~/features/langy/hooks/useShowLangy", () => ({
+  useShowLangy: () => false,
+}));
+vi.mock("~/features/langy/hooks/useCanAskLangy", () => ({
+  useCanAskLangy: () => false,
+}));
+vi.mock("~/features/langy/stores/langyStore", () => {
+  const state = () => ({
+    isOpen: false,
+    askLangy: () => undefined,
+    openPanel: () => undefined,
+    attachContext: () => undefined,
+  });
+  const useLangyStore = (
+    selector: (s: ReturnType<typeof state>) => unknown,
+  ) => selector(state());
+  useLangyStore.getState = state;
+  return { useLangyStore };
+});
 
 import type { AiActionError } from "~/server/app-layer/traces/ai-query";
 import { useFilterStore } from "../../../stores/filterStore";
@@ -112,7 +142,8 @@ describe("<SearchBar /> unified error banner", () => {
   describe("given an AI error with structured details in the store", () => {
     const aiError: AiActionError = {
       code: "provider_error",
-      message: "Failed after 2 attempts. Last error: Cannot connect to provider.",
+      message:
+        "Failed after 2 attempts. Last error: Cannot connect to provider.",
       details: {
         provider: "openai",
         model: "gpt-5-mini",
@@ -228,9 +259,7 @@ describe("<SearchBar /> unified error banner", () => {
   describe("given no errors in the store", () => {
     it("does not render the banner", () => {
       renderSearchBar();
-      expect(
-        screen.queryByLabelText(/dismiss error/i),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/dismiss error/i)).not.toBeInTheDocument();
     });
   });
 

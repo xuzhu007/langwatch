@@ -14,6 +14,10 @@ import { useState } from "react";
 import { LuEllipsisVertical, LuPencil, LuTrash2 } from "react-icons/lu";
 import { Drawer } from "~/components/ui/drawer";
 import {
+  COMPARISON_EVALUATOR_TYPE,
+  LEGACY_PAIRWISE_EVALUATOR_TYPE,
+} from "~/experiments-v3/types";
+import {
   getComplexProps,
   getFlowCallbacks,
   useDrawer,
@@ -26,6 +30,7 @@ import {
 import type { EvaluatorWithFields } from "~/server/evaluators/evaluator.service";
 import { api } from "~/utils/api";
 import { evaluatorTempNameMap } from "../checks/EvaluatorSelection";
+import { ConfirmDialog } from "../gateway/ConfirmDialog";
 import { Menu } from "../ui/menu";
 import { EvaluatorApiUsageDialog } from "./EvaluatorApiUsageDialog";
 
@@ -34,6 +39,18 @@ export type EvaluatorListDrawerProps = {
   onClose?: () => void;
   onSelect?: (evaluator: EvaluatorWithFields) => void;
   onCreateNew?: () => void;
+  /**
+   * Narrow the list to one evaluator type. Serializable, so the filtered list
+   * survives a URL paste. Used by the Comparison flow, which is a list of
+   * comparison evaluators and nothing else.
+   */
+  filterEvaluatorType?: string;
+  /** Drawer heading. Defaults to "Choose Evaluator". */
+  title?: string;
+  /** Label on the create button. Defaults to "New Evaluator". */
+  createLabel?: string;
+  /** Noun used by the empty state. Defaults to "evaluator". */
+  itemLabel?: string;
 };
 
 /**
@@ -43,6 +60,7 @@ export type EvaluatorListDrawerProps = {
  * - Empty state with create CTA
  * - "New Evaluator" button at top
  * - Reusable across the app via useDrawer
+ * - Optionally narrowed to a single evaluator type via `filterEvaluatorType`
  */
 export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
   const { project } = useOrganizationTeamProject();
@@ -61,13 +79,38 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
   const onCreateNew =
     props.onCreateNew ??
     flowCallbacks?.onCreateNew ??
+    (complexProps.onCreateNew as EvaluatorListDrawerProps["onCreateNew"]) ??
     (() => openDrawer("evaluatorCategorySelector"));
   const isOpen = props.open !== false && props.open !== undefined;
+  const title = props.title ?? "Choose Evaluator";
+  const createLabel = props.createLabel ?? "New Evaluator";
+  const itemLabel = props.itemLabel ?? "evaluator";
 
   const evaluatorsQuery = api.evaluators.getAll.useQuery(
     { projectId: project?.id ?? "" },
     { enabled: !!project?.id && isOpen },
   );
+
+  const evaluators = props.filterEvaluatorType
+    ? evaluatorsQuery.data?.filter(
+        (evaluator) =>
+          (evaluator.config as { evaluatorType?: string } | null)
+            ?.evaluatorType === props.filterEvaluatorType,
+      )
+    : // Comparison evaluators (current + legacy pairwise) judge target
+      // columns against each other and only make sense wired through the
+      // Comparison card in TargetTypeSelectorDrawer, which sets their
+      // `variants`/`goldenField`. Attached here as a per-target chip
+      // instead, they'd have no variants configured and nothing to judge.
+      evaluatorsQuery.data?.filter((evaluator) => {
+        const evaluatorType = (
+          evaluator.config as { evaluatorType?: string } | null
+        )?.evaluatorType;
+        return (
+          evaluatorType !== COMPARISON_EVALUATOR_TYPE &&
+          evaluatorType !== LEGACY_PAIRWISE_EVALUATOR_TYPE
+        );
+      });
 
   const deleteMutation = api.evaluators.delete.useMutation({
     onSuccess: () => {
@@ -99,18 +142,13 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
   };
 
   const handleDeleteEvaluator = (evaluator: EvaluatorWithFields) => {
-    if (
-      window.confirm(`Are you sure you want to delete "${evaluator.name}"?`)
-    ) {
-      deleteMutation.mutate({
-        id: evaluator.id,
-        projectId: project?.id ?? "",
-      });
-    }
+    setEvaluatorToDelete(evaluator);
   };
 
   // State for API usage dialog
   const [apiDialogEvaluator, setApiDialogEvaluator] =
+    useState<EvaluatorWithFields | null>(null);
+  const [evaluatorToDelete, setEvaluatorToDelete] =
     useState<EvaluatorWithFields | null>(null);
 
   const handleUseFromApi = (evaluator: EvaluatorWithFields) => {
@@ -128,7 +166,7 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
         <Drawer.CloseTrigger />
         <Drawer.Header>
           <HStack gap={2} justify="space-between" width="full">
-            <Heading>Choose Evaluator</Heading>
+            <Heading>{title}</Heading>
             <Button
               size="sm"
               colorScheme="blue"
@@ -136,7 +174,7 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
               data-testid="new-evaluator-button"
             >
               <Plus size={16} />
-              New Evaluator
+              {createLabel}
             </Button>
           </HStack>
         </Drawer.Header>
@@ -160,10 +198,10 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
                 <HStack justify="center" paddingY={8}>
                   <Spinner size="md" />
                 </HStack>
-              ) : evaluatorsQuery.data?.length === 0 ? (
-                <EmptyState onCreateNew={onCreateNew} />
+              ) : evaluators?.length === 0 ? (
+                <EmptyState onCreateNew={onCreateNew} itemLabel={itemLabel} />
               ) : (
-                evaluatorsQuery.data?.map((evaluator) => (
+                evaluators?.map((evaluator) => (
                   <EvaluatorCard
                     key={evaluator.id}
                     evaluator={evaluator}
@@ -190,6 +228,27 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
         open={!!apiDialogEvaluator}
         onClose={() => setApiDialogEvaluator(null)}
       />
+
+      <ConfirmDialog
+        open={!!evaluatorToDelete}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setEvaluatorToDelete(null);
+        }}
+        title="Delete evaluator"
+        message={`Are you sure you want to delete "${
+          evaluatorToDelete?.name ?? ""
+        }"?`}
+        confirmLabel="Delete"
+        tone="danger"
+        loading={deleteMutation.isLoading}
+        onConfirm={() => {
+          if (!evaluatorToDelete) return;
+          deleteMutation.mutate(
+            { id: evaluatorToDelete.id, projectId: project?.id ?? "" },
+            { onSettled: () => setEvaluatorToDelete(null) },
+          );
+        }}
+      />
     </Drawer.Root>
   );
 }
@@ -198,7 +257,19 @@ export function EvaluatorListDrawer(props: EvaluatorListDrawerProps) {
 // Empty State Component
 // ============================================================================
 
-function EmptyState({ onCreateNew }: { onCreateNew: () => void }) {
+/**
+ * The button here deliberately ignores the header's `createLabel` and derives
+ * its own wording from `itemLabel`, so it always agrees with the heading right
+ * above it ("Create your first X to get started"). The header button is the
+ * caller's to word; this one belongs to the empty state.
+ */
+function EmptyState({
+  onCreateNew,
+  itemLabel,
+}: {
+  onCreateNew: () => void;
+  itemLabel: string;
+}) {
   return (
     <VStack paddingY={24} gap={4} textAlign="center">
       <Box padding={4} borderRadius="full" bg="green.subtle" color="green.fg">
@@ -206,10 +277,10 @@ function EmptyState({ onCreateNew }: { onCreateNew: () => void }) {
       </Box>
       <VStack gap={1}>
         <Text fontWeight="medium" color="fg">
-          No evaluators yet
+          No {itemLabel}s yet
         </Text>
         <Text fontSize="sm" color="fg.muted">
-          Create your first evaluator to get started
+          Create your first {itemLabel} to get started
         </Text>
       </VStack>
       <Button
@@ -218,7 +289,7 @@ function EmptyState({ onCreateNew }: { onCreateNew: () => void }) {
         data-testid="create-first-evaluator-button"
       >
         <Plus size={16} />
-        Create your first evaluator
+        {`Create your first ${itemLabel}`}
       </Button>
     </VStack>
   );

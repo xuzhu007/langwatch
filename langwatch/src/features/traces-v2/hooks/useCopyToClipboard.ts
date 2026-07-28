@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { copyToClipboard } from "~/utils/clipboard";
 
 /**
  * Single shared duration for the transient "copied ✓" confirmation across
@@ -49,9 +50,8 @@ export function useCopyToClipboard(): {
 
   const copy = useCallback(
     (text: string) => {
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => {
+      void copyToClipboard(text).then((copied) => {
+        if (copied) {
           // The write can resolve after the component unmounts; don't touch
           // state then (avoids a React set-state-on-unmounted no-op warning).
           if (!mountedRef.current) return;
@@ -61,11 +61,9 @@ export function useCopyToClipboard(): {
             setCopied(false);
             timerRef.current = null;
           }, COPY_FEEDBACK_MS);
-        })
-        .catch(() => {
-          // Stay silent on rejection — the surface is a small icon button
-          // with no room for an error string, and the user can retry.
-        });
+        }
+        // 复制失败时保持静默：小图标按钮没有错误文本空间，用户可重试。
+      });
     },
     [clearTimer],
   );

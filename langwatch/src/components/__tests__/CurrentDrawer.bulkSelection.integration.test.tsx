@@ -53,7 +53,7 @@ describe("CurrentDrawer bulk trace selection", () => {
   afterEach(() => cleanup());
 
   describe("when one hundred traces are selected", () => {
-    /** @scenario 批量选择一百条 trace 后仍能打开预览 */
+    /** @scenario Bulk-selecting one hundred traces still opens the preview */
     it("hands the drawer every selected trace id as a string array", () => {
       render(
         <ChakraProvider value={defaultSystem}>

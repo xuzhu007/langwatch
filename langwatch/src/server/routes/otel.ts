@@ -13,6 +13,7 @@ import {
   stampIngestKeyProvenanceOnMetricRequest,
   stampIngestKeyProvenanceOnTraceRequest,
 } from "@ee/governance/services/ingestKeyProvenance.utils";
+import { createLogger } from "@langwatch/observability";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import type { IExportTraceServiceRequest } from "@opentelemetry/otlp-transformer";
 import * as root from "@opentelemetry/otlp-transformer/build/src/generated/root";
@@ -35,7 +36,6 @@ import {
   readOtlpBody,
 } from "~/server/otel/parseOtlpBody";
 import { decodeBase64OpenTelemetryId } from "~/server/tracer/utils";
-import { createLogger } from "~/utils/logger/server";
 import { captureException } from "~/utils/posthogErrorCapture";
 
 const traceRequestType = (root as any).opentelemetry.proto.collector.trace.v1
@@ -49,7 +49,7 @@ const AUTH_REASON = "OTLP ingestion API key resolved in-handler";
 
 const secured = createServiceApp({ basePath: "/api/otel/v1" });
 
-// ── shared auth + limit check ────────────────────────────────────────
+// ── shared auth ──────────────────────────────────────────────────────
 
 const tokenResolver = TokenResolver.create(prisma);
 
@@ -153,8 +153,15 @@ async function authenticate(
 }
 
 /**
- * 从 OTLP traces 请求体中尽力提取客户侧 trace_id。
- * 失败时返回空数组，用于解析错误日志关联客户反馈。
+ * Best-effort extraction of customer trace_ids from an OTLP traces body.
+ * Returns up to `max` unique hex-encoded trace_ids. Never throws — if the
+ * body is empty, malformed, or unparsable, returns an empty array. Used to
+ * tag error logs (plan-limit, parse failure) so a customer who reports
+ * "I sent trace_id X but it didn't appear" can be matched to the rejection.
+ *
+ * JSON-OTLP serialises trace_id as base64 strings; protobuf-OTLP decodes
+ * them as Uint8Array. `decodeBase64OpenTelemetryId` handles both — output
+ * is always lowercase hex, the same shape the rest of the platform uses.
  */
 export function peekCustomerTraceIds(
   body: ArrayBuffer,
@@ -404,13 +411,33 @@ secured.access(handlerManagedAuth(AUTH_REASON)).post("/logs", async (c) => {
         );
       }
 
-      await getApp().traces.logCollection.handleOtlpLogRequest({
+      const result = await getApp().traces.logCollection.handleOtlpLogRequest({
         tenantId: project.id,
+        organizationId: project.team.organizationId,
         logRequest,
         piiRedactionLevel: DEFAULT_PII_REDACTION_LEVEL,
       });
 
-      return c.json({ message: "OK" });
+      // Nothing was durably accepted, and the cause is ours. OTLP treats a 200
+      // with `partialSuccess` as a permanent rejection the client must not
+      // re-send, so answering that here would turn a queue blip into fleet-wide
+      // data loss. 503 is in OTLP's retryable set.
+      if (result.outcome === "unavailable") {
+        return c.json({ error: result.errorMessage }, { status: 503 });
+      }
+
+      return c.json(
+        result.rejectedLogRecords > 0
+          ? {
+              partialSuccess: {
+                rejectedLogRecords: result.rejectedLogRecords,
+                ...(result.errorMessage
+                  ? { errorMessage: result.errorMessage }
+                  : {}),
+              },
+            }
+          : {},
+      );
     },
   );
 });
@@ -489,13 +516,29 @@ secured.access(handlerManagedAuth(AUTH_REASON)).post("/metrics", async (c) => {
         tokenResolver.markUsed({ apiKeyId: resolved.apiKeyId });
       }
 
-      await getApp().traces.metricCollection.handleOtlpMetricRequest({
-        tenantId: project.id,
-        metricRequest: metricsRequest,
-        piiRedactionLevel: DEFAULT_PII_REDACTION_LEVEL,
-      });
+      const result =
+        await getApp().traces.metricCollection.handleOtlpMetricRequest({
+          tenantId: project.id,
+          organizationId: project.team.organizationId,
+          metricRequest: metricsRequest,
+          piiRedactionLevel: DEFAULT_PII_REDACTION_LEVEL,
+        });
 
-      return c.json({ message: "OK" });
+      // Nothing was durably accepted, and the cause is ours. OTLP treats a 200
+      // with `partialSuccess` as a permanent rejection the client must not
+      // re-send, so answering that here would turn a queue blip into fleet-wide
+      // data loss. 503 is in OTLP's retryable set.
+      if (result.outcome === "unavailable") {
+        return c.json({ error: result.errorMessage }, { status: 503 });
+      }
+
+      if (result.rejectedDataPoints === 0) return c.json({});
+      return c.json({
+        partialSuccess: {
+          rejectedDataPoints: result.rejectedDataPoints,
+          ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+        },
+      });
     },
   );
 });

@@ -4,13 +4,13 @@
  */
 
 import { Button, HStack, Text, useDisclosure, VStack } from "@chakra-ui/react";
+import { createLogger } from "@langwatch/observability";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type SubmitHandler, useForm } from "react-hook-form";
 import { useDrawer } from "~/hooks/useDrawer";
 import { useLocalStorageSelectedDataSetId } from "~/hooks/useLocalStorageSelectedDataSetId";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { api } from "~/utils/api";
-import { createLogger } from "~/utils/logger";
 import type {
   DatasetColumns,
   DatasetRecordEntry,
@@ -25,7 +25,6 @@ import { Link } from "./ui/link";
 import { toaster } from "./ui/toaster";
 
 const logger = createLogger("AddDatasetRecordDrawer");
-
 const TRACE_SOURCES_REQUIRING_SPANS = new Set([
   "contexts",
   "contexts.string_list",
@@ -54,35 +53,29 @@ const getDatasetTraceMapping = (mapping: unknown): MappingState | undefined => {
     expansions?: MappingState["expansions"];
   };
 
-  if (value.traceMapping) {
-    return value.traceMapping;
-  }
+  if (value.traceMapping) return value.traceMapping;
+  if (!value.mapping) return undefined;
 
-  if (value.mapping) {
-    return {
-      mapping: value.mapping,
-      expansions: value.expansions ?? [],
-    };
-  }
-
-  return undefined;
+  return {
+    mapping: value.mapping,
+    expansions: value.expansions ?? [],
+  };
 };
 
 const traceMappingNeedsSpans = (mapping?: MappingState) => {
   if (!mapping) return false;
 
   if (
-    mapping.expansions?.some((expansion) =>
+    mapping.expansions.some((expansion) =>
       TRACE_EXPANSIONS_REQUIRING_SPANS.has(expansion),
     )
   ) {
     return true;
   }
 
-  return Object.values(mapping.mapping ?? {}).some((entry) => {
-    const source = entry?.source;
-    if (sourceNeedsSpans(source)) return true;
-    return entry?.selectedFields?.some(sourceNeedsSpans) ?? false;
+  return Object.values(mapping.mapping).some((entry) => {
+    if (sourceNeedsSpans(entry.source)) return true;
+    return entry.selectedFields?.some(sourceNeedsSpans) ?? false;
   });
 };
 
@@ -113,13 +106,13 @@ interface AddDatasetDrawerProps {
   traceId?: string;
   /** Array of trace IDs to add */
   selectedTraceIds?: string[] | string;
-  /** Time window the selected traces came from, used to bound ClickHouse reads. */
+  /** 所选 trace 的时间范围，用于限制 ClickHouse 查询。 */
   selectedTraceTimeRange?: {
     from: number;
     to: number;
     live?: boolean;
   };
-  /** Non-URL payload for bulk selections; avoids very long drawer URLs. */
+  /** 批量选择的内存态参数，避免把大量 ID 写入 URL。 */
   selectedTraceSelection?: {
     traceIds: string[];
     timeRange?: {

@@ -6,6 +6,7 @@
  */
 
 import type { ExperimentRunWithItems } from "~/server/experiments-v3/services/types";
+import { resolveVerdictLabel } from "~/experiments-v3/utils/normalizeComparison";
 
 /**
  * Run data with color assignment for comparison mode
@@ -99,6 +100,53 @@ export type BatchDatasetColumn = {
 };
 
 /**
+ * A comparison evaluator's per-row verdict, normalized to name the winner by
+ * identifier. Legacy slot labels ("A" / "B" / "tie") are resolved against the
+ * column's variant order at detection time, so nothing downstream sees them.
+ */
+export type BatchComparisonVerdict = {
+  rowIndex: number;
+  /**
+   * Identifier of the winning variant, or null for a tie. Matches the `id` of
+   * one of the column's `variants` — the internal target id where the judge's
+   * label resolved to a known target, otherwise the raw label it returned.
+   */
+  winnerId: string | null;
+  reasoning?: string | null;
+  /**
+   * Text of the winning variant's actual output for this row, so the row
+   * cell can surface "what was right" alongside "why". Empty for a tie
+   * (nothing definitively won) or when the variant's row output can't be
+   * looked up (missing target / unresolved variant).
+   */
+  winnerOutput?: string | null;
+};
+
+/** One candidate participating in a comparison, in the order the judge saw them. */
+export type BatchComparisonVariant = {
+  /** Internal target id, or the raw judge label when it names no known target. */
+  id: string | null;
+  /** Display name — falls back to "Variant N" when the target is unknown. */
+  name: string;
+};
+
+/**
+ * Column definition for a comparison evaluator, whether it compares two
+ * candidates or ten. One per comparison evaluator in a run; the batch results
+ * table renders these AFTER the target columns.
+ */
+export type BatchComparisonColumn = {
+  /** Evaluator id (config-level), used to key verdicts and column ids. */
+  evaluatorId: string;
+  /** Display name (e.g. "Comparison"). */
+  name: string;
+  /** Every candidate compared, in judge order. Always at least one entry. */
+  variants: BatchComparisonVariant[];
+  /** Per-row verdicts keyed by row index. Missing rows → no verdict. */
+  verdictsByRow: Record<number, BatchComparisonVerdict>;
+};
+
+/**
  * Complete transformed batch evaluation data ready for display
  */
 export type BatchEvaluationData = {
@@ -120,6 +168,13 @@ export type BatchEvaluationData = {
   evaluatorIds: string[];
   /** Map of evaluator ID to display name */
   evaluatorNames: Record<string, string>;
+  /**
+   * Comparison evaluator columns detected in this run. Empty when no
+   * evaluator emitted a tie or winning-variant label. Rendered as an
+   * extra "Winner" column per comparison evaluator after target columns.
+   * Optional so pre-existing test literals don't have to spell it out.
+   */
+  comparisonColumns?: BatchComparisonColumn[];
   /** Row data */
   rows: BatchResultRow[];
 };
@@ -398,8 +453,302 @@ export const transformBatchEvaluationData = (
     targetColumns,
     evaluatorIds: Array.from(evaluatorMap.keys()),
     evaluatorNames: Object.fromEntries(evaluatorMap),
+    comparisonColumns: detectComparisonColumns(evaluations, targetColumns, rows),
     rows,
   };
+};
+
+/**
+ * Peel the winning target's stored output to a display string. Handles the
+ * three shapes we see in the wild:
+ *   1. A plain string (single-output-field target unwrapped at storage).
+ *   2. `{ output: "..." }` — the conventional flat-key shape.
+ *   3. `{ output: { output: "...", confidence: "high" } }` — the double-
+ *      wrap that happens when structured outputs get stored under an outer
+ *      `output` key too.
+ * Recurses into `.output` / `.answer` until it hits a scalar. Anything more
+ * exotic than that gets JSON-stringified so the cell still shows *something*
+ * instead of "[object Object]".
+ */
+const extractWinnerOutputText = (raw: unknown): string | null => {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return raw;
+  if (typeof raw !== "object") return String(raw);
+  // Up to 3 layers of `.output` / `.answer` unwrap covers structured outputs
+  // stored as `{output: {output: "..."}}` without recursing forever on
+  // pathological shapes.
+  let cursor: unknown = raw;
+  for (let i = 0; i < 3; i++) {
+    if (!cursor || typeof cursor !== "object") break;
+    const asObj = cursor as Record<string, unknown>;
+    const candidate = asObj.output ?? asObj.answer;
+    if (typeof candidate === "string") return candidate;
+    if (candidate === undefined || candidate === null) break;
+    cursor = candidate;
+  }
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return null;
+  }
+};
+
+/** Candidate ids the judge was actually called with, in judge order. */
+const readCandidateIds = (inputs: Record<string, unknown>): string[] => {
+  // Current contract: the orchestrator sends an ordered `candidates` list.
+  const candidates = inputs.candidates;
+  if (Array.isArray(candidates)) {
+    return candidates
+      .map((candidate) =>
+        candidate && typeof candidate === "object"
+          ? (candidate as { id?: unknown }).id
+          : undefined,
+      )
+      .filter((id): id is string => typeof id === "string");
+  }
+  // Legacy two-slot contract, still present on runs stored before the merge.
+  return [inputs.candidate_a_id, inputs.candidate_b_id].filter(
+    (id): id is string => typeof id === "string",
+  );
+};
+
+/**
+ * Detect comparison evaluators by observing their per-row label shapes.
+ *
+ * A comparison evaluator's label is either the winning candidate's target id
+ * or prompt handle — the current contract — or a slot letter ("A" / "B" /
+ * "tie") on runs stored before pairwise and N-way were merged.
+ *
+ * Variant identity comes from the judge's own inputs (`candidates`, or the
+ * legacy `candidate_a_id` / `candidate_b_id`), which is authoritative: it
+ * names every candidate even in a run where only one of them ever won.
+ * Observed winning labels are the fallback when inputs aren't populated.
+ *
+ * Any non-tie label that names no known target still becomes a variant of its
+ * own, keyed by the raw label. Dropping it would silently under-count a
+ * winner — which is exactly what the old two-slot detection did to every
+ * third-and-beyond variant.
+ */
+const detectComparisonColumns = (
+  evaluations: ExperimentRunWithItems["evaluations"],
+  targetColumns: BatchTargetColumn[],
+  rows: BatchResultRow[],
+): BatchComparisonColumn[] => {
+  const targetNameById = new Map(targetColumns.map((t) => [t.id, t.name]));
+  // Langevals echoes back the variant's DISPLAY IDENTIFIER as the verdict
+  // label — for prompt targets that's the prompt handle (e.g. "say-hi"), not
+  // the internal `target_XYZ` id. Build a lookup that accepts either shape so
+  // detection resolves either to the underlying target id.
+  const targetIdByAnyKey = new Map<string, string>();
+  for (const t of targetColumns) {
+    targetIdByAnyKey.set(t.id, t.id);
+    if (t.name) targetIdByAnyKey.set(t.name, t.id);
+    if (t.promptId) targetIdByAnyKey.set(t.promptId, t.id);
+  }
+  const resolveToTargetId = (identifier: string): string | undefined =>
+    targetIdByAnyKey.get(identifier);
+
+  // Every target column with `type: "evaluator"` is treated as a comparison
+  // column-target — the synthetic evaluator generated for it stores
+  // evaluator id == target id, and no scalar evaluator ever ends up as a
+  // top-level target column in this UI. Pre-populating buckets from these
+  // means chip suppression + win-rate chart wire up even when the run's
+  // evaluations echo an unusual label shape (dogfood: label sometimes echoes
+  // an identifier we don't have in `targetColumns` — the strict shape check
+  // dropped whole evaluators on the floor and both fixes silently no-op'd).
+  const forcedComparisonEvaluatorIds = new Set(
+    targetColumns.filter((t) => t.type === "evaluator").map((t) => t.id),
+  );
+
+  const isSlotLabel = (v: string): v is "A" | "B" | "tie" =>
+    v === "A" || v === "B" || v === "tie";
+
+  // "tie" is valid vocabulary under BOTH the legacy 2-slot and current N-way
+  // contract, so seeing it alone is not evidence of the legacy shape — only
+  // "A"/"B" are. Treating "tie" as slot evidence (as `isSlotLabel` does for
+  // the label-shape filter below) made an all-tie bucket with no resolvable
+  // candidate ids wrongly fall back to a hardcoded 2-variant slice, silently
+  // dropping any 3rd+ variant.
+  const isLegacySlotLabel = (v: string): v is "A" | "B" => v === "A" || v === "B";
+
+  // Also treat any evaluator whose type or display name looks like a
+  // comparison judge as one, even if this row's label doesn't match a known
+  // target id or slot letter. Real-world dogfood found the label sometimes
+  // echoes an identifier we don't have in `targetColumns` (e.g. a prompt
+  // handle resolved by langevals but not reflected in the run's targets
+  // snapshot), and the strict shape check silently dropped the whole
+  // evaluator on the floor — chip suppression + win-rate chart both no-op'd.
+  const isComparisonEvaluator = (
+    ev: ExperimentRunWithItems["evaluations"][number],
+  ) => {
+    const fields = [ev.evaluator ?? "", ev.name ?? ""].map((f) =>
+      f.toLowerCase(),
+    );
+    return fields.some(
+      (field) =>
+        field.includes("pairwise") ||
+        field.includes("select_best") ||
+        field.includes("comparison"),
+    );
+  };
+
+  // Group by evaluator id + name so different comparison instances (same
+  // evaluator type wired against different variant sets) stay separate.
+  const buckets = new Map<
+    string,
+    {
+      evaluatorId: string;
+      name: string;
+      /** First-seen judge order of the candidates, from the judge's inputs. */
+      candidateIds: string[];
+      /** Non-tie labels observed as winners, in first-seen order. */
+      winningLabels: string[];
+      sawSlotLabels: boolean;
+      verdicts: Array<{
+        rowIndex: number;
+        rawLabel: string;
+        reasoning: string | null;
+      }>;
+    }
+  >();
+
+  for (const ev of evaluations) {
+    if (ev.status !== "processed") continue;
+    const isForced = forcedComparisonEvaluatorIds.has(ev.evaluator);
+    const hasLabel = typeof ev.label === "string" && ev.label.length > 0;
+    if (!hasLabel && !isComparisonEvaluator(ev) && !isForced) continue;
+
+    const label = ev.label ?? "";
+    if (
+      hasLabel &&
+      !isSlotLabel(label) &&
+      !resolveToTargetId(label) &&
+      !isComparisonEvaluator(ev) &&
+      !isForced
+    ) {
+      continue;
+    }
+
+    const key = ev.name ? `${ev.evaluator}::${ev.name}` : ev.evaluator;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      // Prefer the target column's display name when the evaluator id matches
+      // a column-target (comparison column-target case) — this keeps the chart
+      // / winner column labeled "Comparison" instead of the raw `target_XYZ`
+      // id when ev.name is null.
+      bucket = {
+        evaluatorId: ev.evaluator,
+        name: ev.name ?? targetNameById.get(ev.evaluator) ?? ev.evaluator,
+        candidateIds: [],
+        winningLabels: [],
+        sawSlotLabels: false,
+        verdicts: [],
+      };
+      buckets.set(key, bucket);
+    }
+
+    // Snapshot the judge's own view of who it compared. Authoritative: it
+    // names every candidate even when only one of them ever wins.
+    for (const id of readCandidateIds((ev.inputs ?? {}) as Record<string, unknown>)) {
+      const resolved = resolveToTargetId(id) ?? id;
+      if (!bucket.candidateIds.includes(resolved)) {
+        bucket.candidateIds.push(resolved);
+      }
+    }
+
+    if (!hasLabel) continue;
+    if (isLegacySlotLabel(label)) {
+      bucket.sawSlotLabels = true;
+    } else if (!isSlotLabel(label)) {
+      const resolved = resolveToTargetId(label) ?? label;
+      if (!bucket.winningLabels.includes(resolved)) {
+        bucket.winningLabels.push(resolved);
+      }
+    }
+    bucket.verdicts.push({
+      rowIndex: ev.index,
+      rawLabel: label,
+      reasoning: ev.details ?? null,
+    });
+  }
+
+  const columns: BatchComparisonColumn[] = [];
+  for (const bucket of buckets.values()) {
+    // Judge inputs first; then any winner we saw that they didn't cover
+    // (a variant the run's target snapshot has since lost). Never drop one.
+    const variantIds = [...bucket.candidateIds];
+    for (const label of bucket.winningLabels) {
+      if (!variantIds.includes(label)) variantIds.push(label);
+    }
+
+    // A legacy two-slot run whose inputs carried no candidate ids: the slot
+    // letters are all we have, so fall back to target-column order.
+    if (variantIds.length === 0 && bucket.sawSlotLabels) {
+      variantIds.push(...targetColumns.slice(0, 2).map((t) => t.id));
+    }
+
+    const variants: BatchComparisonVariant[] = variantIds.map((id, index) => ({
+      id,
+      name: targetNameById.get(id) ?? id ?? `Variant ${index + 1}`,
+    }));
+    // Slot letters must always have two positions to resolve against, even
+    // when the run only ever produced one target column.
+    while (bucket.sawSlotLabels && variants.length < 2) {
+      variants.push({
+        id: null,
+        name: `Variant ${String.fromCharCode(65 + variants.length)}`,
+      });
+    }
+
+    const verdictsByRow: Record<number, BatchComparisonVerdict> = {};
+    for (const { rowIndex, rawLabel, reasoning } of bucket.verdicts) {
+      let winnerId: string | null;
+      if (rawLabel === "tie") {
+        winnerId = null;
+      } else {
+        // Reuse the same A/B-position mapping every other surface uses
+        // (resolveVerdictLabel) instead of re-deriving it here, so the two
+        // never drift. `variants` can carry a null-id padding slot (see
+        // above) — map those to "" so resolveVerdictLabel's `?? label`
+        // fallback (meant for "position doesn't exist") isn't triggered by
+        // "position exists but has no real id"; both cases are handled the
+        // same way just below (treated as no resolvable winner).
+        const resolved = resolveVerdictLabel({
+          label: rawLabel,
+          variants: variants.map((v) => v.id ?? ""),
+        });
+        const isUnresolvedSlot =
+          resolved === "" || resolved === "A" || resolved === "B";
+        winnerId = isUnresolvedSlot
+          ? null
+          : (resolveToTargetId(resolved) ?? resolved);
+      }
+
+      // Look up the winning variant's actual output text so the row cell can
+      // show "what was right" alongside "why". Ties get no winner output —
+      // there was no definitively-right answer to surface.
+      const winnerCell = winnerId
+        ? rows[rowIndex]?.targets[winnerId]
+        : undefined;
+
+      verdictsByRow[rowIndex] = {
+        rowIndex,
+        winnerId,
+        reasoning,
+        winnerOutput: winnerCell
+          ? extractWinnerOutputText(winnerCell.output)
+          : null,
+      };
+    }
+
+    columns.push({
+      evaluatorId: bucket.evaluatorId,
+      name: bucket.name,
+      variants,
+      verdictsByRow,
+    });
+  }
+  return columns;
 };
 
 /**

@@ -62,6 +62,55 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- .Values.secrets.existingSecret | default (.Values.autogen.secretNames.app | default "langwatch-app-secrets") -}}
 {{- end -}}
 
+{{/*
+  LW_GATEWAY_BASE_URL env entry for the pods that talk to the gateway from
+  inside the cluster (the app and the workers, which both resolve Langy's
+  credentials). Renders nothing when there is no gateway to point at.
+
+  gateway.internalUrl wins for non-standard topologies (a gateway run outside
+  this release, a service mesh address). Otherwise it is the Service this chart
+  renders, whose name follows the release like the other sibling Services and
+  whose port comes from the subchart's own value so the two cannot drift.
+*/}}
+{{- define "langwatch.gatewayBaseUrlEnv" -}}
+{{- $gw := .Values.gateway | default dict }}
+{{- $url := $gw.internalUrl | default "" }}
+{{- if and (not $url) $gw.chartManaged }}
+{{- $port := (($gw.service) | default dict).port | default 80 }}
+{{- $url = printf "http://%s-gateway:%v" .Release.Name $port }}
+{{- end }}
+{{- if $url }}
+- name: LW_GATEWAY_BASE_URL
+  value: {{ $url | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+  LANGY_WORKER_CALLBACK_URL env entry — the origin the Langy agent's workers dial
+  back on: the relay frame push, the durable turn finalize, the session-key
+  revoke, and the LANGWATCH_ENDPOINT the langwatch CLI uses for every tool call.
+
+  Without it the app hands the worker its own PUBLIC base URL, which is the
+  wrong address for a pod on the same cluster to use. At best the traffic
+  leaves the cluster and comes back; at worst that hostname means something
+  else entirely inside the pod, and every callback fails while the model calls
+  keep succeeding — a turn that costs tokens, produces an answer, and then
+  never delivers it.
+
+  langyagent.controlPlane.callbackUrl overrides it for split topologies.
+*/}}
+{{- define "langwatch.langyCallbackUrlEnv" -}}
+{{- $langy := (index .Values "langyagent") | default dict }}
+{{- $cp := $langy.controlPlane | default dict }}
+{{- $url := $cp.callbackUrl | default "" }}
+{{- if not $url }}
+{{- $port := ((.Values.app).service | default dict).port | default 5560 }}
+{{- $url = printf "http://%s-app:%v" .Release.Name $port }}
+{{- end }}
+- name: LANGY_WORKER_CALLBACK_URL
+  value: {{ $url | quote }}
+{{- end -}}
+
 {{/* Secret validation function */}}
 {{- define "langwatch.validateSecrets" }}
 {{- $errors := list }}
@@ -173,6 +222,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and .Values.app.storedObjects.localFilesystem.enabled (not .Values.app.dataplane.enabled) }}
   {{- if gt (int .Values.app.replicaCount) 1 }}
     {{- $errors = append $errors "app.storedObjects.localFilesystem.enabled requires replicaCount=1 (pods don't share a local filesystem). Enable app.dataplane for multi-replica deployments." }}
+  {{- end }}
+  {{- /* Workers mount the SAME RWO PVC as the app, so they are bound by the
+         same single-node constraint — guard workers.replicaCount too, else a
+         multi-replica worker pool renders cleanly then crashloops on the volume.
+         Only when workers are actually deployed: a disabled worker pool's
+         leftover replicaCount must not fail the render. */}}
+  {{- if and .Values.workers.enabled (gt (int .Values.workers.replicaCount) 1) }}
+    {{- $errors = append $errors "app.storedObjects.localFilesystem.enabled requires workers.replicaCount=1 (workers share the app's local-filesystem PVC). Enable app.dataplane for multi-replica deployments." }}
   {{- end }}
 {{- end }}
 
@@ -375,6 +432,84 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- if ne $gwSecretName $appSecretName }}
     {{- $errors = append $errors (printf "gateway.secrets.existingSecretName (%q) must equal the app Secret name (%q). this release collapsed gateway-auth into the app Secret so both langwatch-app and the gateway pod mount the same Secret. Either drop the secrets.existingSecret / autogen.secretNames.app override to use the langwatch-app-secrets default, or set gateway.secrets.existingSecretName to %q so both pods agree." $gwSecretName $appSecretName $appSecretName) }}
   {{- end }}
+
+  {{/* The gateway derives its route to the control plane as
+       `<release>-app:5560` when nothing is set. The release half always
+       matches, since the app Service is named after it. The port half is a
+       constant the subchart cannot see past, so an app moved to another port
+       would leave the gateway dialling a closed one — a install that comes up
+       entirely healthy and then refuses every request that carries a virtual
+       key. Stop instead, and name the value that fixes it. */}}
+  {{- $gwBaseUrl := (($gw.controlPlane) | default dict).baseUrl | default "" }}
+  {{- $appPort := ((.Values.app.service) | default dict).port | default 5560 }}
+  {{- if and (not $gwBaseUrl) (ne (int $appPort) 5560) }}
+    {{- $errors = append $errors (printf "app.service.port is %v, but the gateway works out where the control plane is on its own and can only assume the default port 5560. It would dial http://%s-app:5560 and get nothing, and the install would come up healthy while refusing every request that carries a virtual key. Set gateway.controlPlane.baseUrl to http://%s-app:%v." $appPort .Release.Name .Release.Name $appPort) }}
+  {{- end }}
+{{- end }}
+
+{{/* Validate Langy agent secret wiring.
+
+     Unlike the gateway, all three Langy consumers (app, workers, agent pod)
+     read the SAME langyagent.secrets.* values, so they cannot disagree with
+     each other and no name-match check is needed.
+
+     What can still go wrong: the chart materialises LANGY_INTERNAL_SECRET
+     into its own app Secret, which it only writes when autogen is on. An
+     operator who brings their own Secret (autogen off, or a Secret managed by
+     terraform / external-secrets) has to carry the key themselves, and the
+     failure mode without this check is three pods in
+     CreateContainerConfigError naming a key nothing told them to add.
+
+     `lookup` returns empty during `helm template` and on a dry run, so this
+     fires only against a real cluster, and only when the Secret is already
+     there and demonstrably missing the key — never on a first install where
+     it has yet to be created. */}}
+{{- $langy := (index .Values "langyagent") | default dict }}
+{{- if $langy.chartManaged }}
+  {{- $langySecrets := $langy.secrets | default dict }}
+  {{- $langySecretName := $langySecrets.existingSecretName | default (include "langwatch.appSecretName" .) }}
+  {{- $langyKey := $langySecrets.internalSecretKey | default "LANGY_INTERNAL_SECRET" }}
+  {{/* Subchart values are literal YAML, so langyagent.secrets.existingSecretName
+       is a static string while the app Secret's name resolves dynamically. An
+       operator who renames the app Secret and leaves this at its stock default
+       sends all three pods to a Secret that no longer exists. Pointing Langy at
+       a genuinely different Secret stays legitimate (external-secrets,
+       terraform); only the untouched default is treated as an oversight. */}}
+  {{- $appSecretName := include "langwatch.appSecretName" . }}
+  {{- if and (ne $appSecretName "langwatch-app-secrets") (eq ($langySecrets.existingSecretName | default "") "langwatch-app-secrets") }}
+    {{- $errors = append $errors (printf "langyagent.secrets.existingSecretName is still the default %q but the app Secret is named %q. The app, the workers, and the agent pod would all mount a Secret this install does not have. Set langyagent.secrets.existingSecretName to %q, or to whichever Secret holds %s (the same mirroring the gateway subchart needs). To run without the Langy assistant instead, set langyagent.chartManaged=false." "langwatch-app-secrets" $appSecretName $appSecretName $langyKey) }}
+  {{- end }}
+  {{/* A configured key that collides with one of the app Secret's own keys would
+       emit the same Secret.data entry twice, and the second write wins — Langy's
+       random value would silently become the session secret or the gateway
+       token. Refuse rather than quietly conflating two credentials whose blast
+       radii are meant to be separate. Only when both live in the same Secret;
+       an operator-owned Secret elsewhere may name its key whatever it likes. */}}
+  {{- if eq $langySecretName (include "langwatch.appSecretName" .) }}
+    {{- $reserved := list "credentialsEncryptionKey" "cronApiKey" "nextAuthSecret" "virtualKeyPepper" }}
+    {{- if (.Values.gateway).chartManaged }}
+      {{- $reserved = concat $reserved (list "LW_GATEWAY_INTERNAL_SECRET" "LW_GATEWAY_JWT_SECRET") }}
+    {{- end }}
+    {{- if has $langyKey $reserved }}
+      {{- $errors = append $errors (printf "langyagent.secrets.internalSecretKey is %q, which is already a key of the app Secret %q. Langy would overwrite that credential with its own value. Pick a distinct key name (the default is LANGY_INTERNAL_SECRET), or point langyagent.secrets.existingSecretName at a separate Secret." $langyKey $langySecretName) }}
+    {{- end }}
+  {{- end }}
+  {{- $chartWritesIt := and .Values.autogen.enabled (empty .Values.secrets.existingSecret) (eq $langySecretName (include "langwatch.appSecretName" .)) }}
+  {{- if not $chartWritesIt }}
+    {{- $found := lookup "v1" "Secret" .Release.Namespace $langySecretName }}
+    {{- $hint := printf "Either add the key to that Secret (kubectl -n %s create secret generic %s --from-literal=%s=$(openssl rand -hex 32), or patch it if it already exists), point langyagent.secrets.existingSecretName at the Secret that does hold it, or let the chart generate it by leaving autogen.enabled=true with no secrets.existingSecret override." .Release.Namespace $langySecretName $langyKey }}
+    {{- if not $found }}
+      {{/* Every lookup comes back empty during `helm template` and dry runs, so
+           "Secret not found" there means "we cannot see the cluster", not "it is
+           missing". Probe with an object every real cluster has: if kube-system
+           is invisible too, stay quiet rather than failing a plain render. */}}
+      {{- if lookup "v1" "Namespace" "" "kube-system" }}
+        {{- $errors = append $errors (printf "Langy is enabled (langyagent.chartManaged=true) but Secret %q was not found in namespace %q, and this chart is not generating it. The app, the workers, and the agent pod all read %q from it to authenticate to each other, so all three would start into CreateContainerConfigError. %s" $langySecretName .Release.Namespace $langyKey $hint) }}
+      {{- end }}
+    {{- else if not (index ($found.data | default dict) $langyKey) }}
+      {{- $errors = append $errors (printf "Langy is enabled (langyagent.chartManaged=true) but Secret %q in namespace %q has no %q key. The app, the workers, and the agent pod all read that one key to authenticate to each other. %s" $langySecretName .Release.Namespace $langyKey $hint) }}
+    {{- end }}
+  {{- end }}
 {{- end }}
 
 {{/* Output errors and warnings */}}
@@ -520,6 +655,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: CLICKHOUSE_COLD_STORAGE_DEFAULT_TTL_DAYS
   value: {{ $chCold.defaultTtlDays | default "49" | quote }}
 {{- end }}
+{{/* Backup-status gauges (system.backup_log) are opt-in — the app/worker only
+     queries the backup log when CLICKHOUSE_BACKUP_METRICS_ENABLED=true. Couple
+     that to the backup config so the "Backup Reporting Absent" signal can never
+     drift from whether backups actually run: on whenever chart-managed backups
+     are enabled, or when an operator forces it for out-of-band backups. */}}
+{{- $chBackup := (.Values.clickhouse).backup }}
+{{- if or ($chBackup).enabled ($chBackup).metricsEnabled }}
+- name: CLICKHOUSE_BACKUP_METRICS_ENABLED
+  value: "true"
+{{- end }}
 
 # Credentials encryption key
 {{- if .Values.app.credentialsEncryptionKey.secretKeyRef.name }}
@@ -591,6 +736,33 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 # enable dataplane with a real object-storage backend.
 - name: LANGWATCH_LOCAL_STORAGE_PATH
   value: {{ .Values.app.storedObjects.localFilesystem.path | quote }}
+{{- end }}
+
+# NextAuth secret. Lives in sharedEnv (not just the app Deployment) because
+# BetterAuth initializes eagerly at import time across every consumer of the
+# app image — workers and the dataset-s3-migration hook Job both pull in the
+# same module graph, so any of them can crash with "You are using the default
+# secret" if this is missing, regardless of whether that consumer's own logic
+# ever touches auth. Same secretKeyRef precedence everywhere (explicit
+# override -> existingSecret -> autogen).
+{{- if .Values.app.nextAuth.secret.secretKeyRef.name }}
+- name: NEXTAUTH_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.app.nextAuth.secret.secretKeyRef.name }}
+      key: {{ .Values.app.nextAuth.secret.secretKeyRef.key }}
+{{- else if .Values.secrets.existingSecret }}
+- name: NEXTAUTH_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.existingSecret }}
+      key: {{ .Values.secrets.secretKeys.nextAuthSecret | default "nextAuthSecret" }}
+{{- else if .Values.autogen.enabled }}
+- name: NEXTAUTH_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "langwatch.appSecretName" . }}
+      key: nextAuthSecret
 {{- end }}
 {{- end }}
 
@@ -682,6 +854,28 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and .Values.app.storedObjects.localFilesystem.enabled (not .Values.app.dataplane.enabled) -}}
 true
 {{- end -}}
+{{- end -}}
+
+{{/*
+  Default podAffinity co-locating a pod with the app pod, for consumers of the
+  app's RWO stored-objects PVC (workers Deployment, dataset-s3-migration Job).
+  An RWO volume attaches to ONE node, so a consumer scheduled on any other node
+  sits Pending on a multi-attach error — and local-FS is the chart DEFAULT, so
+  a vanilla install on a multi-node cluster would wedge without this. Required
+  (not preferred) because landing off-node is never functional. Trivially
+  satisfied on the documented single-node/hobby topology. Consumers render it
+  only when local-FS is active AND no explicit affinity is set — an operator's
+  own workers/datasetS3Migration/global affinity overrides it wholesale (they
+  own scheduling then, same override semantics as the coalesce chain).
+*/}}
+{{- define "langwatch.storedObjects.colocationAffinity" -}}
+podAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: {{ .Release.Name }}-app
+          app.kubernetes.io/instance: {{ .Release.Name }}
+      topologyKey: kubernetes.io/hostname
 {{- end -}}
 
 {{/* ClickHouse: Cluster name for the app (only when replicas > 1 or external.cluster set) */}}

@@ -17,7 +17,11 @@ import type {
 
 export type VirtualKeyWithScopes = VirtualKey & {
   scopes: VirtualKeyScope[];
-  principalUser?: { id: string; name: string | null; email: string | null } | null;
+  principalUser?: {
+    id: string;
+    name: string | null;
+    email: string | null;
+  } | null;
   routingPolicy?: {
     id: string;
     modelAliases: Prisma.JsonValue;
@@ -47,6 +51,13 @@ export type CreateVirtualKeyData = {
    */
   scopes: ScopeInput[];
   routingPolicyId?: string | null;
+  /**
+   * USER (default) for keys created via the gateway UI / API; LANGY when
+   * auto-provisioned by `langyVirtualKey.provisionLangyVirtualKey` for the
+   * Langy in-product assistant. Drives the managed-row badge + lock-down on
+   * the gateway/virtual-keys page.
+   */
+  purpose?: "USER" | "LANGY";
 };
 
 export class VirtualKeyRepository {
@@ -112,13 +123,22 @@ export class VirtualKeyRepository {
     });
   }
 
+  /**
+   * The customer-facing organization listing. Product-managed keys
+   * (`purpose != USER` — today the Langy VK) are excluded: the customer
+   * neither created them nor may mutate them, so surfacing them only invites
+   * a rotate that silently breaks the feature holding the secret. Internal
+   * lookups that legitimately need them go through `findById` /
+   * `findByHashedSecret`, which stay unfiltered. Same posture as
+   * HIDDEN_SYSTEM_KEY_NAMES on the API-key listings.
+   */
   async findAllInOrganization(
     organizationId: string,
     tx?: Prisma.TransactionClient,
   ): Promise<VirtualKeyWithScopes[]> {
     const client = tx ?? this.prisma;
     return client.virtualKey.findMany({
-      where: { organizationId },
+      where: { organizationId, purpose: "USER" },
       include: {
         scopes: true,
         principalUser: { select: { id: true, name: true, email: true } },
@@ -131,9 +151,10 @@ export class VirtualKeyRepository {
   }
 
   /**
-   * Every VK reachable from a given scope entry. Used for the
+   * Every customer-owned VK reachable from a given scope entry. Used for the
    * project / team / org settings pages — each page lists VKs that
-   * declare at least one matching scope row.
+   * declare at least one matching scope row. Product-managed keys are
+   * excluded for the same reason as `findAllInOrganization`.
    */
   async findAllForScope(
     scope: ScopeInput,
@@ -142,6 +163,7 @@ export class VirtualKeyRepository {
     const client = tx ?? this.prisma;
     return client.virtualKey.findMany({
       where: {
+        purpose: "USER",
         scopes: {
           some: { scopeType: scope.scopeType, scopeId: scope.scopeId },
         },
@@ -174,6 +196,7 @@ export class VirtualKeyRepository {
         config: data.config,
         createdById: data.createdById,
         routingPolicyId: data.routingPolicyId ?? null,
+        purpose: data.purpose ?? "USER",
         revision: 1n,
         scopes: {
           create: data.scopes.map((s) => ({

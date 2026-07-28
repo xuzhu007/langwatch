@@ -13,8 +13,8 @@ import { useState } from "react";
 
 import { Link } from "~/components/ui/link";
 import { usePublicEnv } from "~/hooks/usePublicEnv";
-import { docsUrl } from "~/utils/docsUrl";
 import { copyToClipboard } from "~/utils/clipboard";
+import { docsUrl } from "~/utils/docsUrl";
 
 /**
  * Empty-state install affordance for the LangWatch CLI.
@@ -23,7 +23,7 @@ import { copyToClipboard } from "~/utils/clipboard";
  * snippet on cloud, and a `LANGWATCH_ENDPOINT=<host> npm install -g …`
  * variant on self-hosted (auto-detects via `usePublicEnv().BASE_HOST`).
  *
- * Drop into any zero-content surface — /me empty-state, /me/sessions
+ * Drop into any zero-content surface — /me empty-state, /me/devices
  * empty-state, governance setup checklist — instead of a bare "Run
  * `langwatch login` in your terminal" sentence that assumes the user
  * already has the CLI installed.

@@ -15,10 +15,13 @@ import (
 
 // Config is the top-level service configuration.
 type Config struct {
-	Environment string        `env:"ENVIRONMENT"`
-	Server      config.Server `env:"SERVER"`
-	Log         clog.Config   `env:"LOG"`
-	OTel        config.OTel   `env:"OTEL"`
+	Environment                   string        `env:"ENVIRONMENT"`
+	BlockLocalHTTPCalls           bool          `env:"BLOCK_LOCAL_HTTP_CALLS"`
+	RequireHTTPSCustomerEndpoints bool          `env:"REQUIRE_HTTPS_CUSTOM_ENDPOINTS"`
+	AllowedProxyHosts             string        `env:"ALLOWED_PROXY_HOSTS"`
+	Server                        config.Server `env:"SERVER"`
+	Log                           clog.Config   `env:"LOG"`
+	OTel                          config.OTel   `env:"OTEL"`
 
 	// Engine knobs surfaced to operators.
 	Engine EngineConfig `env:"NLPGO_ENGINE"`
@@ -34,6 +37,21 @@ type EngineConfig struct {
 	CodeBlockTimeoutSeconds int `env:"CODE_BLOCK_TIMEOUT_SECONDS"`
 	// AllowedProxyHosts — SSRF allowlist for HTTP blocks (comma-separated).
 	AllowedProxyHosts string `env:"ALLOWED_PROXY_HOSTS"`
+	// EgressStrictPublicOnly — refuse every outbound destination that is not
+	// globally routable, not just the private/loopback/link-local set. Adds
+	// CGNAT (100.64.0.0/10, i.e. Tailscale), reserved (240.0.0.0/4),
+	// multicast, NAT64, 6to4, benchmarking and documentation ranges.
+	//
+	// Deliberately a dedicated egress knob rather than a general environment
+	// lookup inside the block: what an egress boundary refuses is deployment
+	// policy, so it is declared here and passed explicitly into SSRFOptions.
+	// Nothing under app/engine/blocks reads the environment for it.
+	//
+	// Default false preserves the historical deny set, so a self-hosted
+	// upgrade cannot silently start refusing a destination that worked
+	// yesterday. Hosted LangWatch sets it to true. Cloud metadata is refused
+	// either way.
+	EgressStrictPublicOnly bool `env:"EGRESS_STRICT_PUBLIC_ONLY"`
 	// SandboxPython — the python interpreter used for the code block.
 	// Default: python3 (resolved via PATH inside the container).
 	SandboxPython string `env:"SANDBOX_PYTHON"`
@@ -67,7 +85,9 @@ func defaultConfig() Config {
 			SandboxPython:            "python3",
 		},
 		OTel: config.OTel{
-			SampleRatio: 1.0, // overridden to 0.1 for non-local in LoadConfig
+			// Left unset so an operator-supplied ratio is distinguishable
+			// from the default; resolved in LoadConfig.
+			SampleRatio: config.UnsetSampleRatio,
 		},
 	}
 }
@@ -78,9 +98,9 @@ func LoadConfig(ctx context.Context) (Config, error) {
 	if err := config.Hydrate(&cfg); err != nil {
 		return Config{}, err
 	}
-	applyLegacyEnvFallbacks(&cfg, os.Getenv)
-	if cfg.OTel.SampleRatio == 1.0 && cfg.Environment != "local" {
-		cfg.OTel.SampleRatio = 0.1
+	cfg.OTel.SampleRatioSet = os.Getenv("OTEL_SAMPLE_RATIO") != ""
+	if err := cfg.OTel.Resolve(); err != nil {
+		return Config{}, err
 	}
 	if err := config.Validate(ctx, cfg); err != nil {
 		return Config{}, err
@@ -89,12 +109,6 @@ func LoadConfig(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
-}
-
-func applyLegacyEnvFallbacks(cfg *Config, getenv func(string) string) {
-	if cfg.Engine.AllowedProxyHosts == "" {
-		cfg.Engine.AllowedProxyHosts = getenv("ALLOWED_PROXY_HOSTS")
-	}
 }
 
 func validateRequired(_ Config) error {

@@ -18,8 +18,9 @@ export function useTabSessionId(): string {
       ref.current = cached;
     } else {
       ref.current = generateUUID();
-      (window as { __lw_presence_session_id?: string }).__lw_presence_session_id =
-        ref.current;
+      (
+        window as { __lw_presence_session_id?: string }
+      ).__lw_presence_session_id = ref.current;
     }
   }
   return ref.current;

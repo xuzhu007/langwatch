@@ -12,15 +12,6 @@ import {
   isViewOnlyCustomRole,
 } from "./member-classification";
 
-// Re-export classification functions for backwards compatibility
-export {
-  isViewOnlyPermission,
-  isViewOnlyCustomRole,
-  classifyMemberType,
-  isFullMember,
-  isLiteMember,
-} from "./member-classification";
-
 /**
  * Type for team assignment in organization invites.
  */
@@ -50,7 +41,7 @@ interface MemberClassificationContext {
  * and follows Dependency Inversion Principle (DIP).
  *
  * Note: Message/trace counting is NOT included here because it queries
- * Elasticsearch (via TraceUsageService), not Prisma. Repositories should
+ * ClickHouse (via TraceUsageService), not Prisma. Repositories should
  * only do database queries - delegation to other services violates SRP.
  */
 export interface ILicenseEnforcementRepository {
@@ -80,7 +71,9 @@ export interface ILicenseEnforcementRepository {
 export class LicenseEnforcementRepository
   implements ILicenseEnforcementRepository
 {
-  constructor(private readonly prisma: PrismaClient | Prisma.TransactionClient) {}
+  constructor(
+    private readonly prisma: PrismaClient | Prisma.TransactionClient,
+  ) {}
 
   /**
    * Counts active (non-archived) workflows for license enforcement.
@@ -130,20 +123,30 @@ export class LicenseEnforcementRepository
   }
 
   /**
-   * Counts non-archived projects in organization.
+   * Counts non-archived projects in organization, excluding personal ones.
+   *
+   * A personal workspace belongs to a person, not to the organization that
+   * pays, so it never spends the project allowance bought for real work.
+   * See the "Personal Workspaces" scenarios in
+   * specs/licensing/enforcement-projects.feature.
    */
   async getProjectCount(organizationId: string): Promise<number> {
     return this.prisma.project.count({
-      where: { team: { organizationId }, archivedAt: null },
+      where: { team: { organizationId }, archivedAt: null, isPersonal: false },
     });
   }
 
   /**
-   * Counts teams in organization.
+   * Counts teams in organization, excluding personal ones.
+   *
+   * A personal team is provisioned for a user rather than requested by the
+   * organization, so it never spends the team allowance.
+   * See the "Personal Workspaces" scenarios in
+   * specs/licensing/enforcement-resources.feature.
    */
   async getTeamCount(organizationId: string): Promise<number> {
     return this.prisma.team.count({
-      where: { organizationId },
+      where: { organizationId, isPersonal: false },
     });
   }
 
@@ -174,7 +177,7 @@ export class LicenseEnforcementRepository
    * Shared between getMemberCount and getMembersLiteCount.
    */
   private async getMemberClassificationContext(
-    organizationId: string
+    organizationId: string,
   ): Promise<MemberClassificationContext> {
     const users = await this.prisma.organizationUser.findMany({
       where: { organizationId },
@@ -185,7 +188,7 @@ export class LicenseEnforcementRepository
     const userPermissionsMap = await this.getUserPermissionsMap(
       organizationId,
       users,
-      customRoleMap
+      customRoleMap,
     );
 
     const pendingInvites = await this.prisma.organizationInvite.findMany({
@@ -212,7 +215,7 @@ export class LicenseEnforcementRepository
    * Gets custom roles and their permissions for an organization.
    */
   private async getCustomRoleMap(
-    organizationId: string
+    organizationId: string,
   ): Promise<Map<string, string[]>> {
     const customRoles = await this.prisma.customRole.findMany({
       where: { organizationId },
@@ -227,7 +230,7 @@ export class LicenseEnforcementRepository
   private async getUserPermissionsMap(
     organizationId: string,
     users: { userId: string; role: OrganizationUserRole }[],
-    customRoleMap: Map<string, string[]>
+    customRoleMap: Map<string, string[]>,
   ): Promise<Map<string, string[]>> {
     const externalUserIds = users
       .filter((u) => u.role === OrganizationUserRole.EXTERNAL)
@@ -278,8 +281,8 @@ export class LicenseEnforcementRepository
     context: MemberClassificationContext,
     predicate: (
       role: OrganizationUserRole,
-      permissions: string[] | undefined
-    ) => boolean
+      permissions: string[] | undefined,
+    ) => boolean,
   ): number {
     let count = 0;
 
@@ -295,7 +298,7 @@ export class LicenseEnforcementRepository
     for (const invite of context.pendingInvites) {
       const permissions = this.getInvitePermissions(
         invite.teamAssignments,
-        context.customRoleMap
+        context.customRoleMap,
       );
       if (predicate(invite.role, permissions)) {
         count++;
@@ -310,7 +313,7 @@ export class LicenseEnforcementRepository
    */
   private getInvitePermissions(
     teamAssignments: TeamAssignment[] | null,
-    customRoleMap: Map<string, string[]>
+    customRoleMap: Map<string, string[]>,
   ): string[] | undefined {
     if (!teamAssignments) {
       return undefined;

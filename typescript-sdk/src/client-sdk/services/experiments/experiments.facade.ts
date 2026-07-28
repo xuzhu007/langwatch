@@ -7,12 +7,19 @@
  */
 
 import type { LangwatchApiClient } from "@/internal/api/client";
+import { isLangWatchHandledError } from "@/internal/api/errors";
 import type { Logger } from "@/logger";
 import { Experiment } from "./experiment";
+import {
+  ExperimentsApiService,
+  toRunStartRequest,
+} from "./experiments-api.service";
 import type { ExperimentInitOptions } from "./types";
 import type {
   ExperimentRunResult,
   RunExperimentOptions,
+  RunWithResultsOptions,
+  ExperimentRunWithResults,
   ExperimentRunSummary,
 } from "./platformTypes";
 import {
@@ -21,6 +28,12 @@ import {
   ExperimentTimeoutError,
   ExperimentRunFailedError,
 } from "./platformErrors";
+import {
+  pollExperimentRun,
+  rebaseUrlToEndpoint,
+  fetchResultsWithRetry,
+} from "./run-status";
+import { mapRunResultsToRows } from "./mapResults";
 import { printSummary } from "./printSummary";
 
 const DEFAULT_POLL_INTERVAL = 2000;
@@ -38,9 +51,13 @@ type ExperimentsFacadeConfig = {
  */
 export class ExperimentsFacade {
   private readonly config: ExperimentsFacadeConfig;
+  private readonly apiService: ExperimentsApiService;
 
   constructor(config: ExperimentsFacadeConfig) {
     this.config = config;
+    this.apiService = new ExperimentsApiService({
+      langwatchApiClient: config.langwatchApiClient,
+    });
   }
 
   /**
@@ -60,7 +77,10 @@ export class ExperimentsFacade {
    * });
    * ```
    */
-  async init(name: string, options?: ExperimentInitOptions): Promise<Experiment> {
+  async init(
+    name: string,
+    options?: ExperimentInitOptions,
+  ): Promise<Experiment> {
     return Experiment.init(name, {
       apiClient: this.config.langwatchApiClient,
       endpoint: this.config.endpoint,
@@ -91,10 +111,93 @@ export class ExperimentsFacade {
    * result.printSummary();
    * ```
    */
-  async run(slug: string, options?: RunExperimentOptions): Promise<ExperimentRunResult> {
+  async run(
+    slug: string,
+    options?: RunExperimentOptions,
+  ): Promise<ExperimentRunResult> {
     this.config.logger.info(`Running platform experiment: ${slug}`);
     const result = await this.runWithPolling(slug, options);
     return result;
+  }
+
+  /**
+   * Run a platform experiment and return per-row structured results.
+   *
+   * Starts the run through the unified evaluations-v3 backend (optionally
+   * overriding the configured inputs via `data` / `datasetId` / `parameters` /
+   * `rowIndices`), polls to completion, fetches the per-row results, and maps
+   * them to the same row structure as the python SDK's results DataFrame.
+   *
+   * @param slug - The slug of the experiment (found in the experiment URL)
+   * @param options - Optional inputs and polling configuration
+   * @returns The run id, results URL, status, summary, and per-row results
+   *
+   * @example
+   * ```typescript
+   * const langwatch = new LangWatch();
+   * const { rows, runUrl } = await langwatch.experiments.runWithResults(
+   *   "my-experiment-slug",
+   *   { data: [{ question: "What is 2 + 2?" }] },
+   * );
+   * for (const row of rows) {
+   *   console.log(row.output, row.evaluations);
+   * }
+   * ```
+   */
+  async runWithResults(
+    slug: string,
+    options: RunWithResultsOptions = {},
+  ): Promise<ExperimentRunWithResults> {
+    this.config.logger.info(
+      `Running platform experiment with results: ${slug}`,
+    );
+
+    const body = toRunStartRequest({
+      data: options.data,
+      datasetId: options.datasetId,
+      parameters: options.parameters,
+      rowIndices: options.rowIndices,
+    });
+
+    const startResponse = await this.apiService.startV3Run({ slug, body });
+    const { runId } = startResponse;
+
+    const { status, summary } = await pollExperimentRun({
+      runId,
+      getStatus: (id) => this.apiService.getV3RunStatus(id),
+      pollInterval: options.pollInterval,
+      timeout: options.timeout,
+      onProgress: options.onProgress,
+    });
+
+    // ClickHouse can lag right after completion: the results endpoint may 404
+    // ("not yet available") or return 200 with an empty dataset before the rows
+    // materialize. Retry both cases when the run reported rows, mirroring the
+    // python SDK, instead of failing or returning an empty result.
+    const results = await fetchResultsWithRetry({
+      getResults: () =>
+        this.apiService.getV3RunResults({ runId, experimentSlug: slug }),
+      isEmpty: (r) => (r.dataset?.length ?? 0) === 0,
+      expectsRows: (summary.totalCells ?? 0) > 0,
+      delay: options.pollInterval ?? DEFAULT_POLL_INTERVAL,
+    });
+
+    // Always return the URL rebased onto the configured endpoint, so a
+    // self-hosted run does not surface a cloud (app.langwatch.ai) link. Both
+    // the start response and the summary carry the platform's own URL; whichever
+    // is present gets its domain replaced. Mirrors the python SDK.
+    const rawRunUrl = startResponse.runUrl ?? summary.runUrl;
+    const runUrl = rawRunUrl
+      ? rebaseUrlToEndpoint(rawRunUrl, this.config.endpoint)
+      : "";
+
+    return {
+      runId,
+      runUrl,
+      status,
+      summary,
+      rows: mapRunResultsToRows(results),
+    };
   }
 
   /**
@@ -102,7 +205,7 @@ export class ExperimentsFacade {
    */
   private async runWithPolling(
     slug: string,
-    options: RunExperimentOptions = {}
+    options: RunExperimentOptions = {},
   ): Promise<ExperimentRunResult> {
     const pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     const timeout = options.timeout ?? DEFAULT_TIMEOUT;
@@ -113,7 +216,9 @@ export class ExperimentsFacade {
 
     // Use the run URL from API but replace domain with configured endpoint
     const apiRunUrl = startResponse.runUrl ?? "";
-    const runUrl = apiRunUrl ? this.replaceUrlDomain(apiRunUrl, this.config.endpoint) : "";
+    const runUrl = apiRunUrl
+      ? rebaseUrlToEndpoint(apiRunUrl, this.config.endpoint)
+      : "";
 
     console.log(`Started experiment run: ${runId}`);
     if (runUrl) {
@@ -136,7 +241,11 @@ export class ExperimentsFacade {
       if (Date.now() - startTime > timeout) {
         console.log(); // Newline after progress
         const finalStatus = await this.getRunStatus(runId);
-        throw new ExperimentTimeoutError(runId, finalStatus.progress, finalStatus.total);
+        throw new ExperimentTimeoutError(
+          runId,
+          finalStatus.progress,
+          finalStatus.total,
+        );
       }
 
       await this.sleep(pollInterval);
@@ -147,7 +256,9 @@ export class ExperimentsFacade {
       // Update progress display if changed
       if (progress !== lastProgress && status.total > 0) {
         const percentage = Math.round((progress / status.total) * 100);
-        process.stdout.write(`\rProgress: ${progress}/${status.total} (${percentage}%)`);
+        process.stdout.write(
+          `\rProgress: ${progress}/${status.total} (${percentage}%)`,
+        );
         lastProgress = progress;
       }
 
@@ -161,18 +272,26 @@ export class ExperimentsFacade {
 
       if (status.status === "failed") {
         console.log(); // Newline after progress
-        throw new ExperimentRunFailedError(runId, status.error ?? "Unknown error");
+        throw new ExperimentRunFailedError(
+          runId,
+          status.error ?? "Unknown error",
+        );
       }
 
       if (status.status === "stopped") {
         console.log(); // Newline after progress
-        return this.buildResult(runId, "stopped", status.summary ?? {
+        return this.buildResult(
           runId,
-          totalCells: status.total,
-          completedCells: status.progress,
-          failedCells: 0,
-          duration: Date.now() - startTime,
-        }, runUrl ?? "");
+          "stopped",
+          status.summary ?? {
+            runId,
+            totalCells: status.total,
+            completedCells: status.progress,
+            failedCells: 0,
+            duration: Date.now() - startTime,
+          },
+          runUrl ?? "",
+        );
       }
     }
   }
@@ -180,30 +299,28 @@ export class ExperimentsFacade {
   /**
    * Start an experiment run
    */
-  private async startRun(slug: string): Promise<{ runId: string; total: number; runUrl?: string }> {
-    const response = await this.config.langwatchApiClient.POST(
-      "/api/experiments/{slug}/run",
-      {
-        params: {
-          path: { slug },
+  private async startRun(
+    slug: string,
+  ): Promise<{ runId: string; total: number; runUrl?: string }> {
+    let response;
+    try {
+      response = await this.config.langwatchApiClient.POST(
+        "/api/experiments/{slug}/run",
+        {
+          params: {
+            path: { slug },
+          },
         },
+      );
+    } catch (error) {
+      if (isLangWatchHandledError(error)) {
+        this.handleStartRunError(slug, error.body, error.httpStatus);
       }
-    );
+      throw error;
+    }
 
     if (response.error) {
-      const status = response.response.status;
-
-      if (status === 404) {
-        throw new ExperimentNotFoundError(slug);
-      }
-
-      if (status === 401) {
-        throw new ExperimentsApiError("Unauthorized - check your API key", 401);
-      }
-
-      const errorMessage =
-        "error" in response.error ? response.error.error : `Failed to start experiment: ${slug}`;
-      throw new ExperimentsApiError(errorMessage ?? `HTTP ${status}`, status);
+      this.handleStartRunError(slug, response.error, response.response.status);
     }
 
     return response.data as { runId: string; total: number; runUrl?: string };
@@ -219,29 +336,29 @@ export class ExperimentsFacade {
     summary?: ExperimentRunSummary;
     error?: string;
   }> {
-    const response = await this.config.langwatchApiClient.GET(
-      "/api/experiments/runs/{runId}",
-      {
-        params: {
-          path: { runId },
+    let response;
+    try {
+      response = await this.config.langwatchApiClient.GET(
+        "/api/experiments/runs/{runId}",
+        {
+          params: {
+            path: { runId },
+          },
         },
+      );
+    } catch (error) {
+      if (isLangWatchHandledError(error)) {
+        this.handleRunStatusError(runId, error.body, error.httpStatus);
       }
-    );
+      throw error;
+    }
 
     if (response.error) {
-      const status = response.response.status;
-
-      if (status === 404) {
-        throw new ExperimentsApiError(`Run not found: ${runId}`, 404);
-      }
-
-      if (status === 401) {
-        throw new ExperimentsApiError("Unauthorized - check your API key", 401);
-      }
-
-      const errorMessage =
-        "error" in response.error ? response.error.error : `Failed to get run status: ${runId}`;
-      throw new ExperimentsApiError(errorMessage ?? `HTTP ${status}`, status);
+      this.handleRunStatusError(
+        runId,
+        response.error,
+        response.response.status,
+      );
     }
 
     return response.data as {
@@ -253,6 +370,52 @@ export class ExperimentsFacade {
     };
   }
 
+  private handleStartRunError(
+    slug: string,
+    error: unknown,
+    status: number,
+  ): never {
+    if (status === 404) {
+      throw new ExperimentNotFoundError(slug);
+    }
+
+    if (status === 401) {
+      throw new ExperimentsApiError("Unauthorized - check your API key", 401);
+    }
+
+    const errorMessage =
+      typeof error === "object" &&
+      error !== null &&
+      "error" in error &&
+      typeof error.error === "string"
+        ? error.error
+        : `Failed to start experiment: ${slug}`;
+    throw new ExperimentsApiError(errorMessage, status);
+  }
+
+  private handleRunStatusError(
+    runId: string,
+    error: unknown,
+    status: number,
+  ): never {
+    if (status === 404) {
+      throw new ExperimentsApiError(`Run not found: ${runId}`, 404);
+    }
+
+    if (status === 401) {
+      throw new ExperimentsApiError("Unauthorized - check your API key", 401);
+    }
+
+    const errorMessage =
+      typeof error === "object" &&
+      error !== null &&
+      "error" in error &&
+      typeof error.error === "string"
+        ? error.error
+        : `Failed to get run status: ${runId}`;
+    throw new ExperimentsApiError(errorMessage, status);
+  }
+
   /**
    * Build the result object from API response
    */
@@ -260,7 +423,7 @@ export class ExperimentsFacade {
     runId: string,
     status: "completed" | "failed" | "stopped",
     summary: ExperimentRunSummary,
-    runUrl: string
+    runUrl: string,
   ): ExperimentRunResult {
     const completedCells = summary.completedCells ?? 0;
     const failedCells = summary.failedCells ?? 0;
@@ -268,7 +431,8 @@ export class ExperimentsFacade {
 
     const totalPassed = summary.totalPassed ?? completedCells - failedCells;
     const totalFailed = summary.totalFailed ?? failedCells;
-    const passRate = summary.passRate ??
+    const passRate =
+      summary.passRate ??
       (completedCells > 0 ? (totalPassed / completedCells) * 100 : 0);
 
     const result: ExperimentRunResult = {
@@ -301,31 +465,14 @@ export class ExperimentsFacade {
     };
 
     // Custom Node.js inspect for console.log
-    (result as Record<string | symbol, unknown>)[Symbol.for("nodejs.util.inspect.custom")] =
-      () => result.toString();
+    (result as Record<string | symbol, unknown>)[
+      Symbol.for("nodejs.util.inspect.custom")
+    ] = () => result.toString();
 
     return result;
   }
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Replace the domain of a URL with a new base URL, preserving the path
-   */
-  private replaceUrlDomain(url: string, newBase: string): string {
-    if (!url) return url;
-
-    try {
-      const parsedUrl = new URL(url);
-      const parsedNewBase = new URL(newBase);
-
-      // Replace origin with new base, keep path/query/fragment
-      return `${parsedNewBase.origin}${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`;
-    } catch {
-      // If URL parsing fails, return original
-      return url;
-    }
   }
 }

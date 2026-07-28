@@ -50,6 +50,7 @@ describe("validateProviderApiKey", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    /** @scenario "Skip validation for masked placeholder in validation function" */
     it("skips validation when API key is masked placeholder", async () => {
       const result = await validateProviderApiKey("openai", {
         OPENAI_API_KEY: MASKED_KEY_PLACEHOLDER,
@@ -58,6 +59,7 @@ describe("validateProviderApiKey", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    /** @scenario "Skip validation when no API key provided" */
     it("skips validation when no API key provided", async () => {
       const result = await validateProviderApiKey("openai", {
         OPENAI_API_KEY: "",
@@ -68,6 +70,61 @@ describe("validateProviderApiKey", () => {
 
     it("skips validation when API key field is missing", async () => {
       const result = await validateProviderApiKey("openai", {});
+      expect(result).toEqual({ valid: true });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("ElevenLabs validation", () => {
+    /** @scenario "ElevenLabs keys validate with the xi-api-key header" */
+    it("uses xi-api-key header against the ElevenLabs models endpoint", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+
+      const result = await validateProviderApiKey("elevenlabs", {
+        ELEVENLABS_API_KEY: "sk_test",
+      });
+
+      expect(result).toEqual({ valid: true });
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.elevenlabs.io/v1/models",
+        expect.objectContaining({
+          method: "GET",
+          headers: expect.objectContaining({ "xi-api-key": "sk_test" }),
+        }),
+      );
+    });
+
+    it("reports an invalid key on 401, not a network problem", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+
+      const result = await validateProviderApiKey("elevenlabs", {
+        ELEVENLABS_API_KEY: "sk_wrong",
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain("Invalid API key");
+      expect(result.error).not.toContain("network");
+    });
+
+    it("reports a network error only when the fetch itself fails", async () => {
+      mockFetch.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+      const result = await validateProviderApiKey("elevenlabs", {
+        ELEVENLABS_API_KEY: "sk_test",
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain("network");
+    });
+  });
+
+  describe("Providers without a validation endpoint", () => {
+    /** @scenario "Providers with no known validation endpoint skip validation" */
+    it("skips validation instead of fetching a relative URL", async () => {
+      const result = await validateProviderApiKey("voyage", {
+        VOYAGE_API_KEY: "pa-test",
+      });
+
       expect(result).toEqual({ valid: true });
       expect(mockFetch).not.toHaveBeenCalled();
     });

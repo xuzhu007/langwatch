@@ -183,16 +183,31 @@ Feature: Credential Validation
     Then the API key is validated against the custom base URL
     And if valid, the provider is saved with the custom base URL
 
-  @unit @unimplemented
+  @unit
   Scenario: Skip validation when no API key provided
     Given I am validating API keys
     When I call validateProviderApiKey with empty API key
     Then validation is skipped
     And the result is valid (schema validation handles required fields)
 
-  @unit @unimplemented
+  @unit
   Scenario: Skip validation for masked placeholder in validation function
     Given I am validating API keys
     When I call validateProviderApiKey with "HAS_KEY••••••••••••••••••••••••"
     Then validation is skipped
     And the result is valid
+
+  @unit
+  Scenario: ElevenLabs keys validate with the xi-api-key header
+    Given I am validating an ElevenLabs API key
+    When I call validateProviderApiKey with an ELEVENLABS_API_KEY
+    Then the models endpoint at api.elevenlabs.io is probed with the xi-api-key header
+    And a 200 marks the key valid
+    And a 401 reports an invalid API key, not a network problem
+
+  @unit
+  Scenario: Providers with no known validation endpoint skip validation
+    Given a registered provider that has no default validation base URL and no custom endpoint
+    When I call validateProviderApiKey for it
+    Then validation is skipped instead of probing a relative URL
+    And no misleading network-connection error is shown

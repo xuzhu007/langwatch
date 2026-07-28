@@ -36,8 +36,12 @@ test.describe("Settings Plans Comparison", () => {
     await expect(growthPlan.getByText("Growth")).toBeVisible();
     await expect(enterprisePlan.getByText("Enterprise")).toBeVisible();
 
-    // Verify the Free plan is shown as current (default for new test org)
-    await expect(freePlan.getByText("Current")).toBeVisible();
+    // 未显式配置时保持上游 Cloud 新组织的 Free 默认值。
+    const expectedCurrentPlan =
+      process.env.E2E_EXPECTED_CURRENT_PLAN === "enterprise"
+        ? enterprisePlan
+        : freePlan;
+    await expect(expectedCurrentPlan.getByText("Current")).toBeVisible();
 
     // Verify plan capabilities are shown side-by-side (billing toggle exists)
     await expect(page.getByTestId("billing-period-toggle")).toBeVisible();

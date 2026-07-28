@@ -192,17 +192,6 @@ export const TracesMapping = ({
     return Array.from(new Set(ids));
   }, [traces]);
 
-  // Fetch all traces for these thread_ids
-  const allThreadTraces = api.traces.getTracesWithSpansByThreadIds.useQuery(
-    {
-      projectId: project?.id ?? "",
-      threadIds,
-    },
-    {
-      enabled: !!project?.id && threadIds.length > 0,
-      refetchOnWindowFocus: false,
-    },
-  );
   const traces_ = useMemo(
     () =>
       traces.map((trace) => ({
@@ -250,6 +239,24 @@ export const TracesMapping = ({
     [traceMappingState, setTraceMapping],
   );
   const mapping = traceMappingState.mapping;
+  const needsThreadTraces = useMemo(
+    () =>
+      Object.values(mapping).some(
+        ({ source }) =>
+          source === "threads" || source === "threads_until_current",
+      ),
+    [mapping],
+  );
+  const allThreadTraces = api.traces.getTracesWithSpansByThreadIds.useQuery(
+    {
+      projectId: project?.id ?? "",
+      threadIds,
+    },
+    {
+      enabled: !!project?.id && needsThreadTraces && threadIds.length > 0,
+      refetchOnWindowFocus: false,
+    },
+  );
 
   // The spans, metadata and evaluations sources draw their project-wide names
   // from getDistinctFieldNames. Fetch that 30-day list lazily — only when such a

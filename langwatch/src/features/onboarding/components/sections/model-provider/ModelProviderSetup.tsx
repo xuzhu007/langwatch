@@ -1,7 +1,19 @@
-import { Button, Field, HStack, NativeSelect, Spinner, Text, VStack } from "@chakra-ui/react";
+import {
+  Button,
+  Field,
+  HStack,
+  NativeSelect,
+  Spinner,
+  Text,
+  VStack,
+} from "@chakra-ui/react";
+import { createLogger } from "@langwatch/observability";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
+import type { ScopeAssignment } from "~/server/scopes/scope.types";
+import { CodexSignIn } from "../../../../../components/settings/CodexSignIn";
+import { CustomModelInputSection } from "../../../../../components/settings/ModelProviderCustomModelInput";
 import { Switch } from "../../../../../components/ui/switch";
 import { useModelProviderApiKeyValidation } from "../../../../../hooks/useModelProviderApiKeyValidation";
 import { useModelProviderFields } from "../../../../../hooks/useModelProviderFields";
@@ -14,7 +26,6 @@ import {
   modelProviders as modelProvidersRegistry,
 } from "../../../../../server/modelProviders/registry";
 import { api } from "../../../../../utils/api";
-import { createLogger } from "../../../../../utils/logger";
 import {
   hasUserEnteredNewApiKey,
   hasUserModifiedNonApiKeyFields,
@@ -27,10 +38,12 @@ import {
   getModelProvider,
   modelProviderRegistry,
 } from "../../../regions/model-providers/registry";
-import type { ModelProviderKey } from "../../../regions/model-providers/types";
+import type {
+  ModelProviderKey,
+  ModelProviderSurface,
+} from "../../../regions/model-providers/types";
 import { DocsLinks } from "../observability/DocsLinks";
 import { ModelProviderCredentialFields } from "./ModelProviderCredentialFields";
-import { CustomModelInputSection } from "../../../../../components/settings/ModelProviderCustomModelInput";
 import { ModelProviderExtraHeaders } from "./ModelProviderExtraHeaders";
 
 const logger = createLogger("ModelProviderSetup");
@@ -49,17 +62,26 @@ const PROVIDERS_WITH_WELL_KNOWN_MODELS = new Set([
 
 interface ModelProviderSetupProps {
   modelProviderKey: ModelProviderKey;
-  variant: "evaluations" | "prompts";
+  variant: ModelProviderSurface;
+  /**
+   * When provided, called after a successful save instead of the default
+   * redirect. Lets the screen be embedded in a surface that stays put (e.g.
+   * the Langy panel) and just re-resolves the model.
+   */
+  onComplete?: () => void;
 }
 
-const variantToDocsMapping: Record<"evaluations" | "prompts", string> = {
+const variantToDocsMapping: Record<ModelProviderSurface, string> = {
   evaluations: "/llm-evaluation/overview",
   prompts: "/prompt-management/overview",
+  langy: "/introduction",
+  onboarding: "/introduction",
 };
 
 export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
   modelProviderKey,
   variant,
+  onComplete,
 }) => {
   const fallbackProviderMeta = useMemo(
     () =>
@@ -104,14 +126,9 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
     }
     return fallbackProviderMeta ?? requestedMeta;
   }, [fallbackProviderMeta, modelProviderKey]);
-  const { project } = useOrganizationTeamProject();
+  const { project, team, organization, hasPermission } =
+    useOrganizationTeamProject();
   const projectId = project?.id;
-
-  // Cascade-resolved model for onboarding "default chat model" seed value.
-  const resolvedDefault = api.modelProvider.getResolvedDefault.useQuery(
-    { projectId: projectId ?? "", featureKey: "prompt.create_default" },
-    { enabled: !!projectId },
-  );
 
   const backendModelProviderKey = useMemo(() => {
     if (meta?.backendModelProviderKey) {
@@ -152,23 +169,27 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
     (!provider.customKeys ||
       Object.keys(provider.customKeys as Record<string, unknown>).length === 0);
 
-  const projectForForm = useMemo(
-    () => ({
-      defaultModel: meta?.defaultModel ?? resolvedDefault.data?.model ?? null,
-      topicClusteringModel: null,
-      embeddingsModel: null,
-    }),
-    [meta?.defaultModel, resolvedDefault.data?.model],
-  );
-
   const [state, actions] = useModelProviderForm({
     provider,
     projectId,
+    // A NEW provider saves at the widest scope the caller can manage, org
+    // for admins, else team, else project, the same default the settings
+    // form uses (the hook decides; an existing row keeps its stored scope).
+    // The embedded screens make that decision silently instead of showing a
+    // scope picker.
+    teamId: team?.id,
+    organizationId: organization?.id,
+    canManageOrganization: hasPermission("organization:manage"),
+    canManageTeam: hasPermission("team:manage"),
     enabledProvidersCount: 1, // Onboarding always sets up the first provider
     isUsingEnvVars,
     onSuccess: () => {
+      if (onComplete) {
+        onComplete();
+        return;
+      }
       if (variant === "evaluations") {
-        window.location.href = "/@project/evaluations";
+        window.location.href = "/@project/online-evaluations";
       } else if (variant === "prompts") {
         window.location.href = "/@project/prompts";
       } else {
@@ -183,9 +204,11 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
     [backendModelProviderKey],
   );
 
-  const { fields: derivedFields } = useModelProviderFields(
-    backendModelProviderKey,
-  );
+  const { fields: derivedFields } = useModelProviderFields({
+    providerKey: backendModelProviderKey,
+    values: state.customKeys,
+    useApiGateway: state.useApiGateway,
+  });
   const [openAiValidationError, setOpenAiValidationError] = useState<string>();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -200,6 +223,8 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
     backendModelProviderKey,
     state.customKeys,
     projectId,
+    organization?.id,
+    state.scopes,
   );
 
   useEffect(() => {
@@ -357,6 +382,33 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
     );
   }
 
+  // OAuth-device providers (Codex) have no key fields: the sign-in flow IS
+  // the whole setup, and its completion writes the provider row (and, from
+  // these embedded surfaces, the coding-assistant defaults) server-side at
+  // the widest scope the caller can manage — the same silent decision the
+  // key-based path makes through useModelProviderForm.
+  if (meta.authFlow === "oauth-device") {
+    const codexScope: ScopeAssignment =
+      hasPermission("organization:manage") && organization?.id
+        ? { scopeType: "ORGANIZATION", scopeId: organization.id }
+        : hasPermission("team:manage") && team?.id
+          ? { scopeType: "TEAM", scopeId: team.id }
+          : { scopeType: "PROJECT", scopeId: projectId ?? "" };
+    return (
+      <VStack align="stretch" gap={2}>
+        <Text fontSize="md" fontWeight="semibold">
+          Connect {meta.label}
+        </Text>
+        <CodexSignIn
+          projectId={projectId ?? ""}
+          scopes={[codexScope]}
+          setAsCodingDefaults
+          onConnected={() => onComplete?.()}
+        />
+      </VStack>
+    );
+  }
+
   return (
     <VStack align="stretch" gap={0}>
       <VStack align="stretch" gap={0}>
@@ -374,8 +426,8 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
             <Field.Root>
               <Switch
                 checked={state.useApiGateway}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  actions.setUseApiGateway(e.target.checked)
+                onCheckedChange={({ checked }) =>
+                  actions.setUseApiGateway(checked)
                 }
               >
                 Use API Gateway
@@ -418,9 +470,7 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
                 <NativeSelect.Field
                   value={state.projectDefaultModel ?? ""}
                   onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
-                    actions.setProjectDefaultModel(
-                      event.target.value || null,
-                    )
+                    actions.setProjectDefaultModel(event.target.value || null)
                   }
                 >
                   <option value="">Select default model...</option>
@@ -451,12 +501,8 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
                 <NativeSelect.Root size="sm" bg="bg.muted/40">
                   <NativeSelect.Field
                     value={state.projectDefaultModel ?? ""}
-                    onChange={(
-                      event: React.ChangeEvent<HTMLSelectElement>,
-                    ) =>
-                      actions.setProjectDefaultModel(
-                        event.target.value || null,
-                      )
+                    onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
+                      actions.setProjectDefaultModel(event.target.value || null)
                     }
                   >
                     <option value="">Select default model...</option>
@@ -469,8 +515,8 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
                   <NativeSelect.Indicator />
                 </NativeSelect.Root>
                 <Field.HelperText>
-                  This model will be used for evaluations, prompt
-                  optimization, and dataset generation.
+                  This model will be used for evaluations, prompt optimization,
+                  and dataset generation.
                 </Field.HelperText>
               </Field.Root>
             </VStack>
@@ -485,11 +531,12 @@ export const ModelProviderSetup: React.FC<ModelProviderSetupProps> = ({
           />
 
           <HStack justify="end">
+            {/* Same button as every settings drawer's Save (solid orange),
+                the surface variant read as an unrelated control here. */}
             <Button
               colorPalette="orange"
               onClick={handleSaveAndContinue}
               loading={state.isSaving || isValidatingApiKey}
-              variant="surface"
               size="sm"
             >
               Save

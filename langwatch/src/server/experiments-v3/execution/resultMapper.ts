@@ -10,6 +10,7 @@
  */
 
 import type { StudioServerEvent } from "~/optimization_studio/types/events";
+import { EvaluatorExecutionError } from "~/server/app-layer/evaluations/errors";
 import type { SingleEvaluationResult } from "~/server/evaluations/evaluators";
 import type { EvaluationV3Event } from "./types";
 
@@ -82,6 +83,27 @@ export const coercePassed = (value: unknown): boolean | undefined => {
     if (lower === "false") return false;
   }
   return undefined;
+};
+
+const HTTP_STATUS_PREFIX_PATTERN = /^\s*(\d{3})\b/;
+
+const classifyEvaluatorExecutionError = (
+  rawMessage: string,
+): EvaluatorExecutionError | undefined => {
+  const status = Number(rawMessage.match(HTTP_STATUS_PREFIX_PATTERN)?.[1]);
+  if (status !== 401 && status !== 403) return undefined;
+
+  return new EvaluatorExecutionError(rawMessage, {
+    meta: { httpStatus: status, reason: "auth_failed" },
+    // A 401/403 from the evaluator's LLM call is the customer's credential or
+    // config, not our backend — override the class's platform default.
+    // `meta.reason` carries the typed sub-classifier (same convention as the
+    // Go envelopes) so clients can branch without parsing the message.
+    fault: "customer",
+    tips: [
+      "Check the API key and model configuration for this evaluator — the provider rejected the call with 401/403",
+    ],
+  });
 };
 
 /**
@@ -212,16 +234,25 @@ export const mapEvaluatorResult = (
   const hasExecutionError = !!executionState.error;
   const hasEvaluatorError = executionState.outputs?.status === "error";
 
-  const result: SingleEvaluationResult =
+  const rawErrorDetails =
+    executionState.error ??
+    (executionState.outputs?.details as string | undefined) ??
+    "Unknown evaluator error";
+  const classifiedDomainError =
+    classifyEvaluatorExecutionError(rawErrorDetails);
+
+  const result: SingleEvaluationResult & {
+    domainError?: ReturnType<EvaluatorExecutionError["serialize"]>;
+  } =
     hasExecutionError || hasEvaluatorError
       ? {
           status: "error",
           error_type: "EvaluatorError",
-          details:
-            executionState.error ??
-            (executionState.outputs?.details as string | undefined) ??
-            "Unknown evaluator error",
+          details: rawErrorDetails,
           traceback: [],
+          ...(classifiedDomainError
+            ? { domainError: classifiedDomainError.serialize() }
+            : {}),
         }
       : {
           status: "processed",
@@ -230,16 +261,19 @@ export const mapEvaluatorResult = (
             ? undefined
             : coerceScore(executionState.outputs?.score),
           passed: coercePassed(executionState.outputs?.passed),
-          label: typeof executionState.outputs?.label === 'string'
-            ? executionState.outputs.label
-            : undefined,
+          label:
+            typeof executionState.outputs?.label === "string"
+              ? executionState.outputs.label
+              : undefined,
           // Only include details when it's a non-empty string.
           // Python's EvaluationResultWithMetadata always serializes details
           // (default None -> null), so we filter out null/undefined to prevent
           // the "sticky details" bug where details appears even after removal.
-          details: typeof executionState.outputs?.details === 'string' && executionState.outputs.details
-            ? executionState.outputs.details
-            : undefined,
+          details:
+            typeof executionState.outputs?.details === "string" &&
+            executionState.outputs.details
+              ? executionState.outputs.details
+              : undefined,
           cost: executionState.cost
             ? { currency: "USD", amount: executionState.cost }
             : undefined,
@@ -348,5 +382,73 @@ export const mapErrorEvent = (
     rowIndex,
     targetId,
     evaluatorId,
+  };
+};
+
+/**
+ * Maps a studio workflow evaluator node's execution state to an
+ * evaluator_result event.
+ *
+ * Unlike mapEvaluatorResult (which parses the v3 "{targetId}.{evaluatorId}"
+ * node-id convention of a generated mini-workflow), this maps an evaluator node
+ * from a real studio workflow run, keyed by the evaluator's own DSL node id.
+ * Workflow evaluators can return stringy score/passed values, so they go
+ * through coerceScore/coercePassed like the legacy workflow-evaluation path.
+ */
+export const mapWorkflowEvaluatorResult = (
+  rowIndex: number,
+  targetId: string,
+  evaluatorId: string,
+  evaluatorName: string | undefined,
+  executionState: {
+    status: string;
+    outputs?: Record<string, unknown>;
+    cost?: number;
+    error?: string;
+  },
+): EvaluationV3Event => {
+  const hasExecutionError = !!executionState.error;
+  const hasEvaluatorError =
+    executionState.status === "error" ||
+    executionState.outputs?.status === "error";
+
+  const result: SingleEvaluationResult =
+    hasExecutionError || hasEvaluatorError
+      ? {
+          status: "error",
+          error_type: "EvaluatorError",
+          details:
+            executionState.error ??
+            (typeof executionState.outputs?.details === "string"
+              ? executionState.outputs.details
+              : undefined) ??
+            "Unknown evaluator error",
+          traceback: [],
+        }
+      : {
+          status: "processed",
+          score: coerceScore(executionState.outputs?.score),
+          passed: coercePassed(executionState.outputs?.passed),
+          label:
+            typeof executionState.outputs?.label === "string"
+              ? executionState.outputs.label
+              : undefined,
+          details:
+            typeof executionState.outputs?.details === "string" &&
+            executionState.outputs.details
+              ? executionState.outputs.details
+              : undefined,
+          cost: executionState.cost
+            ? { currency: "USD", amount: executionState.cost }
+            : undefined,
+        };
+
+  return {
+    type: "evaluator_result",
+    rowIndex,
+    targetId,
+    evaluatorId,
+    evaluatorName,
+    result,
   };
 };

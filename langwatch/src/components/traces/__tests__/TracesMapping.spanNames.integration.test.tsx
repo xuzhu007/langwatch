@@ -18,6 +18,12 @@ import "@testing-library/jest-dom/vitest";
 import type { Trace } from "~/server/tracer/types";
 import { TracesMapping } from "../TracesMapping";
 
+const useThreadTracesQuery = vi.hoisted(() =>
+  vi.fn((_input: unknown, _options?: { enabled?: boolean }) => ({
+    data: undefined,
+  })),
+);
+
 // Project-wide span names returned for the last 30 days — note that
 // "Research.aexecute_stream" is NOT present on the loaded trace below.
 const PROJECT_SPAN_NAMES = [
@@ -61,7 +67,7 @@ vi.mock("~/utils/api", () => ({
       getAllActive: { useQuery: () => ({ data: [] }) },
     },
     traces: {
-      getTracesWithSpansByThreadIds: { useQuery: () => ({ data: undefined }) },
+      getTracesWithSpansByThreadIds: { useQuery: useThreadTracesQuery },
       getFormattedSpansDigest: { useQuery: () => ({ data: undefined }) },
     },
   },
@@ -102,7 +108,58 @@ async function openKeyDropdown(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("TracesMapping spans dropdown (integration)", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    useThreadTracesQuery.mockClear();
+  });
+
+  describe("线程 trace 查询", () => {
+    const traceWithThread = {
+      ...traceWithoutResearchSpan,
+      metadata: { thread_id: "thread-1" },
+    } as Trace;
+
+    it("普通 trace 映射不会查询整个线程的 spans", () => {
+      render(
+        <ChakraProvider value={defaultSystem}>
+          <TracesMapping
+            traces={[traceWithThread]}
+            traceMapping={{ mapping: {}, expansions: [] }}
+            targetFields={["input"]}
+          />
+        </ChakraProvider>,
+      );
+
+      expect(
+        useThreadTracesQuery.mock.calls.some(
+          ([, options]) => options?.enabled === true,
+        ),
+      ).toBe(false);
+    });
+
+    it("使用线程映射时才查询整个线程", () => {
+      render(
+        <ChakraProvider value={defaultSystem}>
+          <TracesMapping
+            traces={[traceWithThread]}
+            traceMapping={{
+              mapping: {
+                conversation: { source: "threads" },
+              },
+              expansions: [],
+            }}
+            targetFields={["conversation"]}
+          />
+        </ChakraProvider>,
+      );
+
+      expect(
+        useThreadTracesQuery.mock.calls.some(
+          ([, options]) => options?.enabled === true,
+        ),
+      ).toBe(true);
+    });
+  });
   describe("when runtime trace data contains an empty item", () => {
     it("ignores the empty item and renders the valid trace", () => {
       expect(() =>

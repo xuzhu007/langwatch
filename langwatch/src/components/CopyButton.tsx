@@ -3,10 +3,8 @@ import { CopyIcon } from "lucide-react";
 import { copyToClipboard } from "~/utils/clipboard";
 import { toaster } from "./ui/toaster";
 
-interface CopyButtonProps extends Omit<
-  ButtonProps,
-  "value" | "label" | "onClick"
-> {
+interface CopyButtonProps
+  extends Omit<ButtonProps, "value" | "label" | "onClick"> {
   value: string;
   label: string;
 }
@@ -23,30 +21,18 @@ export function CopyButton(props: CopyButtonProps) {
       onClick={(event) => {
         if (!value) return;
         event.stopPropagation();
-
-        if (!navigator.clipboard) {
+        void copyToClipboard(value).then((copied) => {
           toaster.create({
-            title: `Your browser does not support clipboard access, please copy the prompt ID manually`,
-            type: "error",
+            title: copied
+              ? `${label} copied to your clipboard`
+              : `Unable to copy ${label}, please copy it manually`,
+            type: copied ? "success" : "error",
             duration: 2000,
             meta: {
               closable: true,
             },
           });
-          return;
-        }
-
-        void (async () => {
-          await copyToClipboard(value);
-          toaster.create({
-            title: `${label} copied to your clipboard`,
-            type: "success",
-            duration: 2000,
-            meta: {
-              closable: true,
-            },
-          });
-        })();
+        });
       }}
       {...rest}
     >

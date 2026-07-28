@@ -70,7 +70,13 @@ export type PromptEditorDrawerProps = {
     version?: number;
     versionId?: string;
     inputs?: Array<{ identifier: string; type: string }>;
-    outputs?: Array<{ identifier: string; type: string }>;
+    // json_schema flows to the target so structured outputs stay field-selectable
+    // in the comparison config — see promptEditorCallbacks.onSave.
+    outputs?: Array<{
+      identifier: string;
+      type: string;
+      json_schema?: object | null;
+    }>;
   }) => void;
   /** If provided, loads an existing prompt for editing */
   promptId?: string;
@@ -89,6 +95,13 @@ export type PromptEditorDrawerProps = {
    * Initial local config to load (for resuming unpublished changes).
    */
   initialLocalConfig?: LocalPromptConfig;
+  /**
+   * Fallback config used ONLY when `promptId` is set but the prompt is not
+   * found in the project (e.g. a workflow imported from another project).
+   * Unlike `initialLocalConfig` it is never merged over a prompt that loads
+   * successfully, so a saved prompt always shows its own library content.
+   */
+  inlineConfigFallback?: LocalPromptConfig;
   /**
    * Available sources for variable mapping (e.g., dataset columns).
    * When provided, shows mapping UI instead of simple value inputs.
@@ -313,7 +326,9 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
   // this seed, the subscription fires on defaults before the init useEffect
   // runs and clobbers the caller's local edits (#3155).
   const [configValues, setConfigValues] = useState<PromptConfigFormValues>(() =>
-    localConfigToFormValues(props.initialLocalConfig),
+    localConfigToFormValues(
+      props.initialLocalConfig ?? props.inlineConfigFallback,
+    ),
   );
   const [isFormInitialized, setIsFormInitialized] = useState(false);
   // Ref set directly in init/reset effects so the watch subscription
@@ -436,8 +451,12 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
         },
       });
 
-      // Merge initialLocalConfig over defaults to restore previous edits
-      const formValues = props.initialLocalConfig
+      // Restore the node's config over defaults. Prefer genuine unpublished
+      // edits, then the inline fallback (only set when the prompt was not found
+      // in the project) so imported workflows still show their configuration.
+      const notFoundConfig =
+        props.initialLocalConfig ?? props.inlineConfigFallback;
+      const formValues = notFoundConfig
         ? {
             ...defaults,
             version: {
@@ -446,22 +465,19 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
                 ...defaults.version.configData,
                 llm: {
                   ...defaults.version.configData.llm,
-                  ...props.initialLocalConfig.llm,
+                  ...notFoundConfig.llm,
                 },
                 messages:
-                  props.initialLocalConfig.messages.length > 0
-                    ? (props.initialLocalConfig
-                        .messages as typeof defaults.version.configData.messages)
+                  notFoundConfig.messages.length > 0
+                    ? (notFoundConfig.messages as typeof defaults.version.configData.messages)
                     : defaults.version.configData.messages,
                 inputs:
-                  props.initialLocalConfig.inputs.length > 0
-                    ? (props.initialLocalConfig
-                        .inputs as typeof defaults.version.configData.inputs)
+                  notFoundConfig.inputs.length > 0
+                    ? (notFoundConfig.inputs as typeof defaults.version.configData.inputs)
                     : defaults.version.configData.inputs,
                 outputs:
-                  props.initialLocalConfig.outputs.length > 0
-                    ? (props.initialLocalConfig
-                        .outputs as typeof defaults.version.configData.outputs)
+                  notFoundConfig.outputs.length > 0
+                    ? (notFoundConfig.outputs as typeof defaults.version.configData.outputs)
                     : defaults.version.configData.outputs,
               },
             },
@@ -469,6 +485,11 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
         : defaults;
 
       setConfigValues(formValues);
+      // Treat the fallback baseline as the "saved" reference for dirty tracking.
+      // Without this, the watch sees a non-null promptId AND an empty
+      // savedFormValuesRef, falls through both branches, leaves isUnsaved=false,
+      // and silently drops every edit by calling onLocalConfigChange(undefined).
+      savedFormValuesRef.current = formValues;
       // Set ref BEFORE methods.reset() — see comment in DB prompt branch above.
       isFormInitializedRef.current = true;
       methods.reset(formValues);
@@ -514,12 +535,54 @@ export function PromptEditorDrawer(props: PromptEditorDrawerProps) {
     promptQuery.isLoading,
     promptId,
     props.initialLocalConfig,
+    props.inlineConfigFallback,
     methods,
     isFormInitialized,
     availableSources,
     _onMappingsChangeProp,
     modelMetadata,
     resolvedDefaultModel,
+  ]);
+
+  // Backfill the model once resolvedDefaultModel arrives AFTER the init
+  // effect above already ran with an empty model — e.g. this drawer first
+  // opened on a project with zero providers (getResolvedDefault had
+  // nothing to resolve), and a provider was added in another tab since
+  // (#5827: the cache now refreshes cross-tab, but the init effect is a
+  // one-shot gated by isFormInitialized and never re-fires). Scoped to
+  // brand-new/not-found prompts only, and only while the model field is
+  // still the unresolved empty placeholder, so it can never clobber a
+  // real user edit or server value.
+  const isNewOrNotFoundPrompt =
+    !promptId || (!promptQuery.data && !promptQuery.isLoading);
+  useEffect(() => {
+    if (!isFormInitialized) return;
+    if (!isNewOrNotFoundPrompt) return;
+    if (!resolvedDefaultModel) return;
+    if (methods.getValues("version.configData.llm.model")) return;
+
+    methods.setValue("version.configData.llm.model", resolvedDefaultModel, {
+      shouldDirty: false,
+    });
+    // Only backfill maxTokens alongside the model if the user hasn't
+    // already edited it — a manual token-limit change must survive the
+    // late-arriving default same as it would survive anything else.
+    const maxTokensIsDirty = methods.getFieldState(
+      "version.configData.llm.maxTokens",
+      methods.formState,
+    ).isDirty;
+    const maxTokens = getMaxTokenLimit(modelMetadata?.[resolvedDefaultModel]);
+    if (maxTokens && !maxTokensIsDirty) {
+      methods.setValue("version.configData.llm.maxTokens", maxTokens, {
+        shouldDirty: false,
+      });
+    }
+  }, [
+    isFormInitialized,
+    isNewOrNotFoundPrompt,
+    resolvedDefaultModel,
+    modelMetadata,
+    methods,
   ]);
 
   // Reset when drawer closes

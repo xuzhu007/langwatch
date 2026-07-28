@@ -31,30 +31,18 @@ export function CopyInput(
         if (props.onClick) {
           props.onClick();
         }
-
-        if (!navigator.clipboard) {
+        void copyToClipboard(props.value).then((copied) => {
           toaster.create({
-            title: `Your browser does not support clipboard access, please copy the ${props.label} manually`,
-            type: "error",
+            title: copied
+              ? `${props.label} copied to your clipboard`
+              : `Unable to copy ${props.label}, please copy it manually`,
+            type: copied ? "success" : "error",
             duration: 2000,
             meta: {
               closable: true,
             },
           });
-          return;
-        }
-
-        void (async () => {
-          await copyToClipboard(props.value);
-          toaster.create({
-            title: `${props.label} copied to your clipboard`,
-            type: "success",
-            duration: 2000,
-            meta: {
-              closable: true,
-            },
-          });
-        })();
+        });
       }}
       endElement={
         <>

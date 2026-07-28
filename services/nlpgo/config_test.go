@@ -1,7 +1,6 @@
 package nlpgo
 
 import (
-	"context"
 	"testing"
 )
 
@@ -40,30 +39,22 @@ func TestEngineDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_AllowedProxyHostsFallsBackToLegacyEnv(t *testing.T) {
-	t.Setenv("ALLOWED_PROXY_HOSTS", "hichat-test.hikvision.com.cn:443")
-	t.Setenv("NLPGO_ENGINE_ALLOWED_PROXY_HOSTS", "")
+func TestGatewayEgressPolicyUsesGlobalEnvironmentNames(t *testing.T) {
+	t.Setenv("BLOCK_LOCAL_HTTP_CALLS", "true")
+	t.Setenv("REQUIRE_HTTPS_CUSTOM_ENDPOINTS", "true")
+	t.Setenv("ALLOWED_PROXY_HOSTS", "llm.internal,10.0.0.5")
 
-	cfg, err := LoadConfig(context.Background())
+	cfg, err := LoadConfig(t.Context())
 	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+		t.Fatalf("LoadConfig: %v", err)
 	}
-
-	if cfg.Engine.AllowedProxyHosts != "hichat-test.hikvision.com.cn:443" {
-		t.Errorf("Engine.AllowedProxyHosts = %q; want legacy ALLOWED_PROXY_HOSTS value", cfg.Engine.AllowedProxyHosts)
+	if !cfg.BlockLocalHTTPCalls {
+		t.Error("BlockLocalHTTPCalls = false, want true")
 	}
-}
-
-func TestLoadConfig_NestedAllowedProxyHostsWins(t *testing.T) {
-	t.Setenv("ALLOWED_PROXY_HOSTS", "legacy.example.com")
-	t.Setenv("NLPGO_ENGINE_ALLOWED_PROXY_HOSTS", "nested.example.com")
-
-	cfg, err := LoadConfig(context.Background())
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+	if !cfg.RequireHTTPSCustomerEndpoints {
+		t.Error("RequireHTTPSCustomerEndpoints = false, want true")
 	}
-
-	if cfg.Engine.AllowedProxyHosts != "nested.example.com" {
-		t.Errorf("Engine.AllowedProxyHosts = %q; want nested env value to win", cfg.Engine.AllowedProxyHosts)
+	if cfg.AllowedProxyHosts != "llm.internal,10.0.0.5" {
+		t.Errorf("AllowedProxyHosts = %q, want global ALLOWED_PROXY_HOSTS value", cfg.AllowedProxyHosts)
 	}
 }
