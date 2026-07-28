@@ -1,5 +1,4 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { nanoid } from "nanoid";
 import { SavedViewNotFoundError, SavedViewReorderError } from "./errors";
 import { SavedViewRepository } from "./saved-view.repository";
 
@@ -109,7 +108,7 @@ export class SavedViewService {
     const newOrder = (lastView?.order ?? -1) + 1;
 
     return await this.repository.create({
-      id: input.id ?? nanoid(),
+      id: input.id,
       projectId,
       userId: input.userId,
       name: input.name,
@@ -227,7 +226,6 @@ export class SavedViewService {
   private async seedViews({ projectId }: { projectId: string }) {
     await this.repository.createMany({
       views: SEED_VIEWS.map((seed, i) => ({
-        id: nanoid(),
         projectId,
         name: seed.name,
         filters: seed.filters as Prisma.InputJsonValue,
@@ -254,7 +252,6 @@ export class SavedViewService {
     );
     await this.repository.createMany({
       views: missing.map((seed, i) => ({
-        id: nanoid(),
         projectId,
         name: seed.name,
         filters: seed.filters as Prisma.InputJsonValue,

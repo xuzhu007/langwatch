@@ -1,10 +1,12 @@
+import { generate } from "@langwatch/ksuid";
 import type { Prisma, PrismaClient, SavedView } from "@prisma/client";
+import { KSUID_RESOURCES } from "~/utils/constants";
 
 /**
  * Input types for saved view operations.
  */
 export type CreateSavedViewInput = {
-  id: string;
+  id?: string;
   projectId: string;
   userId?: string;
   name: string;
@@ -112,7 +114,7 @@ export class SavedViewRepository {
   async create(input: CreateSavedViewInput): Promise<SavedView> {
     return await this.prisma.savedView.create({
       data: {
-        id: input.id,
+        id: input.id ?? generate(KSUID_RESOURCES.SAVED_VIEW).toString(),
         projectId: input.projectId,
         userId: input.userId,
         name: input.name,
@@ -132,7 +134,7 @@ export class SavedViewRepository {
   async createMany(input: { views: CreateSavedViewInput[] }): Promise<void> {
     await this.prisma.savedView.createMany({
       data: input.views.map((v) => ({
-        id: v.id,
+        id: v.id ?? generate(KSUID_RESOURCES.SAVED_VIEW).toString(),
         projectId: v.projectId,
         userId: v.userId,
         name: v.name,

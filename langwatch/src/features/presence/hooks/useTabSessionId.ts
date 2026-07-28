@@ -1,5 +1,6 @@
+import { generate } from "@langwatch/ksuid";
 import { useRef } from "react";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 
 /**
  * Stable per-tab sessionId. Persists for the lifetime of the window object,
@@ -17,7 +18,7 @@ export function useTabSessionId(): string {
     if (cached) {
       ref.current = cached;
     } else {
-      ref.current = generateUUID();
+      ref.current = generate(KSUID_RESOURCES.PRESENCE_SESSION).toString();
       (
         window as { __lw_presence_session_id?: string }
       ).__lw_presence_session_id = ref.current;

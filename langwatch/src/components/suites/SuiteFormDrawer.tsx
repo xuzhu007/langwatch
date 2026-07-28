@@ -23,6 +23,7 @@ import {
   Textarea,
   VStack,
 } from "@chakra-ui/react";
+import { generate } from "@langwatch/ksuid";
 import type { SimulationSuite } from "@prisma/client";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
@@ -35,7 +36,7 @@ import { useLicenseEnforcement } from "~/hooks/useLicenseEnforcement";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { MAX_REPEAT_COUNT } from "~/server/suites/constants";
 import { api } from "~/utils/api";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 import { isHandledByGlobalHandler } from "~/utils/trpcError";
 import { AgentHttpEditorDrawer } from "../agents/AgentHttpEditorDrawer";
 import { ScenarioFormDrawer } from "../scenarios/ScenarioFormDrawer";
@@ -74,7 +75,9 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
   const { closeDrawer, drawerOpen, openDrawer } = useDrawer();
   const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false);
   const [agentHttpEditorOpen, setAgentHttpEditorOpen] = useState(false);
-  const [idempotencyKey] = useState(() => generateUUID());
+  const [idempotencyKey] = useState(() =>
+    generate(KSUID_RESOURCES.SUITE_REQUEST).toString(),
+  );
   /** Tracks whether the current save is a "save and run" flow.
    *  When true, the mutation-level onSuccess skips its normal
    *  close/toast behavior — the per-call onSuccess handles it. */

@@ -16,11 +16,12 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
+import { generate } from "@langwatch/ksuid";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer } from "~/components/ui/drawer";
 import type { MemberType } from "~/server/license-enforcement/member-classification";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 import {
   type BillingInterval,
   type Currency,
@@ -65,12 +66,14 @@ export function UserManagementDrawer({
   const [emailErrors, setEmailErrors] = useState<Record<string, string>>({});
   const [initialAutoFillCount, setInitialAutoFillCount] = useState(0);
   const prevOpenRef = useRef(false);
+  const newPlannedUserIdsRef = useRef<Set<string>>(new Set());
 
   // Initialize state only when drawer transitions from closed to open
   useEffect(() => {
     const justOpened = open && !prevOpenRef.current;
     prevOpenRef.current = open;
     if (!justOpened) return;
+    newPlannedUserIdsRef.current.clear();
 
     setEditableUsers([...users]);
 
@@ -101,12 +104,15 @@ export function UserManagementDrawer({
     setEditableUsers([]);
     setLocalPlannedUsers([]);
     setEmailErrors({});
+    newPlannedUserIdsRef.current.clear();
     onClose();
   }, [onClose]);
 
   const handleAddSeat = () => {
+    const id = generate(KSUID_RESOURCES.PLANNED_USER).toString();
+    newPlannedUserIdsRef.current.add(id);
     const newPlannedUser: PlannedUser = {
-      id: `planned-${generateUUID()}`,
+      id,
       email: "",
       memberType: "FullMember",
     };
@@ -114,6 +120,7 @@ export function UserManagementDrawer({
   };
 
   const handleRemovePlannedUser = (id: string) => {
+    newPlannedUserIdsRef.current.delete(id);
     setLocalPlannedUsers((prev) => prev.filter((u) => u.id !== id));
   };
 
@@ -143,7 +150,7 @@ export function UserManagementDrawer({
 
     const autoRows = localPlannedUsers.filter((u) => u.id.startsWith("auto-"));
     const manualRows = localPlannedUsers.filter((u) =>
-      u.id.startsWith("planned-"),
+      newPlannedUserIdsRef.current.has(u.id),
     );
     const autoRowsWithEmail = autoRows.filter((u) => u.email.trim() !== "");
     const deletedAutoCount = initialAutoFillCount - autoRows.length;
@@ -153,6 +160,7 @@ export function UserManagementDrawer({
       newSeats: manualRows,
       deletedSeatCount: Math.max(0, deletedAutoCount),
     });
+    newPlannedUserIdsRef.current.clear();
     onClose();
   };
 

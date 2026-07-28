@@ -53,6 +53,19 @@ describe("viewStore last-used lens persistence", () => {
     });
   });
 
+  describe("when creating and duplicating lenses", () => {
+    it("generates unique view KSUIDs", async () => {
+      const { useViewStore } = await freshStore();
+
+      const createdId = useViewStore.getState().createLens("Custom lens");
+      const duplicatedId = useViewStore.getState().duplicateLens(createdId);
+
+      expect(createdId).toMatch(/^view_[A-Za-z0-9]{29}$/);
+      expect(duplicatedId).toMatch(/^view_[A-Za-z0-9]{29}$/);
+      expect(duplicatedId).not.toBe(createdId);
+    });
+  });
+
   describe("given a stored custom lens id", () => {
     it("restores it once the project's saved lenses hydrate", async () => {
       localStorage.setItem(ACTIVE_LENS_KEY, "custom-abc");

@@ -1,3 +1,4 @@
+import { generate } from "@langwatch/ksuid";
 import type { Unsubscribable } from "@trpc/server/observable";
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
 import type {
@@ -6,7 +7,7 @@ import type {
 } from "~/server/app-layer/langy/langyTurnContext.schema";
 import type { LangyStreamEntry } from "~/server/app-layer/langy/streaming/langyTokenBuffer";
 import { trpcClient } from "~/utils/api";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 
 /**
  * The per-turn request inputs the transport owns. Sourcing them HERE (from the
@@ -98,7 +99,7 @@ export function createLangyChatTransport(
         // a genuine re-send of the same text is a NEW turn. Transport/proxy
         // retries replay the same mutation body — same key, same content —
         // and collapse onto the same admitted turn.
-        idempotencyKey: generateUUID(),
+        idempotencyKey: generate(KSUID_RESOURCES.LANGY_REQUEST).toString(),
         messages: options.messages,
         ...(options.trigger ? { trigger: options.trigger } : {}),
         projectId: ctx.projectId,
@@ -181,7 +182,7 @@ function subscribeTurnStream({
 
   return new ReadableStream<UIMessageChunk>({
     start(controller) {
-      const textId = generateUUID();
+      const textId = generate(KSUID_RESOURCES.LANGY_TEXT).toString();
       let closed = false;
 
       const finish = (reason: LangyTurnSettleReason) => {
