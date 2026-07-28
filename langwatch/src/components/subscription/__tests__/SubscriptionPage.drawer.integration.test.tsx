@@ -6,6 +6,7 @@
  * auto-fill behaviour, and free-plan seat flow.
  */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
+import { getEnvironment, setEnvironment } from "@langwatch/ksuid";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -488,18 +489,25 @@ describe("<SubscriptionPage/>", () => {
     });
 
     describe("when manually adding a seat via Add Seat button", () => {
-      it("saves the manual row even without an email", async () => {
-        const user = userEvent.setup();
-        renderSubscriptionPage();
-        await user.click(screen.getByTestId("user-count-link"));
+      it("saves the manual row without an email in local environments", async () => {
+        const previousKsuidEnvironment = getEnvironment();
+        setEnvironment("local");
 
-        // Scroll past auto-filled rows, click Add Seat
-        await user.click(screen.getByRole("button", { name: /Add Seat/i }));
-        await user.click(screen.getByRole("button", { name: /Done/i }));
+        try {
+          const user = userEvent.setup();
+          renderSubscriptionPage();
+          await user.click(screen.getByTestId("user-count-link"));
 
-        await waitFor(() => {
-          expect(screen.getByTestId("update-seats-block")).toBeInTheDocument();
-        });
+          // 跳过自动填充的行，通过 Add Seat 手动新增席位
+          await user.click(screen.getByRole("button", { name: /Add Seat/i }));
+          await user.click(screen.getByRole("button", { name: /Done/i }));
+
+          await waitFor(() => {
+            expect(screen.getByTestId("update-seats-block")).toBeInTheDocument();
+          });
+        } finally {
+          setEnvironment(previousKsuidEnvironment);
+        }
       });
     });
   });

@@ -66,12 +66,14 @@ export function UserManagementDrawer({
   const [emailErrors, setEmailErrors] = useState<Record<string, string>>({});
   const [initialAutoFillCount, setInitialAutoFillCount] = useState(0);
   const prevOpenRef = useRef(false);
+  const newPlannedUserIdsRef = useRef<Set<string>>(new Set());
 
   // Initialize state only when drawer transitions from closed to open
   useEffect(() => {
     const justOpened = open && !prevOpenRef.current;
     prevOpenRef.current = open;
     if (!justOpened) return;
+    newPlannedUserIdsRef.current.clear();
 
     setEditableUsers([...users]);
 
@@ -102,12 +104,15 @@ export function UserManagementDrawer({
     setEditableUsers([]);
     setLocalPlannedUsers([]);
     setEmailErrors({});
+    newPlannedUserIdsRef.current.clear();
     onClose();
   }, [onClose]);
 
   const handleAddSeat = () => {
+    const id = generate(KSUID_RESOURCES.PLANNED_USER).toString();
+    newPlannedUserIdsRef.current.add(id);
     const newPlannedUser: PlannedUser = {
-      id: generate(KSUID_RESOURCES.PLANNED_USER).toString(),
+      id,
       email: "",
       memberType: "FullMember",
     };
@@ -115,6 +120,7 @@ export function UserManagementDrawer({
   };
 
   const handleRemovePlannedUser = (id: string) => {
+    newPlannedUserIdsRef.current.delete(id);
     setLocalPlannedUsers((prev) => prev.filter((u) => u.id !== id));
   };
 
@@ -144,7 +150,7 @@ export function UserManagementDrawer({
 
     const autoRows = localPlannedUsers.filter((u) => u.id.startsWith("auto-"));
     const manualRows = localPlannedUsers.filter((u) =>
-      u.id.startsWith(`${KSUID_RESOURCES.PLANNED_USER}_`),
+      newPlannedUserIdsRef.current.has(u.id),
     );
     const autoRowsWithEmail = autoRows.filter((u) => u.email.trim() !== "");
     const deletedAutoCount = initialAutoFillCount - autoRows.length;
@@ -154,6 +160,7 @@ export function UserManagementDrawer({
       newSeats: manualRows,
       deletedSeatCount: Math.max(0, deletedAutoCount),
     });
+    newPlannedUserIdsRef.current.clear();
     onClose();
   };
 

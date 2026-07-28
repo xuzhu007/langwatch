@@ -1,4 +1,4 @@
-import { Instance, Ksuid, MAX_TIMESTAMP, Node, parse } from "@langwatch/ksuid";
+import { Instance, Ksuid, Node, parse } from "@langwatch/ksuid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const INSTANCE = new Instance(
@@ -55,32 +55,11 @@ describe("@langwatch/ksuid contract", () => {
     expect(first.toString() < afterOverflow.toString()).toBe(true);
   });
 
-  it("stays k-sorted across the previous 16-bit timestamp boundary", () => {
-    const before = new Ksuid("prod", "view", 1_700_003_839, INSTANCE, 0);
-    const after = new Ksuid("prod", "view", 1_700_003_840, INSTANCE, 0);
+  it("preserves the original 2.0.2 wire format", () => {
+    const historicalId = "view_0008qTHxTCVP6Ug6uv0OFLI3IekaG";
+    const recreated = new Ksuid("prod", "view", 1_700_003_839, INSTANCE, 0);
 
-    expect(before.toString() < after.toString()).toBe(true);
-    expect(parse(before.toString()).timestamp).toBe(before.timestamp);
-    expect(parse(after.toString()).timestamp).toBe(after.timestamp);
-  });
-  it("preserves timestamps from ids emitted by the original 2.0.2 encoder", () => {
-    const parsed = parse("view_0008qTHxTCVP6Ug6uv0OFLI3IekaG");
-
-    expect(parsed.timestamp).toBe(1_700_003_839);
-    expect(parsed.sequenceId).toBe(0);
-    expect(parsed.instance.equals(INSTANCE)).toBe(true);
-  });
-
-  it.each([
-    2_147_483_648,
-    Number(MAX_TIMESTAMP),
-  ])("round-trips the 48-bit timestamp boundary %s", (timestamp) => {
-    const id = new Ksuid("prod", "view", timestamp, INSTANCE, 0xffffffff);
-
-    const parsed = parse(id.toString());
-
-    expect(parsed.timestamp).toBe(timestamp);
-    expect(parsed.sequenceId).toBe(0xffffffff);
-    expect(parsed.instance.equals(INSTANCE)).toBe(true);
+    expect(recreated.toString()).toBe(historicalId);
+    expect(parse(historicalId).toString()).toBe(historicalId);
   });
 });

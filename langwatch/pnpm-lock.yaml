@@ -59,7 +59,7 @@ packageExtensionsChecksum: sha256-m/G/WH1yLdya4bNe65I9ulURa/FU76z3o30vd4qvq6M=
 
 patchedDependencies:
   '@langwatch/ksuid@2.0.2':
-    hash: 4fff4ec6c41522fdb46b518f0967179794f4996440d6abc53e5d4da80e322a75
+    hash: 864a842dd7e23fee995f41fe62495fecd571aad677c36f468959d6eda0246c06
     path: patches/@langwatch__ksuid@2.0.2.patch
 
 importers:
@@ -152,7 +152,7 @@ importers:
         version: link:../packages/handled-error
       '@langwatch/ksuid':
         specifier: ^2.0.2
-        version: 2.0.2(patch_hash=4fff4ec6c41522fdb46b518f0967179794f4996440d6abc53e5d4da80e322a75)
+        version: 2.0.2(patch_hash=864a842dd7e23fee995f41fe62495fecd571aad677c36f468959d6eda0246c06)
       '@langwatch/langy':
         specifier: workspace:*
         version: link:../packages/langy
@@ -12224,7 +12224,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@langwatch/ksuid@2.0.2(patch_hash=4fff4ec6c41522fdb46b518f0967179794f4996440d6abc53e5d4da80e322a75)': {}
+  '@langwatch/ksuid@2.0.2(patch_hash=864a842dd7e23fee995f41fe62495fecd571aad677c36f468959d6eda0246c06)': {}
 
   '@langwatch/scenario@0.4.10(5537b93b6807657c4a23641e4b707fe7)':
     dependencies:
