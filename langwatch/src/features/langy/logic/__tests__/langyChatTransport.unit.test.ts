@@ -5,8 +5,8 @@
  * transport boundary — the tRPC client and the onTurnStream subscription are
  * mocked so only the transport's own decisions are under test.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Unsubscribable } from "@trpc/server/observable";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLangyChatTransport,
   type LangyChatTransportDeps,
@@ -92,16 +92,14 @@ describe("createLangyChatTransport", () => {
       });
     });
 
-    it("mints a fresh idempotency key for each logical send", async () => {
+    it("mints a fresh langy request KSUID for each logical send", async () => {
       const { transport } = makeTransport({ conversationId: null });
 
       await transport.sendMessages(options());
       const firstInput = mutation.mock.calls[0]![1] as {
         idempotencyKey: string;
       };
-      expect(firstInput.idempotencyKey).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-      );
+      expect(firstInput.idempotencyKey).toMatch(/^langyreq_[A-Za-z0-9]{29}$/);
 
       // A second send is a NEW logical send — even with identical content it
       // must mint a new key, so re-sending the same text starts a new turn.
@@ -110,6 +108,29 @@ describe("createLangyChatTransport", () => {
         idempotencyKey: string;
       };
       expect(secondInput.idempotencyKey).not.toBe(firstInput.idempotencyKey);
+    });
+
+    it("mints a fresh langy text KSUID for each live stream", async () => {
+      const { transport } = makeTransport({ conversationId: null });
+
+      const readTextId = async () => {
+        const stream = await transport.sendMessages(options());
+        const reader = stream.getReader();
+        await reader.read();
+        const { value: textStart } = await reader.read();
+        await reader.cancel();
+        expect(textStart?.type).toBe("text-start");
+        if (textStart?.type !== "text-start") {
+          throw new Error("Expected text-start chunk");
+        }
+        expect(textStart.id).toMatch(/^langytxt_[A-Za-z0-9]{29}$/);
+        return textStart.id;
+      };
+
+      const firstTextId = await readTextId();
+      const secondTextId = await readTextId();
+
+      expect(secondTextId).not.toBe(firstTextId);
     });
   });
 

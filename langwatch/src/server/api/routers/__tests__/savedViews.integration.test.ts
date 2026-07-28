@@ -66,6 +66,11 @@ describe("SavedViews Endpoints", () => {
         "Playground",
         "Gateway",
       ]);
+      const ids = result.map((view) => view.id);
+      expect(ids).toHaveLength(new Set(ids).size);
+      for (const id of ids) {
+        expect(id).toMatch(/^view_[A-Za-z0-9]{29}$/);
+      }
     });
 
     /** @scenario "getAll returns views ordered by position" */
@@ -103,6 +108,7 @@ describe("SavedViews Endpoints", () => {
       expect(result.query).toBe("error timeout");
       expect(result.period).toEqual({ relativeDays: 7 });
       expect(result.projectId).toBe(projectId);
+      expect(result.id).toMatch(/^view_[A-Za-z0-9]{29}$/);
     });
 
     it("sets order after last existing view", async () => {
@@ -116,6 +122,23 @@ describe("SavedViews Endpoints", () => {
       });
 
       expect(result.order).toBe(lastOrder + 1);
+    });
+
+    it("generates a unique view KSUID when the client omits the id", async () => {
+      const first = await caller.savedViews.create({
+        projectId,
+        name: "Generated View A",
+        filters: {},
+      });
+      const second = await caller.savedViews.create({
+        projectId,
+        name: "Generated View B",
+        filters: {},
+      });
+
+      expect(first.id).toMatch(/^view_[A-Za-z0-9]{29}$/);
+      expect(second.id).toMatch(/^view_[A-Za-z0-9]{29}$/);
+      expect(second.id).not.toBe(first.id);
     });
   });
 
@@ -323,9 +346,7 @@ describe("SavedViews Endpoints", () => {
 
       const result = await caller.savedViews.getAll({ projectId });
 
-      const otherUserViews = result.filter(
-        (v) => v.userId === otherUser.id,
-      );
+      const otherUserViews = result.filter((v) => v.userId === otherUser.id);
       expect(otherUserViews).toHaveLength(0);
     });
   });

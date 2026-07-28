@@ -82,20 +82,23 @@ describe("DraggableTabsBrowserStore", () => {
 
   describe("addTab", () => {
     it("creates first tabbedWindow when none exist", () => {
-      store.getState().addTab({ data: createTabData() });
+      const tabId = store.getState().addTab({ data: createTabData() });
 
       const state = store.getState();
       expect(state.windows).toHaveLength(1);
       expect(state.activeWindowId).toBe(state.windows[0]?.id);
+      expect(tabId).toMatch(/^pgtab_[A-Za-z0-9]{29}$/);
+      expect(state.windows[0]?.id).toMatch(/^pgwindow_[A-Za-z0-9]{29}$/);
     });
 
     it("adds tab to active tabbedWindow", () => {
-      store.getState().addTab({ data: createTabData() });
-      store.getState().addTab({ data: createTabData() });
+      const firstTabId = store.getState().addTab({ data: createTabData() });
+      const secondTabId = store.getState().addTab({ data: createTabData() });
 
       const state = store.getState();
       expect(state.windows).toHaveLength(1);
       expect(state.windows[0]?.tabs).toHaveLength(2);
+      expect(secondTabId).not.toBe(firstTabId);
     });
 
     it("sets new tab as active", () => {
@@ -434,6 +437,23 @@ describe("DraggableTabsBrowserStore", () => {
     });
   });
 
+  describe("generated ids", () => {
+    it("uses unique prefixed KSUIDs for split tabs and windows", () => {
+      const firstTabId = store.getState().addTab({ data: createTabData() });
+      store.getState().splitTab({ tabId: firstTabId });
+
+      const [firstWindow, secondWindow] = store.getState().windows;
+      expect(firstWindow?.id).toMatch(/^pgwindow_[A-Za-z0-9]{29}$/);
+      expect(secondWindow?.id).toMatch(/^pgwindow_[A-Za-z0-9]{29}$/);
+      expect(secondWindow?.id).not.toBe(firstWindow?.id);
+
+      const secondTabId = secondWindow?.tabs[0]?.id;
+      expect(firstTabId).toMatch(/^pgtab_[A-Za-z0-9]{29}$/);
+      expect(secondTabId).toMatch(/^pgtab_[A-Za-z0-9]{29}$/);
+      expect(secondTabId).not.toBe(firstTabId);
+    });
+  });
+
   describe("updateTabData", () => {
     it("applies updater function to tab data", () => {
       store
@@ -526,8 +546,14 @@ describe("DraggableTabsBrowserStore", () => {
                   id: "window-1",
                   activeTabId: "tab-1",
                   tabs: [
-                    { id: "tab-1", data: createTabData({ meta: { title: "Legacy A" } }) },
-                    { id: "tab-2", data: createTabData({ meta: { title: "Legacy B" } }) },
+                    {
+                      id: "tab-1",
+                      data: createTabData({ meta: { title: "Legacy A" } }),
+                    },
+                    {
+                      id: "tab-2",
+                      data: createTabData({ meta: { title: "Legacy B" } }),
+                    },
                   ],
                 },
               ],
@@ -715,11 +741,15 @@ describe("DraggableTabsBrowserStore", () => {
     it("removes the per-tab localStorage keys of its own tabs", () => {
       store.getState().addTab({ data: createTabData() });
       const tabId = store.getState().windows[0]?.tabs[0]?.id;
-      expect(localStorage.getItem(`${TEST_PROJECT_ID}:tab:${tabId}`)).not.toBeNull();
+      expect(
+        localStorage.getItem(`${TEST_PROJECT_ID}:tab:${tabId}`),
+      ).not.toBeNull();
 
       store.getState().reset();
 
-      expect(localStorage.getItem(`${TEST_PROJECT_ID}:tab:${tabId}`)).toBeNull();
+      expect(
+        localStorage.getItem(`${TEST_PROJECT_ID}:tab:${tabId}`),
+      ).toBeNull();
       expect(
         localStorage.getItem(`${TEST_PROJECT_ID}:draggable-tabs-browser-store`),
       ).toBeNull();
