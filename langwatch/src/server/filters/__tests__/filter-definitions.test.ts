@@ -18,8 +18,8 @@ describe("clickHouseFilters", () => {
       expect(sql).toContain("arrayJoin(");
       expect(sql).toContain("Events.Name");
       expect(sql).toContain("FROM stored_spans");
-      // The dropdown must not read from the (unpopulated) span attribute anymore;
-      // events are stored as OTel span events in the Events.Name array.
+      // 下拉选项不能读取未填充的 span 属性；
+      // 事件实际以 OTel span event 形式存储在 Events.Name 数组中。
       expect(sql).not.toContain("SpanAttributes['event.type']");
     });
 
@@ -27,7 +27,9 @@ describe("clickHouseFilters", () => {
       const def = clickHouseFilters["events.event_type"];
       const sql = def!.buildQuery({ ...baseParams, query: "thumbs" });
 
-      expect(sql).toContain("lower(name) LIKE lower(concat({query:String}, '%'))");
+      expect(sql).toContain(
+        "lower(name) LIKE lower(concat({query:String}, '%'))",
+      );
     });
 
     it("scopes results to other filters via a trace_summaries join", () => {
@@ -38,6 +40,17 @@ describe("clickHouseFilters", () => {
       });
 
       expect(sql).toContain("FROM trace_summaries ts");
+    });
+
+    it("negates scope filters when requested", () => {
+      const def = clickHouseFilters["events.event_type"];
+      const sql = def!.buildQuery({
+        ...baseParams,
+        scopeFilters: { "topics.topics": ["topic-1"] },
+        negateFilters: true,
+      });
+
+      expect(sql).toContain("NOT (ts.TopicId IN");
     });
   });
 });

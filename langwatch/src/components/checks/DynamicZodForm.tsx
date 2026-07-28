@@ -87,6 +87,22 @@ import { EvaluatorLLMConfigField } from "./EvaluatorLLMConfigField";
 // is a sticky toggle button with a hover-tooltip explaining what the metric
 // is and why it matters for the judge prompt — replaces the generic dropdown
 // + "Add" array UI for fields where the option set is small and fixed.
+// Some evaluator settings have a long, citation-heavy description that reads
+// as clutter when always shown inline under the field. For those, split the
+// description into a short helper line plus a hover tooltip (little "i" icon)
+// carrying the supporting detail — same pattern as METRIC_META below.
+const FIELD_HELPER_OVERRIDES: Record<
+  string,
+  { helper: string; tooltip: string }
+> = {
+  swap_and_confirm: {
+    helper:
+      "Run two judge calls with A/B positions swapped; tie on disagreement. Doubles judge cost.",
+    tooltip:
+      "Studies show that swapping can reduce position bias from 68% to 51% (PandaLM paper).",
+  },
+};
+
 type MetricMeta = { label: string; tooltip: string };
 const METRIC_META: Record<string, MetricMeta> = {
   cost: {
@@ -318,6 +334,12 @@ const DynamicZodForm = ({
     fieldSchema: ZodType,
     fieldName: string,
     evaluator: EvaluatorDefinition<T> | undefined,
+    // True when the caller (HorizontalFormControl / PropertySectionTitle)
+    // already renders this field's title above/beside it — suppresses the
+    // boolean branch's own inline label so it isn't shown twice at two
+    // different sizes. Nested ZodObject fields render with no outer label
+    // for booleans, so they keep passing false (the default) here.
+    isTopLevel = false,
   ): React.JSX.Element | null => {
     const fullPath = prefix ? `${prefix}.${fieldName}` : fieldName;
     let defaultValue =
@@ -337,7 +359,12 @@ const DynamicZodForm = ({
     const fieldKey = fieldName.split(".").toReversed()[0] ?? "";
 
     if (fieldSchema_ instanceof z.ZodDefault) {
-      return renderField(fieldSchema_._def.innerType, fieldName, evaluator);
+      return renderField(
+        fieldSchema_._def.innerType,
+        fieldName,
+        evaluator,
+        isTopLevel,
+      );
     } else if (fieldSchema_ instanceof z.ZodNumber) {
       return (
         <Input
@@ -363,7 +390,7 @@ const DynamicZodForm = ({
                 <Switch
                   id={fullPath}
                   checked={value}
-                  onChange={onChange}
+                  onCheckedChange={({ checked }) => onChange(checked)}
                   onBlur={onBlur}
                   name={name}
                   ref={ref}
@@ -372,14 +399,21 @@ const DynamicZodForm = ({
                 />
               )}
             />
-            <Field.Label
-              htmlFor={fullPath}
-              marginBottom="0"
-              fontWeight={variant === "studio" ? 400 : undefined}
-              fontSize={variant === "studio" ? "13px" : undefined}
-            >
-              {camelCaseToTitleCase(fieldName.split(".").toReversed()[0] ?? "")}
-            </Field.Label>
+            {/* When isTopLevel, HorizontalFormControl/PropertySectionTitle
+                already renders this field's title — repeating it here reads
+                as duplicated text at a jarringly different size. */}
+            {!isTopLevel && (
+              <Field.Label
+                htmlFor={fullPath}
+                marginBottom="0"
+                fontWeight={variant === "studio" ? 400 : undefined}
+                fontSize={variant === "studio" ? "13px" : undefined}
+              >
+                {camelCaseToTitleCase(
+                  fieldName.split(".").toReversed()[0] ?? "",
+                )}
+              </Field.Label>
+            )}
           </HStack>
         </Field.Root>
       );
@@ -570,7 +604,7 @@ const DynamicZodForm = ({
           <React.Fragment key="llm-config">
             <HorizontalFormControl
               label="Model"
-              helper="The model to use for evaluation"
+              tooltip="The model to use for evaluation"
             >
               <EvaluatorLLMConfigField prefix={prefix} />
             </HorizontalFormControl>
@@ -590,6 +624,7 @@ const DynamicZodForm = ({
               key as keyof Evaluators[T]["settings"]
             ].description ?? "";
           const isInvalid = errors && key in errors && !!(errors as any)[key];
+          const helperOverride = FIELD_HELPER_OVERRIDES[key];
 
           if (variant === "studio") {
             return (
@@ -617,6 +652,7 @@ const DynamicZodForm = ({
                     field,
                     basePath ? `${basePath}.${key}` : key,
                     evaluatorDefinition,
+                    true,
                   )}
                 </Field.Root>
               </VStack>
@@ -629,13 +665,15 @@ const DynamicZodForm = ({
                 label={
                   camelCaseToTitleCase(key) + (isOptional ? " (Optional)" : "")
                 }
-                helper={helperText}
+                helper={helperOverride?.helper}
+                tooltip={helperOverride?.tooltip ?? helperText}
                 invalid={isInvalid}
               >
                 {renderField(
                   field,
                   basePath ? `${basePath}.${key}` : key,
                   evaluatorDefinition,
+                  true,
                 )}
               </HorizontalFormControl>
             </React.Fragment>

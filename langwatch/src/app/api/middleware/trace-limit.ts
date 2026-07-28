@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 
 /**
- * 自部署环境不阻断 trace 用量。
+ * Middleware to check trace usage limits before allowing requests
  */
 export const blockTraceUsageExceededMiddleware: MiddlewareHandler = async (
   _c,

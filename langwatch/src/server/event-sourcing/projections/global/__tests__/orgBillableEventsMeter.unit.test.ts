@@ -57,7 +57,7 @@ vi.mock("~/server/clickhouse/clickhouseClient", () => ({
 
 vi.mock("~/server/db", () => ({ prisma: mockPrisma }));
 
-vi.mock("~/utils/logger/server", () => ({
+vi.mock("@langwatch/observability", () => ({
   createLogger: vi.fn(() => createMockLogger()),
 }));
 
@@ -166,14 +166,14 @@ describe("orgBillableEventsMeterProjection.map", () => {
         makeEvent({
           id: "evt-1",
           idempotencyKey: "idem-key-abc",
-          type: "lw.evaluation.started",
+          type: "lw.evaluation.reported",
         }),
       );
 
       expect(result).toEqual(
         expect.objectContaining({
           deduplicationKey: "idem-key-abc",
-          eventType: "lw.evaluation.started",
+          eventType: "lw.evaluation.reported",
         }),
       );
     });

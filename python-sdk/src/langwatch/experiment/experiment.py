@@ -9,11 +9,11 @@ import threading
 import time
 import traceback
 import httpx
-import pandas as pd
 from opentelemetry import trace, context as otel_context
 from opentelemetry.trace import Span
 from pydantic import BaseModel, Field
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -30,12 +30,16 @@ from typing import (
     cast,
 )
 
+if TYPE_CHECKING:
+    import pandas as pd
+
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm.auto import tqdm
 
 import langwatch
 from langwatch.attributes import AttributeKey
 from langwatch.domain import Money, TypedValueJson
+from langwatch.experiment._results_df import build_results_df
 from langwatch.experiment.platform_run import (
     EvaluatorStats,
     ExperimentRunResult,
@@ -54,6 +58,17 @@ import urllib.parse
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
 _tracer = trace.get_tracer(__name__)
+
+
+def _is_dataframe(obj: object) -> bool:
+    """True when obj is a pandas DataFrame, without importing pandas.
+
+    Checked via sys.modules so plain iterables never pull pandas in: if
+    pandas was never imported, obj cannot be a DataFrame (pandas is an
+    optional dependency of the SDK).
+    """
+    pd = sys.modules.get("pandas")
+    return pd is not None and isinstance(obj, pd.DataFrame)
 
 
 @dataclass
@@ -275,6 +290,10 @@ class Experiment:
 
     def _fetch_results_as_df(self, retries: int = 5, delay: float = 3.0) -> pd.DataFrame:
         """Fetch per-row results from the platform and build a DataFrame."""
+        # Imported lazily so importing langwatch.experiment does not require
+        # pandas; it is only needed when reading per-row results back.
+        import pandas as pd
+
         endpoint = langwatch.get_endpoint()
         api_key = langwatch.get_api_key() or ""
 
@@ -309,68 +328,7 @@ class Experiment:
     @staticmethod
     def _build_df_from_platform(data: Dict[str, Any]) -> pd.DataFrame:
         """Build a DataFrame from the platform API response (ExperimentRunWithItems)."""
-        dataset_entries = data.get("dataset", [])
-        evaluations = data.get("evaluations", [])
-
-        if not dataset_entries:
-            return pd.DataFrame()
-
-        # Build base rows from dataset entries
-        rows: List[Dict[str, Any]] = []
-        for entry in dataset_entries:
-            row: Dict[str, Any] = {"index": entry.get("index", 0)}
-            # Flatten entry data
-            entry_data = entry.get("entry", {})
-            if isinstance(entry_data, dict):
-                for k, v in entry_data.items():
-                    row[k] = v
-            # Output from the target
-            predicted = entry.get("predicted")
-            if predicted:
-                row["output"] = predicted.get("output", predicted) if isinstance(predicted, dict) else predicted
-            row["trace_id"] = entry.get("traceId", "")
-            row["duration_ms"] = entry.get("duration", 0)
-            cost = entry.get("cost")
-            if cost is not None:
-                row["cost"] = cost
-            error = entry.get("error")
-            if error:
-                row["error"] = error
-            target_id = entry.get("targetId")
-            if target_id:
-                row["target"] = target_id
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-        if df.empty:
-            return df
-
-        # Pivot evaluation scores into columns
-        for ev in evaluations:
-            idx = ev.get("index")
-            name = ev.get("name") or ev.get("evaluator", "")
-            if idx is None or not name:
-                continue
-            mask = df["index"] == idx
-            target_id = ev.get("targetId")
-            if target_id and "target" in df.columns:
-                mask = mask & (df["target"] == target_id)
-            score = ev.get("score")
-            if score is not None:
-                df.loc[mask, name] = score
-            passed = ev.get("passed")
-            if passed is not None:
-                df.loc[mask, f"{name}_passed"] = passed
-
-        # Set up proper indexing
-        if "target" in df.columns and len(df["target"].unique()) > 1:
-            # Multi-target: use (target, index) MultiIndex for natural grouping
-            if "index" in df.columns:
-                df = df.set_index(["target", "index"]).sort_index()
-        elif "index" in df.columns:
-            df = df.set_index("index")
-
-        return df
+        return build_results_df(data)
 
     def _auto_display_results(self) -> None:
         """Fetch and display results after loop completion."""
@@ -440,6 +398,9 @@ class Experiment:
 
     def _build_run_result(self) -> ExperimentRunResult:
         """Build an ExperimentRunResult from the current results DataFrame."""
+        # Imported lazily so importing langwatch.experiment does not require
+        # pandas; this path only runs on DataFrames built from fetched results.
+        import pandas as pd
         run_url = self._run_url or ""
         df = self.results
 
@@ -616,7 +577,7 @@ class Experiment:
             progress_bar = tqdm(total=total_, desc="Evaluating")
 
             # Supports direct pandas df being passed in
-            if isinstance(iterable, pd.DataFrame):
+            if _is_dataframe(iterable):
                 iterable = cast(Iterable[ItemT], iterable.iterrows())  # type: ignore
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
@@ -722,7 +683,7 @@ class Experiment:
                 total_ = len(cast(Sized, iterable))
             progress_bar = tqdm(total=total_, desc="Evaluating")
 
-            if isinstance(iterable, pd.DataFrame):
+            if _is_dataframe(iterable):
                 iterable = cast(Iterable[ItemT], iterable.iterrows())  # type: ignore
 
             self._async_semaphore = asyncio.Semaphore(concurrency)

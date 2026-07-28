@@ -31,11 +31,20 @@ type BatchTargetCellProps = {
   getEvaluatorResult?: (
     evaluatorId: string,
   ) => BatchEvaluatorResult | undefined;
+  /**
+   * Evaluator ids we shouldn't render generic score chips for — comparison
+   * evaluators surface via the dedicated Winner column (#5100 follow-up),
+   * so their raw `label`+`score` chip (e.g. `target_XYZ 1.00`) reads as
+   * duplicate noise and confused users during dogfooding. The Set is the
+   * single source of truth passed down from the transform step.
+   */
+  suppressedEvaluatorIds?: Set<string>;
 };
 
 export function BatchTargetCell({
   targetOutput,
   getEvaluatorResult,
+  suppressedEvaluatorIds,
 }: BatchTargetCellProps) {
   const { openDrawer } = useDrawer();
 
@@ -236,11 +245,16 @@ export function BatchTargetCell({
 
   // Render evaluator chips
   const renderEvaluatorChips = () => {
-    if (targetOutput.evaluatorResults.length === 0) return null;
+    const visibleResults = suppressedEvaluatorIds
+      ? targetOutput.evaluatorResults.filter(
+          (r) => !suppressedEvaluatorIds.has(r.evaluatorId),
+        )
+      : targetOutput.evaluatorResults;
+    if (visibleResults.length === 0) return null;
 
     return (
       <HStack flexWrap="wrap" gap={1.5}>
-        {targetOutput.evaluatorResults.map((evalResult) => {
+        {visibleResults.map((evalResult) => {
           // Convert BatchEvaluatorResult to the format expected by EvaluatorResultChip
           const result = {
             status: evalResult.status,
@@ -314,9 +328,7 @@ export function BatchTargetCell({
           </Button>
         </Tooltip>
       )}
-      {targetOutput.traceId && (
-        <TraceIdPeek traceId={targetOutput.traceId} />
-      )}
+      {targetOutput.traceId && <TraceIdPeek traceId={targetOutput.traceId} />}
       {/* Copy button */}
       {rawOutput && (
         <Tooltip

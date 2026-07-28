@@ -1,15 +1,18 @@
 package controlplane
 
 import (
-	"encoding/json"
-	"fmt"
-	"strconv"
+	"strings"
 
 	"github.com/langwatch/langwatch/services/aigateway/domain"
 )
 
 // configWire matches the JSON shape returned by GET /api/internal/gateway/config/:vk_id.
 type configWire struct {
+	// ProjectID is the trace-export project, emitted by the control-plane
+	// materialiser as the sibling of project_otlp_token and resolved from the
+	// same object (config.materialiser.ts). The pair must travel together —
+	// see domain.BundleConfig.TraceProjectID.
+	ProjectID        string             `json:"project_id"`
 	ProjectOTLPToken string             `json:"project_otlp_token"`
 	DisplayPrefix    string             `json:"display_prefix"`
 	Providers        []providerSlotWire `json:"providers"`
@@ -25,14 +28,26 @@ type configWire struct {
 	PolicyRules          policyRulesWire           `json:"policy_rules"`
 	Budgets              []budgetWire              `json:"budgets"`
 	CacheRules           []cacheRuleWire           `json:"cache_rules"`
+	// VKTags are the VK's operator-assigned tags (config.metadata.tags on
+	// the control plane). Stamped on customer spans as langwatch.labels and
+	// matched by cache-rule vk_tags matchers.
+	VKTags []string `json:"vk_tags"`
+	// LangyMirrorTier is the ADR-061 mirror fidelity the control-plane
+	// materialiser resolved for this VK's organization ("content" | "structural"
+	// | "skip"). Present and non-skip only for Langy virtual keys, so ordinary
+	// customer traffic is never mirrored. Empty/absent ⇒ no mirror.
+	LangyMirrorTier string `json:"langy_mirror_tier"`
 }
 
 type providerSlotWire struct {
 	ID          string                 `json:"id"`
 	Type        string                 `json:"type"`
 	Credentials map[string]interface{} `json:"credentials"`
-	BaseURL     string                 `json:"base_url,omitempty"`
-	Config      map[string]interface{} `json:"config,omitempty"`
+	// BaseURL overrides the provider's default endpoint. Emitted by the
+	// control-plane materialiser for OpenAI-compatible providers
+	// (type "custom": self-hosted vLLM, LiteLLM proxies, ...) — see
+	// config.materialiser.ts:buildProviderSlot.
+	BaseURL string `json:"base_url,omitempty"`
 	// DeploymentMap maps public model ids to provider-native deployment
 	// names (Azure routes on deployment, Bedrock on inference profile,
 	// etc.). Emitted by the control-plane materialiser as a top-level
@@ -129,8 +144,11 @@ func (w *configWire) toDomain() domain.BundleConfig {
 
 	cfg := domain.BundleConfig{
 		Credentials:      creds,
+		TraceProjectID:   w.ProjectID,
 		ProjectOTLPToken: w.ProjectOTLPToken,
+		MirrorTier:       w.LangyMirrorTier,
 		VKDisplayPrefix:  w.DisplayPrefix,
+		VKTags:           w.VKTags,
 		AllowedModels:    w.ModelsAllowed,
 		Fallback: domain.FallbackConfig{
 			MaxAttempts: w.Fallback.MaxAttempts,
@@ -149,7 +167,7 @@ func (w *configWire) toDomain() domain.BundleConfig {
 	if len(w.ModelAliases) > 0 {
 		cfg.ModelAliases = make(map[string]domain.ModelAlias, len(w.ModelAliases))
 		for alias, model := range w.ModelAliases {
-			cfg.ModelAliases[alias] = domain.ModelAlias{Model: model}
+			cfg.ModelAliases[alias] = buildModelAlias(model)
 		}
 	}
 
@@ -185,6 +203,7 @@ func buildGuardrails(
 		byID[g.ID] = g
 	}
 	cfg := domain.GuardrailsConfig{}
+	var requestFailClosed, responseFailClosed bool
 	for _, att := range attachments {
 		for _, id := range att.GuardrailIDs {
 			g, ok := byID[id]
@@ -202,14 +221,51 @@ func buildGuardrails(
 			switch att.Direction {
 			case "pre", "request":
 				cfg.Pre = append(cfg.Pre, entry)
+				requestFailClosed = requestFailClosed || failsClosed(g)
 			case "post", "response":
 				cfg.Post = append(cfg.Post, entry)
+				responseFailClosed = responseFailClosed || failsClosed(g)
 			case "stream_chunk":
 				cfg.StreamChunk = append(cfg.StreamChunk, entry)
 			}
 		}
 	}
+	// failure_mode is per guardrail, but the data plane's flag is per
+	// direction, because a direction is one call and an unreachable control
+	// plane produces no per-guardrail verdicts to apply a mode to. A direction
+	// therefore fails open only when every guardrail on it opted into that: one
+	// guardrail set to fail closed means the operator asked for the request to
+	// stop when it cannot be evaluated, and a control-plane outage is exactly
+	// that case.
+	//
+	// A direction with no guardrails is vacuously fail-open, which is right:
+	// there is nothing there to bypass.
+	cfg.RequestFailOpen = !requestFailClosed
+	cfg.ResponseFailOpen = !responseFailClosed
 	return cfg
+}
+
+// failsClosed reports whether a guardrail should stop the request when it
+// cannot be evaluated. Anything other than an explicit fail_open is treated as
+// fail closed, matching the control plane, where FAIL_CLOSED is the Prisma
+// default and the only opt-out is the operator choosing FAIL_OPEN.
+func failsClosed(g guardrailWire) bool {
+	return g.FailureMode != "fail_open"
+}
+
+// buildModelAlias splits an alias target into the provider that serves it
+// and the model name the provider knows. The control-plane writes aliases
+// in "provider/model" form ("openai/gpt-5-mini"), which is a routing
+// instruction, not a model ID: keeping the prefix on Model would send the
+// provider a model name it has never heard of. A bare target carries no
+// provider and resolves against the credential chain like any other
+// unqualified model.
+func buildModelAlias(target string) domain.ModelAlias {
+	provider, model, found := strings.Cut(target, "/")
+	if !found || provider == "" || model == "" {
+		return domain.ModelAlias{Model: target}
+	}
+	return domain.ModelAlias{ProviderID: normalizeProviderType(provider), Model: model}
 }
 
 func buildPolicyRules(pr policyRulesWire) []domain.PolicyRule {
@@ -292,7 +348,6 @@ func providerSlotToCredential(p providerSlotWire) domain.Credential {
 	cred := domain.Credential{
 		ID:         p.ID,
 		ProviderID: normalizeProviderType(p.Type),
-		Extra:      map[string]string{},
 	}
 
 	getString := func(key string) string {
@@ -333,73 +388,31 @@ func providerSlotToCredential(p providerSlotWire) domain.Credential {
 			"region":           getString("region"),
 			"auth_credentials": getString("auth_credentials"),
 		}
+	case domain.ProviderOpenAICodex:
+		// OAuth session, not an API key: the access token rides APIKey (it
+		// is the bearer), the ChatGPT account id becomes a request header,
+		// and the provider row id is the refresh callback's address.
+		cred.APIKey = getString("access_token")
+		cred.Extra = map[string]string{
+			"account_id":      getString("account_id"),
+			"provider_row_id": getString("provider_row_id"),
+		}
 	default:
 		cred.APIKey = getString("api_key")
 	}
-	mergeProviderSlotExtras(&cred, p)
+
+	if p.BaseURL != "" {
+		if cred.Extra == nil {
+			cred.Extra = map[string]string{}
+		}
+		cred.Extra["base_url"] = p.BaseURL
+	}
 
 	return cred
 }
 
-func mergeProviderSlotExtras(cred *domain.Credential, p providerSlotWire) {
-	if cred.Extra == nil {
-		cred.Extra = map[string]string{}
-	}
-	if p.BaseURL != "" {
-		cred.Extra["base_url"] = p.BaseURL
-	}
-	if len(p.Config) == 0 {
-		return
-	}
-	if s := wireString(p.Config["extra_headers"]); s != "" {
-		cred.Extra["extra_headers"] = s
-	}
-	if s := wireString(p.Config["network_config"]); s != "" {
-		cred.Extra["network_config"] = s
-	}
-	if network, ok := p.Config["network_config"].(map[string]interface{}); ok {
-		if s := primitiveWireString(network["default_request_timeout_in_seconds"]); s != "" {
-			cred.Extra["default_request_timeout_in_seconds"] = s
-		}
-	}
-	if s := primitiveWireString(p.Config["default_request_timeout_in_seconds"]); s != "" {
-		cred.Extra["default_request_timeout_in_seconds"] = s
-	}
-}
-
-func wireString(v interface{}) string {
-	if s := primitiveWireString(v); s != "" {
-		return s
-	}
-	switch v.(type) {
-	case map[string]interface{}, []interface{}:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return ""
-		}
-		return string(b)
-	default:
-		return ""
-	}
-}
-
-func primitiveWireString(v interface{}) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64)
-	case bool:
-		return fmt.Sprintf("%t", x)
-	default:
-		return ""
-	}
-}
-
 func normalizeProviderType(t string) domain.ProviderID {
 	switch t {
-	case "custom":
-		return domain.ProviderOpenAI
 	case "azure":
 		return domain.ProviderAzure
 	case "bedrock", "aws_bedrock":
@@ -412,6 +425,8 @@ func normalizeProviderType(t string) domain.ProviderID {
 		return domain.ProviderAnthropic
 	case "openai":
 		return domain.ProviderOpenAI
+	case "openai_codex":
+		return domain.ProviderOpenAICodex
 	default:
 		return domain.ProviderID(t)
 	}

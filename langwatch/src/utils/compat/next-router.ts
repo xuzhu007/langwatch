@@ -16,11 +16,11 @@
  */
 import { useEffect, useMemo } from "react";
 import {
+  matchPath,
   useLocation,
   useNavigate,
   useParams,
   useSearchParams,
-  matchPath,
 } from "react-router";
 
 // Route patterns for resolving pathname (Next.js-style)
@@ -63,6 +63,7 @@ const ROUTE_PATTERNS = [
   "/:project/messages/:trace/:openTab",
   "/:project/messages/:trace",
   "/:project/messages",
+  "/:project/traces/:trace",
   "/:project/traces",
   "/:project/analytics/custom/:id",
   "/:project/analytics/custom",
@@ -84,6 +85,7 @@ const ROUTE_PATTERNS = [
   "/:project/evaluations/:id/edit/choose",
   "/:project/evaluations/:id/edit",
   "/:project/evaluations",
+  "/:project/online-evaluations",
   "/:project/experiments/workbench/:slug",
   "/:project/experiments/workbench",
   "/:project/experiments/:experiment",
@@ -128,6 +130,13 @@ interface NextRouterOptions {
   shallow?: boolean;
   scroll?: boolean;
   locale?: string;
+  // Forces the navigation's state update through ReactDOM.flushSync instead
+  // of React Router's default startTransition wrap. Needed for navigations
+  // that mount a first-time React.lazy() component (e.g. opening a drawer):
+  // under startTransition, a Suspense boundary suspending for the first time
+  // keeps the previously committed UI on screen instead of showing the
+  // fallback, so the update appears to silently do nothing.
+  flushSync?: boolean;
 }
 
 type EventHandler = (...args: any[]) => void;
@@ -188,12 +197,12 @@ export interface CompatRouter {
   push: (
     url: string | { pathname?: string; query?: Record<string, any> },
     as?: string,
-    options?: NextRouterOptions
+    options?: NextRouterOptions,
   ) => Promise<boolean>;
   replace: (
     url: string | { pathname?: string; query?: Record<string, any> },
     as?: string,
-    options?: NextRouterOptions
+    options?: NextRouterOptions,
   ) => Promise<boolean>;
   back: () => void;
   reload: () => void;
@@ -206,7 +215,7 @@ export interface CompatRouter {
 export function buildUrl(
   url: string | { pathname?: string; query?: Record<string, any> },
   routeParamKeys?: Set<string>,
-  currentPathname?: string
+  currentPathname?: string,
 ): string {
   // React Router's location is the source of truth in an SPA. Callers inside
   // the useRouter() hook pass it explicitly; other callers fall back to
@@ -286,12 +295,19 @@ export function buildUrl(
  * Mimics Next.js `Router` default export.
  * Must be kept in sync with the current URL state.
  */
+type ImperativeRouter = {
+  navigate: (
+    to: string,
+    opts?: { replace?: boolean; flushSync?: boolean },
+  ) => void;
+};
+
 /**
  * Set by main.tsx after router is created. Enables imperative navigation
  * from module-level code (e.g. navigateToDrawer in useDrawer.ts).
  */
-let _routerInstance: { navigate: (to: string) => void } | null = null;
-export function setRouterInstance(r: { navigate: (to: string) => void }) {
+let _routerInstance: ImperativeRouter | null = null;
+export function setRouterInstance(r: ImperativeRouter) {
   _routerInstance = r;
 }
 
@@ -319,7 +335,9 @@ class RouterSingleton {
   }
 
   get asPath(): string {
-    return window.location.pathname + window.location.search + window.location.hash;
+    return (
+      window.location.pathname + window.location.search + window.location.hash
+    );
   }
 
   get isReady(): boolean {
@@ -329,11 +347,14 @@ class RouterSingleton {
   push(
     url: string | { pathname?: string; query?: Record<string, any> },
     _as?: string,
-    options?: NextRouterOptions
+    options?: NextRouterOptions,
   ): Promise<boolean> {
     const target = _as ?? buildUrl(url);
     if (_routerInstance) {
-      _routerInstance.navigate(target);
+      _routerInstance.navigate(target, {
+        replace: false,
+        flushSync: options?.flushSync,
+      });
     } else {
       window.history.pushState({}, "", target);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -347,11 +368,14 @@ class RouterSingleton {
   replace(
     url: string | { pathname?: string; query?: Record<string, any> },
     _as?: string,
-    options?: NextRouterOptions
+    options?: NextRouterOptions,
   ): Promise<boolean> {
     const target = _as ?? buildUrl(url);
     if (_routerInstance) {
-      _routerInstance.navigate(target);
+      _routerInstance.navigate(target, {
+        replace: true,
+        flushSync: options?.flushSync,
+      });
     } else {
       window.history.replaceState({}, "", target);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -455,7 +479,10 @@ export function useRouter(): CompatRouter {
         // The `as` string is the actual browser URL; `url` is the internal route
         // descriptor which may contain [param] placeholders.
         const target = _as ?? buildUrl(url, routeParamKeys, location.pathname);
-        navigate(target, { replace: false });
+        void navigate(target, {
+          replace: false,
+          flushSync: options?.flushSync,
+        });
         if (options?.scroll !== false) {
           window.scrollTo(0, 0);
         }
@@ -463,7 +490,7 @@ export function useRouter(): CompatRouter {
       },
       replace: (url, _as?, options?) => {
         const target = _as ?? buildUrl(url, routeParamKeys, location.pathname);
-        navigate(target, { replace: true });
+        void navigate(target, { replace: true, flushSync: options?.flushSync });
         if (options?.scroll !== false) {
           window.scrollTo(0, 0);
         }
@@ -472,7 +499,7 @@ export function useRouter(): CompatRouter {
       back: () => navigate(-1),
       reload: () => window.location.reload(),
       prefetch: () => Promise.resolve(),
-      beforePopState: () => {},
+      beforePopState: () => undefined,
     };
   }, [navigate, location, params, searchParams]);
 }

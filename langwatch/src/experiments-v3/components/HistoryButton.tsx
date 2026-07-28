@@ -2,7 +2,7 @@
  * HistoryButton - Navigate to evaluation results
  *
  * Shows a button in the V3 workbench header that links to the experiment
- * results page showing all past runs stored in Elasticsearch.
+ * results page showing all stored past runs.
  *
  * Enabled when:
  * - User has run an evaluation this session, OR
@@ -59,14 +59,16 @@ export function HistoryButton({ disabled = false }: HistoryButtonProps) {
       openDelay={100}
     >
       <Button
-        size="xs"
+        size="sm"
         variant="ghost"
+        color="fg.muted"
+        _hover={{ color: "fg", bg: "bg.subtle" }}
         disabled={disabled || !hasRuns || isLoading}
         aria-label="View results"
         asChild
       >
         <Link href={`/${project.slug}/experiments/${experimentSlug}`}>
-          <BarChart2 size={14} />
+          <BarChart2 size={18} />
           Results
         </Link>
       </Button>

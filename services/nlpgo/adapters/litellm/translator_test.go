@@ -50,45 +50,28 @@ func TestTranslateModelID_AliasExpansion(t *testing.T) {
 }
 
 func TestTranslateModelID_OpenAIPreserveDots(t *testing.T) {
-	// gpt-3.5-turbo must keep its dot — only Anthropic translates.
+	// gpt-3.5-turbo must keep its dot — only anthropic/custom translate.
 	got := TranslateModelID("openai/gpt-3.5-turbo")
 	if got != "openai/gpt-3.5-turbo" {
 		t.Errorf("expected openai dots preserved, got %q", got)
 	}
 }
 
-func TestTranslateModelID_BareAnthropicIDsTranslate(t *testing.T) {
+func TestTranslateModelID_BareIDsTreatedAsAnthropic(t *testing.T) {
+	// Bare ids (no provider prefix) get the dot→dash treatment too —
+	// the TS source does this for safety.
 	got := TranslateModelID("claude-3.5-sonnet")
 	if got != "claude-3-5-sonnet" {
 		t.Errorf("expected bare anthropic-shaped id translated, got %q", got)
 	}
 }
 
-func TestTranslateModelID_BareNonAnthropicPreserveDots(t *testing.T) {
-	got := TranslateModelID("Qwen3.5-9B")
-	if got != "Qwen3.5-9B" {
-		t.Errorf("expected bare non-anthropic dots preserved, got %q", got)
-	}
-}
-
-func TestTranslateModelID_BareOpenAIPreserveDots(t *testing.T) {
-	got := TranslateModelID("gpt-3.5-turbo")
-	if got != "gpt-3.5-turbo" {
-		t.Errorf("expected bare openai dots preserved, got %q", got)
-	}
-}
-
-func TestTranslateModelID_CustomPreserveDots(t *testing.T) {
-	got := TranslateModelID("custom/my-llm-1.2")
-	if got != "custom/my-llm-1.2" {
-		t.Errorf("expected custom dots preserved, got %q", got)
-	}
-}
-
-func TestTranslateModelID_CustomOpenAICompatiblePreserveDots(t *testing.T) {
-	got := TranslateModelID("custom/Qwen3.5-9B")
-	if got != "custom/Qwen3.5-9B" {
-		t.Errorf("expected custom OpenAI-compatible dots preserved, got %q", got)
+func TestTranslateModelID_CustomKeptVerbatim(t *testing.T) {
+	// Custom model ids are arbitrary customer strings (vLLM serves
+	// "Qwen/Qwen2.5-32B-Instruct") — dots must survive.
+	got := TranslateModelID("custom/Qwen/Qwen2.5-32B-Instruct")
+	if got != "custom/Qwen/Qwen2.5-32B-Instruct" {
+		t.Errorf("expected custom model id kept verbatim, got %q", got)
 	}
 }
 
@@ -346,6 +329,26 @@ func TestFromLiteLLMParams_OpenAI(t *testing.T) {
 	}
 }
 
+func TestFromLiteLLMParams_GenericAPIKeyProviders(t *testing.T) {
+	for _, provider := range []string{"xai", "groq", "cerebras", "deepseek"} {
+		t.Run(provider, func(t *testing.T) {
+			ic, err := FromLiteLLMParams(provider, map[string]any{
+				"api_key": "gen-key",
+				"model":   provider + "/some-model",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ic.Provider != provider {
+				t.Errorf("expected provider %q, got %q", provider, ic.Provider)
+			}
+			if ic.Generic["api_key"] != "gen-key" {
+				t.Errorf("expected api_key gen-key, got %q", ic.Generic["api_key"])
+			}
+		})
+	}
+}
+
 func TestFromLiteLLMParams_Anthropic(t *testing.T) {
 	ic, err := FromLiteLLMParams("anthropic", map[string]any{"api_key": "k"})
 	if err != nil {
@@ -375,6 +378,24 @@ func TestFromLiteLLMParams_Azure_PreservesNestedExtraHeaders(t *testing.T) {
 	}
 	if eh["X-Tag"] != "acme" {
 		t.Errorf("expected X-Tag in extra_headers")
+	}
+}
+
+func TestFromLiteLLMParams_Azure_ForwardsDeployment(t *testing.T) {
+	// prepareLitellmParams sets `deployment` when the provider defines an
+	// explicit deploymentMapping (model id != Azure deployment name). It must
+	// survive into the inline credentials so domain.WithDeploymentSelfMap can use it.
+	ic, err := FromLiteLLMParams("azure", map[string]any{
+		"api_key":     "azk",
+		"api_base":    "https://acme.openai.azure.com",
+		"api_version": "2025-04-01-preview",
+		"deployment":  "my-gpt5-deployment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ic.Azure["deployment"] != "my-gpt5-deployment" {
+		t.Errorf("expected deployment to be forwarded, got %v", ic.Azure["deployment"])
 	}
 }
 

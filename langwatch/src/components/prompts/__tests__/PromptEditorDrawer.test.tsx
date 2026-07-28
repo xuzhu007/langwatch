@@ -6,8 +6,10 @@ import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { FormProvider, useForm } from "react-hook-form";
+import { useForm, useFormContext } from "react-hook-form";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getMaxTokenLimit } from "~/components/llmPromptConfigs/utils/tokenUtils";
+import type { ModelMetadataForFrontend } from "~/hooks/useModelProvidersSettings";
 
 // All mocks need to be set up before any imports
 const mockCloseDrawer = vi.fn();
@@ -71,15 +73,21 @@ vi.mock("~/hooks/useOrganizationTeamProject", () => ({
   }),
 }));
 
+const mockModelMetadata = {
+  "openai/gpt-4o": {
+    name: "gpt-4o",
+    // Real ModelMetadataForFrontend field names — getMaxTokenLimit reads
+    // these two specifically. Wrong names here would make the backfill
+    // test silently pass via FALLBACK_MAX_TOKENS instead of exercising
+    // the actual extraction path.
+    contextLength: 128000,
+    maxCompletionTokens: 16384,
+  },
+};
+
 vi.mock("~/hooks/useModelProvidersSettings", () => ({
   useModelProvidersSettings: () => ({
-    modelMetadata: {
-      "openai/gpt-4o": {
-        name: "gpt-4o",
-        max_tokens: 128000,
-        max_output_tokens: 16384,
-      },
-    },
+    modelMetadata: mockModelMetadata,
     isLoading: false,
   }),
 }));
@@ -95,6 +103,9 @@ vi.mock("~/optimization_studio/components/nodes/Nodes", () => ({
 
 // Track initialConfigValues passed to usePromptConfigForm
 const capturedInitialConfigValues: unknown[] = [];
+// Track the latest form methods returned by the mock so tests can drive edits
+// and exercise the real watch subscription inside PromptEditorDrawer.
+const capturedFormMethods: ReturnType<typeof useForm>[] = [];
 
 // Mock usePromptConfigForm to return a real form
 const mockDefaultFormValues = {
@@ -122,6 +133,7 @@ vi.mock("~/prompts/hooks/usePromptConfigForm", () => ({
     const methods = useForm({
       defaultValues: initialConfigValues ?? mockDefaultFormValues,
     });
+    capturedFormMethods.push(methods);
     return { methods };
   },
 }));
@@ -175,6 +187,7 @@ const mockPromptDataWithMessages = {
 };
 
 const mockGetByIdOrHandle = vi.fn();
+const mockGetResolvedDefault = vi.fn();
 const mockCreate = vi.fn();
 const mockUpdate = vi.fn();
 
@@ -190,10 +203,7 @@ vi.mock("~/utils/api", () => ({
     },
     modelProvider: {
       getResolvedDefault: {
-        useQuery: () => ({
-          data: { model: "openai/gpt-4", source: "test", scope: "PROJECT" },
-          isLoading: false,
-        }),
+        useQuery: () => mockGetResolvedDefault(),
       },
     },
     prompts: {
@@ -235,11 +245,17 @@ vi.mock("~/components/ui/toaster", () => ({
   toaster: { create: vi.fn() },
 }));
 
-// Mock the form components since they're complex
+// Mock the form components since they're complex. Reads the live model
+// value via useFormContext (not mocked) rather than a hardcoded string, so
+// tests can assert on rendered output instead of only inspecting captured
+// form methods directly.
 vi.mock("~/prompts/forms/fields/ModelSelectFieldMini", () => ({
-  ModelSelectFieldMini: () => (
-    <button data-testid="model-select">gpt-4o</button>
-  ),
+  ModelSelectFieldMini: () => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { watch } = useFormContext();
+    const model = watch("version.configData.llm.model");
+    return <button data-testid="model-select">{model || "(no model)"}</button>;
+  },
 }));
 
 vi.mock(
@@ -344,7 +360,12 @@ describe("PromptEditorDrawer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedInitialConfigValues.length = 0;
+    capturedFormMethods.length = 0;
     mockGetByIdOrHandle.mockReturnValue({ data: undefined, isLoading: false });
+    mockGetResolvedDefault.mockReturnValue({
+      data: { model: "openai/gpt-4", source: "test", scope: "PROJECT" },
+      isLoading: false,
+    });
     // Default: form values equal saved values (no changes)
     mockAreFormValuesEqual.mockReturnValue(true);
     // Reset drawer params
@@ -515,6 +536,170 @@ describe("PromptEditorDrawer", () => {
     it("Save button is disabled when no handle entered", () => {
       renderWithProviders(<PromptEditorDrawer open={true} />);
       expect(screen.getByTestId("save-prompt-button")).toBeDisabled();
+    });
+  });
+
+  describe("given a project with zero enabled providers", () => {
+    describe("when getResolvedDefault resolves after the drawer already opened (#5827 continuation)", () => {
+      /**
+       * @scenario The drawer's init effect runs once and locks in
+       * model: "" when getResolvedDefault has nothing to resolve yet. A
+       * provider gets added in another tab; the cross-tab BroadcastChannel
+       * fix (#5827) refreshes getResolvedDefault here too — but the init
+       * effect is one-shot and never re-fires, so without a dedicated
+       * backfill the form stayed stuck on a blank model forever, showing
+       * an empty selector even though isEmpty had already flipped false.
+       */
+      it("adopts the model in the rendered selector once getResolvedDefault resolves", async () => {
+        mockGetResolvedDefault.mockReturnValue({
+          data: undefined,
+          isLoading: false,
+        });
+
+        const { rerender } = renderWithProviders(
+          <PromptEditorDrawer open={true} />,
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "(no model)",
+          );
+        });
+
+        // A provider was added in another tab; getResolvedDefault now
+        // resolves on refetch (simulated here via a re-render with new
+        // mock data, since the query itself is mocked out).
+        mockGetResolvedDefault.mockReturnValue({
+          data: {
+            model: "openai/gpt-4o",
+            source: "provider",
+            scope: "PROJECT",
+          },
+          isLoading: false,
+        });
+        rerender(
+          <ChakraProvider value={defaultSystem}>
+            <PromptEditorDrawer open={true} />
+          </ChakraProvider>,
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "openai/gpt-4o",
+          );
+        });
+        // The maxTokens write is paired with the model write — assert it
+        // too, so removing just the maxTokens half of the backfill (while
+        // leaving the model half intact) still fails this test.
+        const methods = capturedFormMethods[capturedFormMethods.length - 1]!;
+        expect(methods.getValues("version.configData.llm.maxTokens")).toBe(
+          getMaxTokenLimit(
+            mockModelMetadata["openai/gpt-4o"] as unknown as ModelMetadataForFrontend,
+          ),
+        );
+      });
+
+      it("does not clobber a model the user already picked in the rendered selector", async () => {
+        mockGetResolvedDefault.mockReturnValue({
+          data: undefined,
+          isLoading: false,
+        });
+
+        const { rerender } = renderWithProviders(
+          <PromptEditorDrawer open={true} />,
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "(no model)",
+          );
+        });
+
+        // User manually picks a model before any provider resolves.
+        const methodsBeforeBackfill =
+          capturedFormMethods[capturedFormMethods.length - 1]!;
+        methodsBeforeBackfill.setValue(
+          "version.configData.llm.model",
+          "anthropic/claude-3-5-sonnet",
+        );
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "anthropic/claude-3-5-sonnet",
+          );
+        });
+
+        mockGetResolvedDefault.mockReturnValue({
+          data: {
+            model: "openai/gpt-4o",
+            source: "provider",
+            scope: "PROJECT",
+          },
+          isLoading: false,
+        });
+        rerender(
+          <ChakraProvider value={defaultSystem}>
+            <PromptEditorDrawer open={true} />
+          </ChakraProvider>,
+        );
+
+        // The backfill only fills a genuinely empty model — it must never
+        // overwrite a real (even if not yet saved) user selection.
+        expect(screen.getByTestId("model-select")).toHaveTextContent(
+          "anthropic/claude-3-5-sonnet",
+        );
+      });
+
+      it("does not clobber a maxTokens value the user already edited", async () => {
+        mockGetResolvedDefault.mockReturnValue({
+          data: undefined,
+          isLoading: false,
+        });
+
+        const { rerender } = renderWithProviders(
+          <PromptEditorDrawer open={true} />,
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "(no model)",
+          );
+        });
+
+        // User edits the token limit before any provider resolves.
+        const methodsBeforeBackfill =
+          capturedFormMethods[capturedFormMethods.length - 1]!;
+        methodsBeforeBackfill.setValue(
+          "version.configData.llm.maxTokens",
+          777,
+          { shouldDirty: true },
+        );
+
+        mockGetResolvedDefault.mockReturnValue({
+          data: {
+            model: "openai/gpt-4o",
+            source: "provider",
+            scope: "PROJECT",
+          },
+          isLoading: false,
+        });
+        rerender(
+          <ChakraProvider value={defaultSystem}>
+            <PromptEditorDrawer open={true} />
+          </ChakraProvider>,
+        );
+
+        // The model still backfills (it was never dirtied)...
+        await waitFor(() => {
+          expect(screen.getByTestId("model-select")).toHaveTextContent(
+            "openai/gpt-4o",
+          );
+        });
+        // ...but the user's manually-edited token limit survives.
+        const methods = capturedFormMethods[capturedFormMethods.length - 1]!;
+        expect(methods.getValues("version.configData.llm.maxTokens")).toBe(
+          777,
+        );
+      });
     });
   });
 
@@ -1111,6 +1296,110 @@ describe("PromptEditorDrawer", () => {
           expect.objectContaining({ identifier: "input" }),
         ]),
       );
+    });
+  });
+
+  describe("when the referenced prompt is not found (imported workflow)", () => {
+    beforeEach(() => {
+      // The prompt referenced by id is not in this project: DB query returns null.
+      mockGetByIdOrHandle.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+      });
+    });
+
+    /** @scenario "A node whose library prompt is missing shows its inline config" */
+    it("falls back to inlineConfigFallback instead of an empty form", async () => {
+      const inlineConfigFallback = {
+        llm: { model: "gpt-5-mini" },
+        messages: [
+          { role: "system" as const, content: "INLINE-FALLBACK-CONTENT" },
+        ],
+        inputs: [{ identifier: "question", type: "str" as const }],
+        outputs: [{ identifier: "answer", type: "str" as const }],
+      };
+
+      renderWithProviders(
+        <PromptEditorDrawer
+          open={true}
+          promptId="missing-prompt"
+          inlineConfigFallback={inlineConfigFallback}
+        />,
+      );
+
+      // The form must initialize with the node's inline config, not an empty
+      // "New Prompt" form, so an imported workflow still shows its prompt.
+      await waitFor(() => {
+        const captured = capturedInitialConfigValues as Array<{
+          version?: {
+            configData?: { messages?: Array<{ content?: string }> };
+          };
+        }>;
+        const usedFallback = captured.some((c) =>
+          c?.version?.configData?.messages?.some(
+            (m) => m?.content === "INLINE-FALLBACK-CONTENT",
+          ),
+        );
+        expect(usedFallback).toBe(true);
+      });
+    });
+
+    /**
+     * Regression for the dirty-tracking gap in the missing-prompt branch.
+     * Before the fix, the watch subscription saw promptId set AND
+     * savedFormValuesRef.current undefined, so neither dirty-tracking branch
+     * fired and onLocalConfigChange(undefined) was called instead of the
+     * extracted config — silently dropping every edit the user made to the
+     * imported workflow's prompt.
+     */
+    it("propagates edits to the fallback via onLocalConfigChange", async () => {
+      const inlineConfigFallback = {
+        llm: { model: "gpt-5-mini" },
+        messages: [
+          { role: "system" as const, content: "INLINE-FALLBACK-CONTENT" },
+        ],
+        inputs: [{ identifier: "question", type: "str" as const }],
+        outputs: [{ identifier: "answer", type: "str" as const }],
+      };
+      // Form values differ from the fallback baseline once edited; the watch
+      // subscription must observe this and mark the form as unsaved.
+      mockAreFormValuesEqual.mockReturnValue(false);
+      const onLocalConfigChange = vi.fn();
+
+      renderWithProviders(
+        <PromptEditorDrawer
+          open={true}
+          promptId="missing-prompt"
+          inlineConfigFallback={inlineConfigFallback}
+          onLocalConfigChange={onLocalConfigChange}
+        />,
+      );
+
+      // Wait until the form has initialized with the fallback content.
+      await waitFor(() => {
+        expect(capturedFormMethods.length).toBeGreaterThan(0);
+      });
+
+      // Simulate a user edit to the system message.
+      const methods = capturedFormMethods[capturedFormMethods.length - 1]!;
+      methods.setValue(
+        "version.configData.messages.0.content",
+        "EDITED-IN-MISSING-PROMPT-BRANCH",
+      );
+
+      // The bridge must receive a real LocalPromptConfig with the edited
+      // content — never undefined — so the studio can persist the edit.
+      await waitFor(() => {
+        const editedCall = onLocalConfigChange.mock.calls.find((args) => {
+          const cfg = args[0] as
+            | { messages?: Array<{ content?: string }> }
+            | undefined;
+          return cfg?.messages?.some(
+            (m) => m?.content === "EDITED-IN-MISSING-PROMPT-BRANCH",
+          );
+        });
+        expect(editedCall).toBeDefined();
+      });
     });
   });
 

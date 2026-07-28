@@ -179,6 +179,29 @@ func TestCredentialFromHeaders_Gemini(t *testing.T) {
 	}
 }
 
+func TestCredentialFromHeaders_GenericAPIKeyProviders(t *testing.T) {
+	// xai/groq/cerebras/deepseek share the Generic slot; Provider
+	// disambiguates and maps 1:1 onto the domain provider id.
+	for _, provider := range []string{"xai", "groq", "cerebras", "deepseek"} {
+		t.Run(provider, func(t *testing.T) {
+			hdr := encodeCreds(t, inlineCreds{
+				Provider: provider,
+				Generic:  map[string]string{"api_key": "gen-key"},
+			})
+			cred, err := credentialFromHeaders(map[string]string{headerInlineCredentials: hdr})
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if cred.ProviderID != domain.ProviderID(provider) {
+				t.Errorf("ProviderID: %q, want %q", cred.ProviderID, provider)
+			}
+			if cred.APIKey != "gen-key" {
+				t.Errorf("APIKey: %q", cred.APIKey)
+			}
+		})
+	}
+}
+
 func TestCredentialFromHeaders_Custom(t *testing.T) {
 	hdr := encodeCreds(t, inlineCreds{
 		Provider: "custom",
@@ -243,5 +266,35 @@ func TestCredentialFromHeaders_UnsupportedProvider(t *testing.T) {
 	_, err := credentialFromHeaders(map[string]string{headerInlineCredentials: hdr})
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("expected unsupported-provider error, got %v", err)
+	}
+}
+
+func TestWithDeploymentSelfMap_SelfMapsByDefault(t *testing.T) {
+	cred := domain.Credential{ProviderID: domain.ProviderAzure}
+	cred = domain.WithDeploymentSelfMap(cred, "gpt-5-mini")
+	if got := cred.DeploymentMap["gpt-5-mini"]; got != "gpt-5-mini" {
+		t.Errorf("expected self-map, got %q", got)
+	}
+}
+
+func TestWithDeploymentSelfMap_HonorsExplicitDeployment(t *testing.T) {
+	// When the model id differs from the Azure deployment name, the control
+	// plane forwards the real deployment as Extra["deployment"]; the model
+	// id must map to it rather than to itself.
+	cred := domain.Credential{
+		ProviderID: domain.ProviderAzure,
+		Extra:      map[string]string{"deployment": "my-gpt5-deployment"},
+	}
+	cred = domain.WithDeploymentSelfMap(cred, "gpt-5.4")
+	if got := cred.DeploymentMap["gpt-5.4"]; got != "my-gpt5-deployment" {
+		t.Errorf("expected explicit deployment, got %q", got)
+	}
+}
+
+func TestWithDeploymentSelfMap_IgnoresNonMappedProviders(t *testing.T) {
+	cred := domain.Credential{ProviderID: domain.ProviderOpenAI}
+	cred = domain.WithDeploymentSelfMap(cred, "gpt-5-mini")
+	if cred.DeploymentMap != nil {
+		t.Errorf("expected no deployment map for OpenAI, got %v", cred.DeploymentMap)
 	}
 }

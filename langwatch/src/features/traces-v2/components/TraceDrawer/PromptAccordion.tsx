@@ -8,21 +8,17 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { useMemo } from "react";
-import {
-  LuCopy,
-  LuExternalLink,
-  LuPencil,
-} from "react-icons/lu";
-import { useDrawer } from "~/hooks/useDrawer";
+import { LuCopy, LuExternalLink, LuPencil } from "react-icons/lu";
 import { Link } from "~/components/ui/link";
+import { useDrawer } from "~/hooks/useDrawer";
 import { useGoToSpanInPlaygroundTabUrlBuilder } from "~/prompts/prompt-playground/hooks/useLoadSpanIntoPromptPlayground";
 import type { SpanDetail } from "~/server/api/routers/tracesV2.schemas";
 import { copyToClipboard } from "~/utils/clipboard";
+import { usePromptByHandle } from "../../hooks/usePromptByHandle";
 import {
   extractPromptReference,
   hasPromptMetadata,
 } from "../../utils/promptAttributes";
-import { usePromptByHandle } from "../../hooks/usePromptByHandle";
 
 export { hasPromptMetadata };
 
@@ -155,13 +151,7 @@ export function PromptAccordion({ span }: PromptAccordionProps) {
                 >
                   {key}
                 </Text>
-                <Text
-                  flex={1}
-                  textStyle="xs"
-                  color="fg"
-                  truncate
-                  minWidth={0}
-                >
+                <Text flex={1} textStyle="xs" color="fg" truncate minWidth={0}>
                   {val}
                 </Text>
                 <Button

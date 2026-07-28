@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { OrganizationUserRole, type PrismaClient } from "@prisma/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LicenseEnforcementRepository } from "../license-enforcement.repository";
 
 /**
@@ -10,9 +10,9 @@ import { LicenseEnforcementRepository } from "../license-enforcement.repository"
  * - Confirms archivedAt: null filtering for workflows/evaluators
  * - Validates query structure for all 8 Prisma-based methods
  *
- * Note: Message/trace counting is NOT tested here because it uses
- * Elasticsearch via TraceUsageService, not Prisma. That's tested
- * in the UsageStatsService tests.
+ * Note: Message/trace counting is NOT tested here because it lives in
+ * TraceUsageService (ClickHouse, not Prisma). See
+ * src/server/traces/__tests__/trace-usage.service.unit.test.ts.
  *
  * Note: Classification function tests (isViewOnlyPermission, isViewOnlyCustomRole,
  * classifyMemberType, isFullMember, isLiteMember) are in member-classification.unit.test.ts
@@ -47,6 +47,7 @@ const createMockPrisma = () => ({
   },
   team: {
     findMany: vi.fn().mockResolvedValue([]),
+    count: vi.fn().mockResolvedValue(0),
   },
   teamUser: {
     findMany: vi.fn().mockResolvedValue([]),
@@ -184,13 +185,18 @@ describe("LicenseEnforcementRepository", () => {
   describe("getProjectCount", () => {
     /** @scenario Counts projects across all teams */
     /** @scenario Counts only non-archived projects toward limit */
-    it("queries non-archived projects with organization filter that traverses every team", async () => {
+    /** @scenario Personal projects do not count toward the project limit */
+    it("queries non-archived, non-personal projects with organization filter that traverses every team", async () => {
       mockPrisma.project.count.mockResolvedValue(4);
 
       const result = await repository.getProjectCount(organizationId);
 
       expect(mockPrisma.project.count).toHaveBeenCalledWith({
-        where: { team: { organizationId }, archivedAt: null },
+        where: {
+          team: { organizationId },
+          archivedAt: null,
+          isPersonal: false,
+        },
       });
       expect(result).toBe(4);
     });
@@ -199,6 +205,28 @@ describe("LicenseEnforcementRepository", () => {
       mockPrisma.project.count.mockResolvedValue(0);
 
       const result = await repository.getProjectCount(organizationId);
+
+      expect(result).toBe(0);
+    });
+  });
+
+  describe("getTeamCount", () => {
+    /** @scenario Personal teams do not count toward the team limit */
+    it("queries non-personal teams in the organization", async () => {
+      mockPrisma.team.count.mockResolvedValue(3);
+
+      const result = await repository.getTeamCount(organizationId);
+
+      expect(mockPrisma.team.count).toHaveBeenCalledWith({
+        where: { organizationId, isPersonal: false },
+      });
+      expect(result).toBe(3);
+    });
+
+    it("returns zero when no teams exist", async () => {
+      mockPrisma.team.count.mockResolvedValue(0);
+
+      const result = await repository.getTeamCount(organizationId);
 
       expect(result).toBe(0);
     });
@@ -724,6 +752,7 @@ describe("LicenseEnforcementRepository", () => {
   });
 
   describe("getCurrentMonthCost", () => {
+    /** @scenario "getCurrentMonthCost remains available in the repository" */
     it("fetches project IDs and aggregates cost for current month", async () => {
       mockPrisma.project.findMany.mockResolvedValue([
         { id: "proj-1" },
@@ -835,4 +864,3 @@ describe("LicenseEnforcementRepository", () => {
     });
   });
 });
-

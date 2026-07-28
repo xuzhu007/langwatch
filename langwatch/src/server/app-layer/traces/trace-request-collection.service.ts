@@ -1,7 +1,7 @@
+import { createLogger } from "@langwatch/observability";
 import { SpanKind as ApiSpanKind, type Span as OtelSpan } from "@opentelemetry/api";
 import type { IExportTraceServiceRequest } from "@opentelemetry/otlp-transformer";
 import { getLangWatchTracer } from "langwatch";
-import { createLogger } from "~/utils/logger/server";
 import type {
   PIIRedactionLevel,
   RecordSpanCommandData,
@@ -19,7 +19,12 @@ import { shouldFilterCodingAgentSpan } from "./coding-agent-span-filter";
 import type { SpanDedupService } from "./span-dedupe.service";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const SPAN_MAX_PAST_MS = 31 * ONE_DAY_MS;
+/**
+ * Maximum span age accepted at ingestion. Spans older than this are dropped on
+ * both the OTLP path (processSpan) and the REST collector (routes/collector.ts)
+ * so arbitrarily old timestamps never land in cold ClickHouse partitions.
+ */
+export const SPAN_MAX_PAST_MS = 31 * ONE_DAY_MS;
 
 export type SpanIngestionStatus =
   | "collected"

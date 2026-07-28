@@ -1,17 +1,20 @@
+import { createLogger } from "@langwatch/observability";
 import type { Workflow } from "@prisma/client";
 import { describeRoute } from "hono-openapi";
-import { resolver, validator as zValidator } from "hono-openapi/zod";
+import { resolver } from "hono-openapi/zod";
+import { validator as zValidator } from "~/server/api/validation";
 import { z } from "zod";
 import { badRequestSchema } from "~/app/api/shared/schemas";
 import { createProjectApp, requires } from "~/server/api/security";
+import { requireApiKeyPermission } from "~/server/api-key/auth-middleware";
 import { prisma } from "~/server/db";
 import {
+  EvaluationInputError,
   NoCommittedVersionError,
   WorkflowEvaluationService,
   WorkflowNotFoundError,
 } from "~/server/workflows/workflowEvaluation.service";
 import { patchZodOpenapi } from "~/utils/extend-zod-openapi";
-import { createLogger } from "~/utils/logger/server";
 import { baseResponses } from "../../shared/base-responses";
 import { platformUrl } from "../../shared/platform-url";
 
@@ -131,7 +134,9 @@ secured.access(requires("workflows:view")).get(
   },
 );
 
-secured.access(requires("workflows:manage")).patch(
+// Editing metadata on a workflow that already exists is an `:update`.
+// `:manage` still implies it, so no existing caller changes.
+secured.access(requires("workflows:update")).patch(
   "/:id",
   describeRoute({
     description: "Update a workflow's metadata (name, icon, description)",
@@ -190,6 +195,7 @@ secured.access(requires("workflows:manage")).patch(
   },
 );
 
+// Archiving deliberately stays at `:manage`.
 secured.access(requires("workflows:manage")).delete(
   "/:id",
   describeRoute({
@@ -239,30 +245,55 @@ secured.access(requires("workflows:manage")).delete(
   },
 );
 
-const evaluateBodySchema = z.object({
-  version_id: z
-    .string()
-    .optional()
-    .describe("Committed version to evaluate; defaults to the latest commit"),
-  evaluate_on: z
-    .enum(["full", "test", "train"])
-    .optional()
-    .describe("Which dataset slice to evaluate; defaults to full"),
-  parameters: z
-    .record(z.union([z.string(), z.number(), z.boolean()]))
-    .optional()
-    .describe(
-      "Constant entry inputs applied to every row, e.g. a feature flag or PR number",
-    ),
-});
+const evaluateBodySchema = z
+  .object({
+    version_id: z
+      .string()
+      .optional()
+      .describe("Committed version to evaluate; defaults to the latest commit"),
+    data: z
+      .array(z.record(z.string(), z.unknown()))
+      .optional()
+      .describe(
+        "Inline rows to evaluate instead of the workflow's attached dataset",
+      ),
+    dataset_id: z
+      .string()
+      .optional()
+      .describe(
+        "Platform dataset id to evaluate; mutually exclusive with data",
+      ),
+    parameters: z
+      .record(z.union([z.string(), z.number(), z.boolean()]))
+      .optional()
+      .describe(
+        "Constant entry inputs applied to every row, e.g. a feature flag or PR number",
+      ),
+    row_indices: z
+      .array(z.number().int().nonnegative())
+      .optional()
+      .describe("Subset of dataset row indices to evaluate"),
+  })
+  .refine((b) => !(b.data && b.dataset_id), {
+    message: "Pass either data or a dataset_id, not both",
+    path: ["data"],
+  });
 
-secured.access(requires("workflows:manage")).post(
+// Running a workflow is not administering it: the committed version, its nodes
+// and its dataset are untouched — the call produces a RUN. So it asks for
+// `workflows:create`, the same grain as the suite run. `:manage` still implies
+// it, so nobody who could trigger an evaluation yesterday loses that, and a
+// viewer holding only `workflows:view` is declined exactly as before. The
+// second gate below is unchanged: the caller must also be able to READ the run.
+secured.access(requires("workflows:create")).post(
   "/:id/evaluate",
   describeRoute({
     description:
-      "Trigger an evaluation run of a workflow's committed version. " +
-      "Parameters bind as constant entry inputs on every dataset row; " +
-      "results land on the workflow's experiment like studio-triggered runs.",
+      "Trigger an evaluation run of a workflow's committed version through " +
+      "the evaluations pipeline. Evaluate the workflow's attached dataset, " +
+      "inline data, or a platform dataset id; parameters bind as constant " +
+      "entry inputs on every row. Returns a run id and a results URL to poll " +
+      "or open in the browser.",
     responses: {
       ...baseResponses,
       200: {
@@ -272,6 +303,7 @@ secured.access(requires("workflows:manage")).post(
             schema: resolver(
               z.object({
                 run_id: z.string(),
+                run_url: z.string(),
                 workflow_version_id: z.string(),
                 version: z.string(),
               }),
@@ -293,6 +325,10 @@ secured.access(requires("workflows:manage")).post(
       },
     },
   }),
+  // The caller polls the run + reads results on /api/experiments/runs/:runId(/results),
+  // which require evaluations:view. Enforce it here too so a workflows-only key
+  // cannot start a run it would then get 403 trying to read.
+  requireApiKeyPermission({ prisma, permission: "evaluations:view" }),
   zValidator("json", evaluateBodySchema),
   async (c) => {
     const project = c.get("project");
@@ -308,13 +344,17 @@ secured.access(requires("workflows:manage")).post(
         prisma,
       ).triggerEvaluation({
         projectId: project.id,
+        projectSlug: project.slug,
         workflowId: id,
         versionId: body.version_id,
-        evaluateOn: body.evaluate_on,
+        data: body.data,
+        datasetId: body.dataset_id,
         parameters: body.parameters,
+        rowIndices: body.row_indices,
       });
       return c.json({
         run_id: result.runId,
+        run_url: result.runUrl,
         workflow_version_id: result.workflowVersionId,
         version: result.version,
       });
@@ -324,6 +364,9 @@ secured.access(requires("workflows:manage")).post(
       }
       if (error instanceof NoCommittedVersionError) {
         return c.json({ error: error.message }, 400);
+      }
+      if (error instanceof EvaluationInputError) {
+        return c.json({ error: error.message }, error.status as 400 | 404);
       }
       throw error;
     }

@@ -66,6 +66,18 @@ describe("modelProviderHelpers", () => {
       expect(getSchemaShape(schema)).toEqual({ ANTHROPIC_API_KEY: {} });
     });
 
+    it("returns shape from a wrapped schema via innerType()", () => {
+      const schema = {
+        innerType: () => ({ shape: { GROQ_API_KEY: {} } }),
+      };
+      expect(getSchemaShape(schema)).toEqual({ GROQ_API_KEY: {} });
+    });
+
+    it("returns empty object for a wrapper whose inner schema has no shape", () => {
+      const schema = { innerType: () => ({}) };
+      expect(getSchemaShape(schema)).toEqual({});
+    });
+
     it("returns empty object for schema without shape", () => {
       const schema = {};
       expect(getSchemaShape(schema)).toEqual({});
@@ -81,6 +93,7 @@ describe("modelProviderHelpers", () => {
     const schemaShape = {
       AZURE_OPENAI_API_KEY: {},
       AZURE_OPENAI_ENDPOINT: {},
+      AZURE_OPENAI_API_VERSION: {},
       AZURE_API_GATEWAY_BASE_URL: {},
       AZURE_API_GATEWAY_VERSION: {},
       OPENAI_API_KEY: {},
@@ -95,11 +108,12 @@ describe("modelProviderHelpers", () => {
       });
     });
 
-    it("returns standard keys for Azure with API Gateway disabled", () => {
+    it("returns standard keys (incl. api-version override) for Azure with API Gateway disabled", () => {
       const result = getDisplayKeysForProvider("azure", false, schemaShape);
       expect(result).toEqual({
         AZURE_OPENAI_API_KEY: {},
         AZURE_OPENAI_ENDPOINT: {},
+        AZURE_OPENAI_API_VERSION: {},
       });
     });
 

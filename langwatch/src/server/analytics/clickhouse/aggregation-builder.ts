@@ -7,7 +7,7 @@
 
 import { snakeCase } from "../../../utils/stringCasing";
 import type { FilterField } from "../../filters/types";
-import type { SeriesInputType } from "../registry";
+import { isZeroWhenAbsentSeries, type SeriesInputType } from "../registry";
 import type { AggregationTypes } from "../types";
 import {
   buildJoinClause,
@@ -24,6 +24,7 @@ import {
   translateAllFilters,
 } from "./filter-translator";
 import {
+  buildMetricAlias,
   type MetricTranslation,
   translateMetric,
   translatePipelineAggregation,
@@ -324,10 +325,15 @@ const groupByExpressions: Partial<
   }),
 
   "evaluations.evaluation_passed": (groupByKey) => ({
+    // Score-only evaluators (issue #2674): when filtered to a specific evaluator via
+    // groupByKey, rows that ran successfully (Status='processed') but have Passed IS NULL
+    // (a numeric score, no pass/fail threshold) are bucketed as 'unknown' instead of being
+    // dropped by `HAVING group_key IS NOT NULL`. Foreign-evaluator rows still hit ELSE NULL.
     column: groupByKey
       ? `CASE
         WHEN ${tableAliases.evaluation_runs}.EvaluatorId = {groupByKey:String} AND ${tableAliases.evaluation_runs}.Status = 'processed' AND ${tableAliases.evaluation_runs}.Passed IS NOT NULL AND ${tableAliases.evaluation_runs}.Passed = 1 THEN 'passed'
         WHEN ${tableAliases.evaluation_runs}.EvaluatorId = {groupByKey:String} AND ${tableAliases.evaluation_runs}.Status = 'processed' AND ${tableAliases.evaluation_runs}.Passed IS NOT NULL AND ${tableAliases.evaluation_runs}.Passed = 0 THEN 'failed'
+        WHEN ${tableAliases.evaluation_runs}.EvaluatorId = {groupByKey:String} AND ${tableAliases.evaluation_runs}.Status = 'processed' AND ${tableAliases.evaluation_runs}.Passed IS NULL THEN 'unknown'
         ELSE NULL
       END`
       : `CASE
@@ -402,11 +408,14 @@ export interface TimeseriesQueryInput {
       | Record<string, Record<string, string[]>>
     >
   >;
-  negateFilters?: boolean;
   groupBy?: string;
   groupByKey?: string;
   timeScale?: number | "full";
   timeZone?: string;
+  /** Restrict the query to these trace IDs (parameterized IN clause). */
+  traceIds?: string[];
+  /** Invert the filter conditions (NOT wrap), matching the UI's negate toggle. */
+  negateFilters?: boolean;
 }
 
 /**
@@ -522,6 +531,11 @@ function getGroupByExpression(
  * round trips and allows the database to optimize the scan across both date ranges.
  */
 export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
+  // ADR-034 Phase 3: routing to `trace_analytics_rollup` /
+  // `trace_analytics` lives in `~/server/app-layer/analytics` now — the
+  // service there decides which destination to use and calls the dedicated
+  // builders directly. This function only emits the legacy
+  // `trace_summaries` SQL (the safe fallback).
   const ts = tableAliases.trace_summaries;
   const timeZone = input.timeZone ?? "UTC";
 
@@ -565,8 +579,8 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
   // cold-scanning S3 (see SPAN_TIME_FILTER_BOTH_PERIODS).
   const filterTranslation = translateAllFilters(
     input.filters ?? {},
-    input.negateFilters ?? false,
     SPAN_TIME_FILTER_BOTH_PERIODS,
+    input.negateFilters,
   );
   for (const join of filterTranslation.requiredJoins) {
     allJoins.add(join);
@@ -609,7 +623,13 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
   const joinClauses = Array.from(allJoins)
     .map((table) => {
       const requiredColumns = resolveRequiredColumns(table, allExpressions);
-      return buildJoinClause(table, requiredColumns);
+      // Both-periods regime: bound the stored_spans JOIN to the same StartTime
+      // envelope as the outer OccurredAt filter so it prunes partitions.
+      return buildJoinClause({
+        table,
+        requiredColumns,
+        spanTimeFilter: SPAN_TIME_FILTER_BOTH_PERIODS,
+      });
     })
     .join("\n");
 
@@ -623,10 +643,20 @@ export function buildTimeseriesQuery(input: TimeseriesQueryInput): BuiltQuery {
     )
   `;
 
-  let filterWhere =
-    filterTranslation.whereClause !== "1=1"
-      ? `AND ${filterTranslation.whereClause}`
-      : "";
+  // Assemble the filter conditions appended to every builder path's WHERE.
+  // negateFilters inverts the user's filter selection (NOT wrap), matching the
+  // UI's negate toggle. traceIds narrows the scan to an explicit trace set —
+  // it is a scope restriction, so it is never negated.
+  const filterConditions: string[] = [];
+  if (filterTranslation.whereClause !== "1=1") {
+    filterConditions.push(filterTranslation.whereClause);
+  }
+  if (input.traceIds && input.traceIds.length > 0) {
+    filterConditions.push(`${ts}.TraceId IN ({traceIds:Array(String)})`);
+    allTranslationParams.traceIds = input.traceIds;
+  }
+  const filterWhere =
+    filterConditions.length > 0 ? `AND ${filterConditions.join(" AND ")}` : "";
 
   // When using arrayJoin for grouping (like labels) or span-level groupBy (like model),
   // we need a CTE approach to avoid trace duplication affecting counts. The CTE deduplicates
@@ -1427,7 +1457,8 @@ function buildArrayJoinTimeseriesQuery(
     !input.negateFilters &&
     groupByColumn.includes("arrayJoin")
   ) {
-    const filterValues = input.filters[input.groupBy as keyof typeof input.filters];
+    const filterValues =
+      input.filters[input.groupBy as keyof typeof input.filters];
     if (Array.isArray(filterValues) && filterValues.length > 0) {
       const paramName = "groupByFilterValues";
       groupKeyFilter = `AND group_key IN ({${paramName}:Array(String)})`;
@@ -1767,35 +1798,75 @@ function buildSubqueryTimeseriesQuery(
     });
   }
 
-  // No groupBy: use scalar subqueries wrapped in COALESCE to guarantee a row even
-  // when there is no data in one of the periods.
+  // No groupBy: use scalar subqueries to guarantee a row even when there is
+  // no data in one of the periods. Only ADDITIVE metrics coalesce the empty
+  // result (0 rows returns NULL) to 0 — for averages, extrema and percentiles
+  // an absent value means "no data", and a fabricated 0 would read as a real
+  // measurement (e.g. a 0% pass rate for an evaluator that never ran).
+  const additiveAliases = new Set(
+    input.series
+      .map((series, index) => ({ series, index }))
+      .filter(({ series }) => isZeroWhenAbsentSeries(series))
+      .map(({ series, index }) =>
+        buildMetricAlias(
+          index,
+          series.metric,
+          series.aggregation,
+          series.key,
+          series.subkey,
+        ),
+      ),
+  );
+  const scalarExpr = (
+    subquery: string,
+    alias: string,
+    quotedAlias: string,
+  ): string =>
+    additiveAliases.has(alias)
+      ? `coalesce(${subquery}, 0) AS ${quotedAlias}`
+      : `${subquery} AS ${quotedAlias}`;
+
   const currentSelectExprs: string[] = ["'current' AS period"];
   const previousSelectExprs: string[] = ["'previous' AS period"];
 
   // Add simple metrics columns (quote aliases that start with digits)
-  // Wrap entire subquery in COALESCE to handle empty result sets (0 rows returns NULL)
   for (const metric of simpleMetrics) {
     if (simpleMetrics.length > 0) {
       const quotedAlias = quoteIdentifier(metric.alias);
       currentSelectExprs.push(
-        `coalesce((SELECT ${quotedAlias} FROM simple_metrics_current), 0) AS ${quotedAlias}`,
+        scalarExpr(
+          `(SELECT ${quotedAlias} FROM simple_metrics_current)`,
+          metric.alias,
+          quotedAlias,
+        ),
       );
       previousSelectExprs.push(
-        `coalesce((SELECT ${quotedAlias} FROM simple_metrics_previous), 0) AS ${quotedAlias}`,
+        scalarExpr(
+          `(SELECT ${quotedAlias} FROM simple_metrics_previous)`,
+          metric.alias,
+          quotedAlias,
+        ),
       );
     }
   }
 
   // Add subquery metrics columns (use cte_ prefix to match CTE names, quote aliases)
-  // Wrap entire subquery in COALESCE to handle empty result sets (0 rows returns NULL)
   for (const metric of subqueryMetrics) {
     const cteName = `cte_${metric.alias}`;
     const quotedAlias = quoteIdentifier(metric.alias);
     currentSelectExprs.push(
-      `coalesce((SELECT metric_value FROM ${cteName}_current), 0) AS ${quotedAlias}`,
+      scalarExpr(
+        `(SELECT metric_value FROM ${cteName}_current)`,
+        metric.alias,
+        quotedAlias,
+      ),
     );
     previousSelectExprs.push(
-      `coalesce((SELECT metric_value FROM ${cteName}_previous), 0) AS ${quotedAlias}`,
+      scalarExpr(
+        `(SELECT metric_value FROM ${cteName}_previous)`,
+        metric.alias,
+        quotedAlias,
+      ),
     );
   }
 
@@ -1934,11 +2005,7 @@ function buildDateBucketedPipelineQuery({
     // Include filter joins by re-translating (idempotent, no side effects
     // that affect query correctness — param names are already in filterParams)
     if (input.filters) {
-      const filterJoins = translateAllFilters(
-        input.filters,
-        input.negateFilters ?? false,
-        SPAN_TIME_FILTER_BOTH_PERIODS,
-      ).requiredJoins;
+      const filterJoins = translateAllFilters(input.filters).requiredJoins;
       for (const j of filterJoins) simpleJoins.add(j);
     }
     const allSimpleExprs = [
@@ -1949,7 +2016,12 @@ function buildDateBucketedPipelineQuery({
     const simpleJoinClauses = Array.from(simpleJoins)
       .map((table) => {
         const requiredColumns = resolveRequiredColumns(table, allSimpleExprs);
-        return buildJoinClause(table, requiredColumns);
+        // Both-periods regime: bound the stored_spans JOIN to the date envelope.
+        return buildJoinClause({
+          table,
+          requiredColumns,
+          spanTimeFilter: SPAN_TIME_FILTER_BOTH_PERIODS,
+        });
       })
       .join("\n");
 
@@ -2342,6 +2414,7 @@ export function buildDataForFilterQuery(
       | Record<string, Record<string, string[]>>
     >
   >,
+  negateFilters = false,
 ): BuiltQuery {
   const ts = tableAliases.trace_summaries;
   const ss = tableAliases.stored_spans;
@@ -2350,8 +2423,8 @@ export function buildDataForFilterQuery(
   // Translate filters if provided
   const filterTranslation = translateAllFilters(
     filters ?? {},
-    false,
     SPAN_TIME_FILTER_START_END,
+    negateFilters,
   );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
@@ -2361,7 +2434,12 @@ export function buildDataForFilterQuery(
   const filterJoins = Array.from(filterTranslation.requiredJoins)
     .map((table) => {
       const requiredColumns = resolveRequiredColumns(table, filterExpressions);
-      return buildJoinClause(table, requiredColumns);
+      // Start/end regime: bound the stored_spans JOIN to the date envelope.
+      return buildJoinClause({
+        table,
+        requiredColumns,
+        spanTimeFilter: SPAN_TIME_FILTER_START_END,
+      });
     })
     .join("\n");
 
@@ -2453,7 +2531,11 @@ export function buildDataForFilterQuery(
       break;
 
     case "spans.model":
-      joins = buildJoinClause("stored_spans", new Set(["SpanAttributes"]));
+      joins = buildJoinClause({
+        table: "stored_spans",
+        requiredColumns: new Set(["SpanAttributes"]),
+        spanTimeFilter: SPAN_TIME_FILTER_START_END,
+      });
       sql = `
         SELECT
           ${ss}.SpanAttributes['gen_ai.request.model'] AS field,
@@ -2475,7 +2557,11 @@ export function buildDataForFilterQuery(
       break;
 
     case "spans.type":
-      joins = buildJoinClause("stored_spans", new Set(["SpanAttributes"]));
+      joins = buildJoinClause({
+        table: "stored_spans",
+        requiredColumns: new Set(["SpanAttributes"]),
+        spanTimeFilter: SPAN_TIME_FILTER_START_END,
+      });
       sql = `
         SELECT
           ${ss}.SpanAttributes['langwatch.span.type'] AS field,
@@ -2498,7 +2584,7 @@ export function buildDataForFilterQuery(
 
     case "evaluations.evaluator_id":
     case "evaluations.evaluator_id.guardrails_only":
-      joins = buildJoinClause("evaluation_runs");
+      joins = buildJoinClause({ table: "evaluation_runs" });
       sql = `
         SELECT
           ${es}.EvaluatorId AS field,
@@ -2576,8 +2662,8 @@ export function buildTopDocumentsQuery(
   // Translate filters
   const filterTranslation = translateAllFilters(
     filters ?? {},
-    negateFilters,
     SPAN_TIME_FILTER_START_END,
+    negateFilters,
   );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"
@@ -2676,8 +2762,8 @@ export function buildFeedbacksQuery(
   // Translate filters
   const filterTranslation = translateAllFilters(
     filters ?? {},
-    negateFilters,
     SPAN_TIME_FILTER_START_END,
+    negateFilters,
   );
   const filterWhere =
     filterTranslation.whereClause !== "1=1"

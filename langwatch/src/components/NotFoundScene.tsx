@@ -12,13 +12,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useColorMode, useColorModeValue } from "~/components/ui/color-mode";
 import { SimpleSlider } from "~/components/ui/slider";
 import { useReducedMotion } from "~/hooks/useReducedMotion";
+import { copyToClipboard } from "~/utils/clipboard";
 import { useRouter } from "~/utils/compat/next-router";
 import {
+  type CanvasColors,
   createNotFoundRenderer,
   defaultGridParams,
-  MAX_CANVAS_DPR,
-  type CanvasColors,
   type GridParams,
+  MAX_CANVAS_DPR,
 } from "./notFoundCanvasRenderer";
 
 function ParamSlider({
@@ -119,8 +120,14 @@ export function NotFoundScene() {
     const el = containerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    mouse.current.x = Math.max(-0.5, Math.min(0.5, (e.clientX - r.left) / r.width - 0.5));
-    mouse.current.y = Math.max(-0.5, Math.min(0.5, (e.clientY - r.top) / r.height - 0.5));
+    mouse.current.x = Math.max(
+      -0.5,
+      Math.min(0.5, (e.clientX - r.left) / r.width - 0.5),
+    );
+    mouse.current.y = Math.max(
+      -0.5,
+      Math.min(0.5, (e.clientY - r.top) / r.height - 0.5),
+    );
   }, []);
 
   useEffect(() => {
@@ -383,11 +390,13 @@ export function NotFoundScene() {
                 variant="outline"
                 onClick={() => {
                   console.log("Grid params:", params);
-                  void navigator.clipboard
-                    .writeText(JSON.stringify(params, null, 2))
-                    .catch((error: unknown) => {
-                      console.warn("Copy failed:", error);
-                    });
+                  void copyToClipboard(JSON.stringify(params, null, 2)).then(
+                    (copied) => {
+                      if (!copied) {
+                        console.warn("Copy failed");
+                      }
+                    },
+                  );
                 }}
               >
                 Copy Params
@@ -427,7 +436,9 @@ export function NotFoundScene() {
             lineHeight={1}
             letterSpacing="-0.04em"
             color={textRedColor}
-            animation={prefersReducedMotion ? "none" : "glitch-1 3s steps(1) infinite"}
+            animation={
+              prefersReducedMotion ? "none" : "glitch-1 3s steps(1) infinite"
+            }
             willChange="transform"
             style={{ transform: "translate(-2px, -1px)" }}
           >
@@ -443,7 +454,9 @@ export function NotFoundScene() {
             lineHeight={1}
             letterSpacing="-0.04em"
             color={textBlueColor}
-            animation={prefersReducedMotion ? "none" : "glitch-2 2.5s steps(1) infinite"}
+            animation={
+              prefersReducedMotion ? "none" : "glitch-2 2.5s steps(1) infinite"
+            }
             willChange="transform"
             style={{ transform: "translate(2px, 1px)" }}
           >
@@ -453,7 +466,11 @@ export function NotFoundScene() {
 
         <VStack
           gap={2}
-          animation={prefersReducedMotion ? "none" : "drift 4s ease-in-out infinite, text-glitch 6s steps(1) infinite"}
+          animation={
+            prefersReducedMotion
+              ? "none"
+              : "drift 4s ease-in-out infinite, text-glitch 6s steps(1) infinite"
+          }
         >
           <Text
             textStyle="lg"

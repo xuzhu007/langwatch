@@ -20,8 +20,8 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
   // 降级方案：通过临时 textarea 调用旧版 execCommand("copy")。
   if (typeof document !== "undefined") {
+    const textarea = document.createElement("textarea");
     try {
-      const textarea = document.createElement("textarea");
       textarea.value = text;
       // 移出屏幕，避免可见闪烁。
       textarea.style.position = "fixed";
@@ -31,11 +31,11 @@ export async function copyToClipboard(text: string): Promise<boolean> {
       document.body.appendChild(textarea);
       textarea.focus();
       textarea.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(textarea);
-      return ok;
+      return document.execCommand("copy");
     } catch {
       return false;
+    } finally {
+      textarea.remove();
     }
   }
 

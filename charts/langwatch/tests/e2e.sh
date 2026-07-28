@@ -26,6 +26,10 @@ source "$(cd "$(dirname "$0")/../../lib" && pwd)/test-helpers.sh"
 trap cleanup_cluster EXIT
 
 # ─── PostgreSQL helper ───────────────────────────────────────────────────────
+# Argv-embedded query — only safe for simple queries with no double quotes or
+# single-quoted literals (its only call site is `SELECT 1`). Suites needing
+# real SQL (double-quoted Prisma identifiers, string literals) should use a
+# local stdin-based `kc exec -i ... psql` variant instead.
 pg_query() {
   local pod="$1" query="$2"
   kc exec "$pod" -- \
@@ -382,6 +386,38 @@ test_workers() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SUITE: upgrade across the Deployment-strategy boundary
+#
+# Reproduces the actual customer upgrade path: app/workers are already
+# running from test_app/test_workers with NO strategy key rendered (the
+# pre-#5083 chart never set one, so the live Deployments carry only the
+# k8s-API-server-defaulted RollingUpdate). This suite upgrades with the
+# local-FS stored-objects backend enabled for the FIRST time, which is
+# exactly when the Deployment strategy flips to the kill-then-start
+# RollingUpdate override. A regression here means `helm upgrade` breaks
+# for every existing self-hosted install.
+# ─────────────────────────────────────────────────────────────────────────────
+test_upgrade_strategy_boundary() {
+  sep; info "Suite: upgrade across the Deployment-strategy boundary"
+
+  hc upgrade "$RELEASE" "$CHART_DIR" \
+    -f "$CHART_DIR/tests/values-e2e.yaml" \
+    --set app.replicaCount=1 \
+    --set workers.enabled=true \
+    --set workers.replicaCount=1 \
+    --set app.storedObjects.localFilesystem.enabled=true \
+    --wait --timeout "${TIMEOUT}s"
+  pass "helm upgrade succeeds across the strategy boundary"
+
+  local strategy
+  strategy=$(kc get deploy "${RELEASE}-app" -o jsonpath='{.spec.strategy.rollingUpdate.maxSurge}')
+  assert_eq "app Deployment strategy is kill-then-start (maxSurge=0)" "$strategy" "0"
+
+  wait_pod_ready "app.kubernetes.io/name=${RELEASE}-app" 180
+  wait_pod_ready "app.kubernetes.io/name=${RELEASE}-workers" 180
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SUITE: cold storage + backup (deploys RustFS as S3, verifies actual I/O)
 # ─────────────────────────────────────────────────────────────────────────────
 test_cold_storage_and_backup() {
@@ -557,6 +593,7 @@ main() {
   test_resources
   test_app
   test_workers
+  test_upgrade_strategy_boundary
   test_upgrade
   test_external_clickhouse
   test_cold_storage_and_backup

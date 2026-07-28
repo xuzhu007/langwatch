@@ -401,6 +401,15 @@ const ResultsPane: React.FC = React.memo(() => {
   const { data, totalHits } = useTraceListQuery();
   const timeRange = useFilterStore((s) => s.debouncedTimeRange);
   const pageTraceIds = useMemo(() => data.map((t) => t.traceId), [data]);
+  // Name lookup for the "Add to context" action, so a trace lands in Langy as
+  // its name rather than a raw id.
+  const traceNamesById = useMemo(
+    () =>
+      Object.fromEntries(
+        data.map((t) => [t.traceId, t.traceName || t.name]),
+      ) as Record<string, string | undefined>,
+    [data],
+  );
   const selectionMode = useSelectionStore((s) => s.mode);
   const explicitCount = useSelectionStore((s) => s.traceIds.size);
   const clearSelection = useSelectionStore((s) => s.clear);
@@ -490,6 +499,7 @@ const ResultsPane: React.FC = React.memo(() => {
       <BulkActionBar
         totalHits={totalHits}
         pageTraceIds={pageTraceIds}
+        traceNamesById={traceNamesById}
         traceTimeRange={{
           from: timeRange.from,
           to: timeRange.to,

@@ -34,20 +34,13 @@ export function CodeBlock({
   const shown = revealed && revealedDisplay ? revealedDisplay : display;
 
   const handleCopy = () => {
-    if (!navigator.clipboard) {
+    void copyToClipboard(copyValue).then((copied) => {
       toaster.create({
-        title: "Clipboard not available. Copy manually.",
-        type: "error",
-        duration: 3000,
-        meta: { closable: true },
-      });
-      return;
-    }
-    void copyToClipboard(copyValue).then(() => {
-      toaster.create({
-        title: copyToastTitle ?? "Copied to clipboard",
-        type: "success",
-        duration: 2000,
+        title: copied
+          ? (copyToastTitle ?? "Copied to clipboard")
+          : "Clipboard not available. Copy manually.",
+        type: copied ? "success" : "error",
+        duration: copied ? 2000 : 3000,
         meta: { closable: true },
       });
     });

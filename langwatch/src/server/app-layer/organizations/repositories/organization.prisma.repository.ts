@@ -4,12 +4,13 @@ import {
   RoleBindingScopeType,
   TeamUserRole,
   type Currency,
+  type OrganizationIntent,
   type Prisma,
   type PrismaClient,
 } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 import { generate } from "@langwatch/ksuid";
-import { NotFoundError, ValidationError } from "~/server/app-layer/domain-error";
+import { NotFoundError, ValidationError } from "@langwatch/handled-error";
 import { GROWTH_SEAT_PLAN_TYPES } from "../../../../../ee/billing/utils/growthSeatEvent";
 import { encrypt } from "~/utils/encryption";
 import { KSUID_RESOURCES } from "~/utils/constants";
@@ -189,6 +190,16 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
     return org ?? null;
   }
 
+  async findPrimaryIntentById(
+    organizationId: string,
+  ): Promise<OrganizationIntent | null> {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { primaryIntent: true },
+    });
+    return org?.primaryIntent ?? null;
+  }
+
   async getOrganizationForBilling(
     organizationId: string,
   ): Promise<OrganizationForBilling | null> {
@@ -221,6 +232,7 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
           slug: input.orgSlug,
           phoneNumber: input.phoneNumber,
           signupData: input.signUpData as Prisma.InputJsonValue | undefined,
+          primaryIntent: input.primaryIntent ?? null,
           pricingModel: input.pricingModel,
         },
       });
@@ -442,18 +454,18 @@ export class PrismaOrganizationRepository implements OrganizationRepository {
         s3SecretAccessKey: input.s3SecretAccessKey
           ? encrypt(input.s3SecretAccessKey)
           : null,
-        elasticsearchNodeUrl: input.elasticsearchNodeUrl
-          ? encrypt(input.elasticsearchNodeUrl)
-          : null,
-        elasticsearchApiKey: input.elasticsearchApiKey
-          ? encrypt(input.elasticsearchApiKey)
-          : null,
         s3Bucket: input.s3Bucket,
         ...(input.presenceEnabled !== undefined
           ? { presenceEnabled: input.presenceEnabled }
           : {}),
+        ...(input.traceSharingEnabled !== undefined
+          ? { traceSharingEnabled: input.traceSharingEnabled }
+          : {}),
         ...(input.supportContact !== undefined
           ? { supportContact: input.supportContact?.trim() || null }
+          : {}),
+        ...(input.primaryIntent !== undefined
+          ? { primaryIntent: input.primaryIntent }
           : {}),
       },
     });

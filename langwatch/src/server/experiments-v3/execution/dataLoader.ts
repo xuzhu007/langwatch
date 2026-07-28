@@ -5,7 +5,9 @@
  * for both the execute route (UI) and the run route (CI/CD API).
  */
 
+import { createLogger } from "@langwatch/observability";
 import type { Evaluator } from "@prisma/client";
+import type { Workflow } from "~/optimization_studio/types/dsl";
 import { transposeColumnsFirstToRowsFirstWithId } from "~/optimization_studio/utils/datasetUtils";
 import type { TypedAgent } from "~/server/agents/agent.repository";
 import { AgentService } from "~/server/agents/agent.service";
@@ -16,7 +18,6 @@ import {
   PromptService,
   type VersionedPrompt,
 } from "~/server/prompt-config/prompt.service";
-import { createLogger } from "~/utils/logger/server";
 
 const logger = createLogger("langwatch:experiments-v3:dataLoader");
 
@@ -168,14 +169,125 @@ export const loadDataset = async (
 };
 
 /**
+ * Applies caller-provided parameters as constant columns across every row.
+ *
+ * Each parameter overrides (or adds) that column on every row, and any
+ * parameter that is not already a column is appended to the column list. With
+ * no rows, the parameters form a single synthetic row, so an
+ * evaluate-with-flags call needs no placeholder dataset. Mirrors the row-level
+ * effect of the workflow entry-parameter injection.
+ */
+export const applyParametersToRows = ({
+  rows,
+  columns,
+  parameters,
+}: {
+  rows: Array<Record<string, unknown>>;
+  columns: Array<{ id: string; name: string; type: string }>;
+  parameters?: Record<string, string | number | boolean>;
+}): {
+  rows: Array<Record<string, unknown>>;
+  columns: Array<{ id: string; name: string; type: string }>;
+} => {
+  if (!parameters || Object.keys(parameters).length === 0) {
+    return { rows, columns };
+  }
+
+  const existingNames = new Set(columns.map((c) => c.name));
+  const parameterColumnType = (value: string | number | boolean): string =>
+    typeof value === "number"
+      ? "number"
+      : typeof value === "boolean"
+        ? "boolean"
+        : "string";
+  // A parameter overriding an existing column rewrites every row's value below,
+  // so the column's declared type must follow the parameter or the rows and the
+  // column metadata would disagree (e.g. a number written into a "string" column).
+  const columnsWithParameters = [
+    ...columns.map((column) =>
+      Object.hasOwn(parameters, column.name)
+        ? { ...column, type: parameterColumnType(parameters[column.name]!) }
+        : column,
+    ),
+    ...Object.entries(parameters)
+      .filter(([key]) => !existingNames.has(key))
+      .map(([key, value]) => ({
+        id: key,
+        name: key,
+        type: parameterColumnType(value),
+      })),
+  ];
+
+  // With no rows, the parameters themselves form a single synthetic row.
+  const baseRows = rows.length === 0 ? [{}] : rows;
+  const rowsWithParameters = baseRows.map((row) => ({ ...row, ...parameters }));
+
+  return { rows: rowsWithParameters, columns: columnsWithParameters };
+};
+
+/**
+ * Normalizes inline row-first data (from the run API or an SDK) into the loaded
+ * dataset shape. Columns are derived from the union of keys across rows.
+ *
+ * Unlike the saved/attached-dataset paths, inline values are NOT run through
+ * parseJsonColumns: row-first data arrives as native JSON (a caller posting a
+ * chat-messages or rag-contexts column sends an actual array/object, not a
+ * stringified one) and carries no declared column types to mark which strings
+ * to parse. So every column is typed "string" and values pass through as-is;
+ * structured fields are already structured. A caller that hand-sends
+ * stringified JSON is responsible for sending it parsed instead.
+ */
+const rowsFromInlineData = (
+  data: Array<Record<string, unknown>>,
+): LoadedDataset => {
+  const columnNames: string[] = [];
+  const seen = new Set<string>();
+  for (const row of data) {
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        columnNames.push(key);
+      }
+    }
+  }
+  return {
+    rows: data,
+    columns: columnNames.map((name) => ({ id: name, name, type: "string" })),
+  };
+};
+
+/**
  * Result of loading all execution data.
  */
+/**
+ * A studio workflow loaded for a workflow target: the committed DSL that is run
+ * as a whole, once per dataset row.
+ */
+export type LoadedWorkflow = {
+  id: string;
+  name: string;
+  versionId: string;
+  dsl: Workflow;
+};
+
+/**
+ * Cache key for a loaded workflow. Two targets that pin the same workflow to
+ * different versions must not share a loaded DSL, so the key includes the
+ * requested version (or "published" when following the latest committed one).
+ */
+export const workflowLoadKey = (target: {
+  workflowId?: string;
+  workflowVersionId?: string;
+}): string =>
+  `${target.workflowId ?? ""}::${target.workflowVersionId ?? "published"}`;
+
 export type LoadedExecutionData = {
   datasetRows: Array<Record<string, unknown>>;
   datasetColumns: Array<{ id: string; name: string; type: string }>;
   loadedPrompts: Map<string, VersionedPrompt>;
   loadedAgents: Map<string, TypedAgent>;
   loadedEvaluators: Map<string, Evaluator>;
+  loadedWorkflows: Map<string, LoadedWorkflow>;
 };
 
 /**
@@ -188,6 +300,9 @@ type TargetForLoading = {
   dbAgentId?: string;
   /** For evaluator targets: the database evaluator ID */
   targetEvaluatorId?: string;
+  /** For workflow targets: the studio workflow ID and pinned version */
+  workflowId?: string;
+  workflowVersionId?: string;
 };
 
 /**
@@ -200,19 +315,74 @@ type EvaluatorForLoading = {
 /**
  * Loads all execution data: dataset, prompts, agents, evaluators.
  */
+/**
+ * Optional run-time inputs that override or supply the dataset to evaluate.
+ * Sent by the run API, the workflow evaluate endpoint, and the SDKs.
+ */
+export type ExecutionDataInputs = {
+  data?: Array<Record<string, unknown>>;
+  datasetId?: string;
+  parameters?: Record<string, string | number | boolean>;
+};
+
 export const loadExecutionData = async (
   projectId: string,
   dataset: DatasetInput,
   targets: TargetForLoading[],
   evaluators: EvaluatorForLoading[],
+  inputs?: ExecutionDataInputs,
 ): Promise<LoadedExecutionData | { error: string; status: number }> => {
-  // Load dataset
-  const datasetResult = await loadDataset(dataset, projectId);
-  if ("error" in datasetResult) {
-    return datasetResult;
+  // Resolve the base rows + columns: inline data, a saved dataset id, or the
+  // attached dataset reference, in that precedence.
+  let baseDataset: LoadedDataset;
+  if (inputs?.data) {
+    baseDataset = rowsFromInlineData(inputs.data);
+  } else if (inputs?.datasetId) {
+    const fullDataset = await getFullDataset({
+      datasetId: inputs.datasetId,
+      projectId,
+      entrySelection: "all",
+    });
+    if (!fullDataset) {
+      return { error: `Dataset "${inputs.datasetId}" not found`, status: 404 };
+    }
+    const columns = (
+      (fullDataset.columnTypes as unknown as Array<{
+        name: string;
+        type: string;
+      }>) ?? []
+    ).map((c) => ({ id: c.name, name: c.name, type: c.type }));
+    const jsonColumnKeys = new Set(
+      columns
+        .filter((c) =>
+          (JSON_COLUMN_TYPES as readonly string[]).includes(c.type),
+        )
+        .map((c) => c.name),
+    );
+    baseDataset = {
+      rows: parseJsonColumns(
+        fullDataset.datasetRecords.map(
+          (r) => r.entry as Record<string, unknown>,
+        ),
+        jsonColumnKeys,
+      ),
+      columns,
+    };
+  } else {
+    const datasetResult = await loadDataset(dataset, projectId);
+    if ("error" in datasetResult) {
+      return datasetResult;
+    }
+    baseDataset = datasetResult;
   }
 
-  const { rows: datasetRows, columns: datasetColumns } = datasetResult;
+  // Apply caller parameters as constant columns across every row (and a single
+  // synthetic row when there is no dataset).
+  const { rows: datasetRows, columns: datasetColumns } = applyParametersToRows({
+    rows: baseDataset.rows,
+    columns: baseDataset.columns,
+    parameters: inputs?.parameters,
+  });
 
   // Load prompts for prompt targets
   const loadedPrompts = new Map<string, VersionedPrompt>();
@@ -273,6 +443,82 @@ export const loadExecutionData = async (
     }
   }
 
+  // Load studio workflows for workflow targets (the committed DSL run per row)
+  const loadedWorkflows = new Map<string, LoadedWorkflow>();
+
+  const loadPublishedWorkflow = async ({
+    workflowId,
+    workflowVersionId,
+  }: {
+    workflowId: string;
+    workflowVersionId?: string;
+  }): Promise<LoadedWorkflow | { error: string; status: number }> => {
+    const workflow = await prisma.workflow.findUnique({
+      where: { id: workflowId, projectId },
+    });
+    if (!workflow) {
+      return { error: `Workflow "${workflowId}" not found`, status: 404 };
+    }
+
+    const versionId = workflowVersionId ?? workflow.publishedId;
+    if (!versionId) {
+      return {
+        error: `Workflow "${workflowId}" has no committed version to evaluate`,
+        status: 400,
+      };
+    }
+
+    const version = await prisma.workflowVersion.findUnique({
+      where: { id: versionId, projectId, workflowId },
+    });
+    if (!version) {
+      return { error: `Workflow version "${versionId}" not found`, status: 404 };
+    }
+
+    return {
+      id: workflow.id,
+      name: workflow.name,
+      versionId,
+      dsl: version.dsl as unknown as Workflow,
+    };
+  };
+
+  for (const target of targets) {
+    if (target.type !== "workflow" || !target.workflowId) continue;
+    if (loadedWorkflows.has(workflowLoadKey(target))) continue;
+
+    const result = await loadPublishedWorkflow({
+      workflowId: target.workflowId,
+      workflowVersionId: target.workflowVersionId,
+    });
+    if ("error" in result) return result;
+    loadedWorkflows.set(workflowLoadKey(target), result);
+  }
+
+  // An agent target can itself wrap a Studio workflow (agent.type ===
+  // "workflow", created via Agent -> New Agent -> Workflow). That agent has no
+  // code of its own — just a pointer to the linked workflow — so it must run
+  // the whole workflow the same way a direct workflow target does, not the
+  // agent's (nonexistent) code. Resolve and cache that linked workflow here so
+  // the orchestrator can dispatch it to executeWorkflowCell.
+  for (const target of targets) {
+    if (target.type !== "agent" || !target.dbAgentId) continue;
+    const agent = loadedAgents.get(target.dbAgentId);
+    if (!agent || agent.type !== "workflow") continue;
+
+    const linkedWorkflowId =
+      agent.workflowId ??
+      (agent.config as { workflow_id?: string }).workflow_id;
+    if (!linkedWorkflowId) continue;
+
+    const key = workflowLoadKey({ workflowId: linkedWorkflowId });
+    if (loadedWorkflows.has(key)) continue;
+
+    const result = await loadPublishedWorkflow({ workflowId: linkedWorkflowId });
+    if ("error" in result) return result;
+    loadedWorkflows.set(key, result);
+  }
+
   // Load evaluators from DB (for both evaluator configs AND evaluator targets)
   const loadedEvaluators = new Map<string, Evaluator>();
   const evaluatorService = EvaluatorService.create(prisma);
@@ -311,5 +557,6 @@ export const loadExecutionData = async (
     loadedPrompts,
     loadedAgents,
     loadedEvaluators,
+    loadedWorkflows,
   };
 };

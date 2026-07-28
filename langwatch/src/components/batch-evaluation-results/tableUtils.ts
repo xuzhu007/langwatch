@@ -10,12 +10,16 @@ export const ROW_HEIGHT = 180;
 /**
  * Calculate minimum table width based on column counts
  * Row number (40) + dataset cols (210 each) + target cols (300 each)
+ * + comparison winner cols (240 each — see ComparisonWinnerCell).
  */
 export const calculateMinTableWidth = (
   datasetColCount: number,
   targetColCount: number,
+  comparisonColCount = 0,
 ): number => {
-  return 40 + datasetColCount * 210 + targetColCount * 300;
+  return (
+    40 + datasetColCount * 210 + targetColCount * 300 + comparisonColCount * 240
+  );
 };
 
 /**

@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { SavedViewService } from "../../saved-views/saved-view.service";
 import { savedViewErrorHandler } from "../../saved-views/middleware";
+import { SavedViewService } from "../../saved-views/saved-view.service";
 import { checkProjectPermission } from "../rbac";
 import { createTRPCRouter, protectedProcedure } from "../trpc";
 
@@ -62,13 +62,10 @@ export const savedViewsRouter = createTRPCRouter({
         // Storage shape. Omit for the legacy default
         // ("v1-traces-filter"). Traces v2 passes "v2-traces-lens".
         kind: z.string().optional(),
-        // Optional client-provided id. Traces v2 generates lens ids
-        // locally so the in-store active id keeps pointing at the same
-        // row after the server roundtrip completes — otherwise the
-        // active lens would be invalidated by the refetch (server id
-        // ≠ client id) and the tab strip would snap back to the first
-        // built-in. Accepts strings that look like client-side lens
-        // ids (`custom-...`). Server still generates one if omitted.
+        // 可选的客户端 ID。Traces v2 在本地生成 Lens ID，使 store 中的
+        // active ID 在服务端往返后仍指向同一行；否则 refetch 返回不同的
+        // 服务端 ID，会使当前 Lens 失效并让标签栏跳回第一个内置 Lens。
+        // 接受客户端生成的 `view_...` KSUID；省略时由服务端生成。
         id: z.string().min(1).max(128).optional(),
       }),
     )

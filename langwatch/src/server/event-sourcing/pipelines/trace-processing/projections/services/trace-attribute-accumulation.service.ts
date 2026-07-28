@@ -1,5 +1,9 @@
 import { ATTR_KEYS } from "~/server/app-layer/traces/canonicalisation/extractors/_constants";
 import type { TraceSummaryData } from "~/server/app-layer/traces/types";
+import {
+  RESERVED_INPUT_MEDIA_REFS,
+  RESERVED_OUTPUT_MEDIA_REFS,
+} from "~/shared/traces/media-refs";
 import type { NormalizedSpan } from "../../schemas/spans";
 import type { TraceOriginService } from "./trace-origin.service";
 import { parseJsonStringArray, stringAttr } from "./trace-summary.utils";
@@ -22,7 +26,10 @@ export const SPAN_ATTR_MAPPINGS = [
   // from the reasoning TOKEN count. Hoisted to the trace attribute map so
   // the drawer header can show it next to the model — the same lift that
   // surfaces the conversation id. First non-empty span value wins.
-  [ATTR_KEYS.GEN_AI_REQUEST_REASONING_EFFORT, "gen_ai.request.reasoning_effort"],
+  [
+    ATTR_KEYS.GEN_AI_REQUEST_REASONING_EFFORT,
+    "gen_ai.request.reasoning_effort",
+  ],
   [ATTR_KEYS.LANGWATCH_LANGGRAPH_THREAD_ID, "langgraph.thread_id"],
   // AI Gateway markers — stamped on every gateway-emitted customer span by
   // services/aigateway/adapters/customertracebridge/emitter.go so the
@@ -40,8 +47,14 @@ export const SPAN_ATTR_MAPPINGS = [
   // these keys; non-governance traces never carry them.
   ["langwatch.origin.kind", "langwatch.origin.kind"],
   ["langwatch.ingestion_source.id", "langwatch.ingestion_source.id"],
-  ["langwatch.ingestion_source.organization_id", "langwatch.ingestion_source.organization_id"],
-  ["langwatch.ingestion_source.source_type", "langwatch.ingestion_source.source_type"],
+  [
+    "langwatch.ingestion_source.organization_id",
+    "langwatch.ingestion_source.organization_id",
+  ],
+  [
+    "langwatch.ingestion_source.source_type",
+    "langwatch.ingestion_source.source_type",
+  ],
 ] as const;
 
 /**
@@ -172,13 +185,46 @@ export class TraceAttributeAccumulationService {
     const evaluationRunId = stringAttr(spanAttrs, "evaluation.run_id");
     if (evaluationRunId) result["evaluation.run_id"] = evaluationRunId;
 
-    const labels = spanAttrs[ATTR_KEYS.LANGWATCH_LABELS];
+    // Labels may arrive on span attrs (OTLP-direct path, where
+    // otelAttributesToNestedAttributes JSON-parses the string to an array)
+    // or on resource attrs (POST /api/collector and
+    // PATCH /api/traces/{id}/metadata, where buildResource writes
+    // JSON.stringify(labels) and parseJsonStringValues later converts it
+    // back to an array). Honor both sources so labels sent via the
+    // documented REST endpoints actually reach the trace's attribute map
+    // and the labels facet SQL. Mirrors the tag.tags handling below.
+    const labels =
+      spanAttrs[ATTR_KEYS.LANGWATCH_LABELS] ??
+      resourceAttrs[ATTR_KEYS.LANGWATCH_LABELS];
     if (typeof labels === "string") result["langwatch.labels"] = labels;
     else if (Array.isArray(labels))
       result["langwatch.labels"] = JSON.stringify(labels);
 
+    // `tag.tags` is the reserved labels key of the legacy OTLP path
+    // (otel.traces.ts maps it to reservedTraceMetadata.labels) and what the
+    // Langy worker emits via OPENCODE_RESOURCE_ATTRIBUTES (tag.tags=langy).
+    // Honor the same contract here: fold span- or resource-level tag.tags
+    // (comma-separated string or array) into langwatch.labels so the trace
+    // actually carries the tag in the UI/filters. langwatch.labels wins on
+    // conflict; tag.tags values are unioned in.
+    const tagTags = spanAttrs["tag.tags"] ?? resourceAttrs["tag.tags"];
+    const tagList = Array.isArray(tagTags)
+      ? tagTags.filter((t): t is string => typeof t === "string")
+      : typeof tagTags === "string"
+        ? tagTags
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : [];
+    if (tagList.length > 0) {
+      const existing = parseJsonStringArray(result["langwatch.labels"]);
+      result["langwatch.labels"] = JSON.stringify([
+        ...new Set([...existing, ...tagList]),
+      ]);
+    }
+
     const promptId = stringAttr(spanAttrs, "langwatch.prompt.id");
-    if (promptId && promptId.includes(":")) {
+    if (promptId?.includes(":")) {
       result["langwatch.prompt.id"] = promptId;
     }
 
@@ -200,12 +246,17 @@ export class TraceAttributeAccumulationService {
     outputSource,
     inputIsFallback,
     outputIsFallback,
+    inputMediaRefs,
+    outputMediaRefs,
   }: {
     state: TraceSummaryData;
     span: NormalizedSpan;
     outputSource: string;
     inputIsFallback: boolean;
     outputIsFallback: boolean;
+    /** Compact JSON media refs following the winning IO, or null to clear. */
+    inputMediaRefs: string | null;
+    outputMediaRefs: string | null;
   }): Record<string, string> {
     const spanAttrs = this.extractAttributes(span);
     const merged = { ...spanAttrs, ...state.attributes };
@@ -264,8 +315,16 @@ export class TraceAttributeAccumulationService {
     }
 
     this.traceOriginService.stripLegacyMarkers(merged);
-    this.traceOriginService.hoistOrigin({ state, span, mergedAttributes: merged });
-    this.traceOriginService.hoistSource({ state, span, mergedAttributes: merged });
+    this.traceOriginService.hoistOrigin({
+      state,
+      span,
+      mergedAttributes: merged,
+    });
+    this.traceOriginService.hoistSource({
+      state,
+      span,
+      mergedAttributes: merged,
+    });
 
     merged["langwatch.reserved.output_source"] = outputSource;
     if (inputIsFallback) {
@@ -277,6 +336,20 @@ export class TraceAttributeAccumulationService {
       merged["langwatch.reserved.output_is_fallback"] = "true";
     } else {
       delete merged["langwatch.reserved.output_is_fallback"];
+    }
+
+    // Media refs ride the summary so the trace list and drawer summary can
+    // render thumbnails/players without reloading span payloads. They follow
+    // the same winner as ComputedInput/Output (see TraceIOAccumulationService).
+    if (inputMediaRefs) {
+      merged[RESERVED_INPUT_MEDIA_REFS] = inputMediaRefs;
+    } else {
+      delete merged[RESERVED_INPUT_MEDIA_REFS];
+    }
+    if (outputMediaRefs) {
+      merged[RESERVED_OUTPUT_MEDIA_REFS] = outputMediaRefs;
+    } else {
+      delete merged[RESERVED_OUTPUT_MEDIA_REFS];
     }
 
     // PII redaction status tracking - accumulate span IDs by severity

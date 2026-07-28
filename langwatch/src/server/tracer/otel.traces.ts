@@ -1,3 +1,4 @@
+import { createLogger } from "@langwatch/observability";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import {
   ESpanKind,
@@ -12,10 +13,8 @@ import { getLangWatchTracer } from "langwatch";
 import cloneDeep from "lodash-es/cloneDeep";
 import Long from "long";
 import { z } from "zod";
-import { createLogger } from "~/utils/logger/server";
 import { toError } from "~/utils/posthogErrorCapture";
 import type { DeepPartial } from "../../utils/types";
-import type { CollectorJob } from "../background/types";
 import { openTelemetryToLangWatchMetadataMapping } from "./metadata";
 import {
   extractStrandsAgentsInputOutput,
@@ -23,36 +22,38 @@ import {
   isStrandsAgentsInstrumentation,
 } from "./span-event-processing/strands-agents";
 import {
+  type BaseSpan,
+  type ChatMessage,
+  type CustomMetadata,
   chatMessageSchema,
   customMetadataSchema,
+  type LLMSpan,
+  type RAGChunk,
+  type RESTEvaluation,
+  type ReservedTraceMetadata,
   rESTEvaluationSchema,
   reservedSpanParamsSchema,
   reservedTraceMetadataSchema,
+  type Span,
+  type SpanTypes,
   spanMetricsSchema,
   spanTimestampsSchema,
   spanTypesSchema,
-  typedValueChatMessagesSchema,
-  type BaseSpan,
-  type ChatMessage,
-  type LLMSpan,
-  type RAGChunk,
-  type Span,
-  type SpanTypes,
   type TypedValueChatMessages,
+  typedValueChatMessagesSchema,
 } from "./types";
 import { decodeBase64OpenTelemetryId, decodeOpenTelemetryId } from "./utils";
 
 const logger = createLogger("langwatch.tracer.otel.traces");
 const tracer = getLangWatchTracer("langwatch.tracer.otel.traces");
 
-export type TraceForCollection = Pick<
-  CollectorJob,
-  | "traceId"
-  | "spans"
-  | "reservedTraceMetadata"
-  | "customMetadata"
-  | "evaluations"
->;
+export type TraceForCollection = {
+  traceId: string;
+  spans: Span[];
+  reservedTraceMetadata: ReservedTraceMetadata;
+  customMetadata: CustomMetadata;
+  evaluations: RESTEvaluation[] | undefined;
+};
 
 export const openTelemetryTraceRequestToTracesForCollection = async (
   otelTrace: DeepPartial<IExportTraceServiceRequest>,
@@ -105,9 +106,7 @@ export const openTelemetryTraceRequestToTracesForCollection = async (
           code: SpanStatusCode.ERROR,
           message: error instanceof Error ? error.message : "Unknown error",
         });
-        span.recordException(
-          toError(error),
-        );
+        span.recordException(toError(error));
         throw error;
       }
     },
@@ -174,11 +173,31 @@ const openTelemetryTraceRequestToTraceForCollection = (
         );
         const otelTrace = cloneDeep(otelTrace_);
 
+        // Collect OTLP resource attributes (shared by every span in the
+        // request). Reserved keys (tag.tags -> labels, langwatch.thread.id ->
+        // thread_id, ...) are hoisted to reserved trace metadata exactly as
+        // they are from span attributes — Langy's opencode OTel plugin sets
+        // them on the resource, so this is what makes its traces land labeled
+        // "langy" and grouped by conversation. Everything else stays custom.
         const customMetadata: Record<string, any> = {};
+        const resourceReservedSource: Record<string, string | string[]> = {};
         for (const resourceSpan of otelTrace.resourceSpans ?? []) {
           for (const attribute of resourceSpan?.resource?.attributes ?? []) {
-            if (attribute?.key) {
-              customMetadata[attribute.key] = attribute?.value?.stringValue;
+            if (!attribute?.key) continue;
+            const value = attribute?.value?.stringValue;
+            if (
+              attribute.key in openTelemetryToLangWatchMetadataMapping &&
+              // telemetry.sdk.* are standard SDK-provenance resource attributes
+              // present on every OTLP trace, which LangWatch has always
+              // surfaced as custom metadata. Leave them there to preserve that
+              // behaviour and keep this change scoped to the trace-identity
+              // keys Langy relies on (tag.tags, langwatch.thread.id, ...).
+              !attribute.key.startsWith("telemetry.sdk.") &&
+              value != null
+            ) {
+              resourceReservedSource[attribute.key] = value;
+            } else {
+              customMetadata[attribute.key] = value;
             }
           }
         }
@@ -190,6 +209,35 @@ const openTelemetryTraceRequestToTraceForCollection = (
           reservedTraceMetadata: {},
           customMetadata,
         };
+
+        if (Object.keys(resourceReservedSource).length > 0) {
+          // tag.tags maps to labels (string[]); a resource attribute carries
+          // it as a single string (OTEL_RESOURCE_ATTRIBUTES can't express
+          // arrays), so coerce to an array before the reserved schema
+          // validates it.
+          if (typeof resourceReservedSource["tag.tags"] === "string") {
+            resourceReservedSource["tag.tags"] = resourceReservedSource[
+              "tag.tags"
+            ]
+              .split(",")
+              .map((tag: string) => tag.trim())
+              .filter(Boolean);
+          }
+          try {
+            const { reservedTraceMetadata, customMetadata: extraCustom } =
+              extractReservedAndCustomMetadata(
+                applyMappingsToMetadata(resourceReservedSource),
+              );
+            trace.reservedTraceMetadata = reservedTraceMetadata;
+            // Any reserved-source key the schema didn't claim falls back to
+            // custom metadata rather than being dropped.
+            Object.assign(trace.customMetadata, extraCustom);
+          } catch {
+            // Defensive: never let a malformed resource attribute break
+            // ingestion — keep the raw values as custom metadata.
+            Object.assign(trace.customMetadata, resourceReservedSource);
+          }
+        }
 
         for (const resourceSpan of otelTrace.resourceSpans ?? []) {
           for (const scopeSpan of resourceSpan?.scopeSpans ?? []) {
@@ -214,9 +262,7 @@ const openTelemetryTraceRequestToTraceForCollection = (
           code: SpanStatusCode.ERROR,
           message: error instanceof Error ? error.message : "Unknown error",
         });
-        span.recordException(
-          toError(error),
-        );
+        span.recordException(toError(error));
         throw error;
       }
     },
@@ -1303,9 +1349,7 @@ const addOpenTelemetrySpanAsSpan = (
           code: SpanStatusCode.ERROR,
           message: error instanceof Error ? error.message : "Unknown error",
         });
-        otelSpan.recordException(
-          toError(error),
-        );
+        otelSpan.recordException(toError(error));
         throw error;
       }
     },

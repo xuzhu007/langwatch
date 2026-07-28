@@ -9,7 +9,7 @@
 #   scripts/dev.sh dev-infra      # local redis + workers + app, everything else against shared dev
 #   scripts/dev.sh frontend-only  # no compose, pure pnpm dev against .env URLs
 #   scripts/dev.sh migration      # postgres + clickhouse on host ports for prisma migrate
-#   scripts/dev.sh full-local     # all-local-nlp + workers + bullboard + ai-server
+#   scripts/dev.sh full-local     # all-local-nlp + workers + ai-server
 #   scripts/dev.sh help           # non-interactive preset reference
 #   scripts/dev.sh down           # stop all services
 #   scripts/dev.sh ps | logs | clean | rebuild
@@ -61,7 +61,7 @@ Presets — pass as the first arg or pick interactively:
                   from your host shell. No app, no workers.
 
   full-local      Kitchen-sink local: all-local-nlp + dedicated workers
-                  container + bullboard + ai-server. Slowest boot.
+                  container + ai-server. Slowest boot.
 
 URL-override model: each preset writes `langwatch/.env.dev-up` listing only
 the URLs whose services start locally. compose loads this overlay AFTER
@@ -155,10 +155,9 @@ EOF
   done
 }
 
-# Predicate: is something already listening on host port 6379? Used by
-# frontend-only to decide whether to start its own redis container or reuse
-# an existing host redis. Mirrors check_host_redis_collision's detection but
-# returns a status instead of exiting.
+# Predicate: is something already listening on host port 6379? Shared by
+# check_host_redis_collision (the pre-flight guard for container presets) and
+# frontend-only's reuse/start branch. Returns a status; never exits.
 redis_port_in_use() {
   if command -v lsof >/dev/null 2>&1; then
     [ -n "$(lsof -iTCP:6379 -sTCP:LISTEN -t 2>/dev/null | head -n1)" ]
@@ -180,22 +179,38 @@ redis_listener_is_usable() {
   redis-cli -u redis://localhost:6379 ping 2>/dev/null | grep -qx 'PONG'
 }
 
-# Detect a host-side process holding port 6379 before redis tries to bind.
+# Predicate: is host port 6379 published by THIS compose project's own redis
+# container? The compose `redis` service binds 6379:6379, so when our own stack
+# is already up (a prior `make quickstart` left it running), `docker compose up`
+# idempotently reuses that container — re-running quickstart must NOT treat it as
+# a port collision. `--filter publish=6379` matches by the *host* published port,
+# so a stray redis mapped to some other host port (e.g. 55002->6379) is correctly
+# ignored. Another worktree's redis is rejected earlier by
+# check_stateful_collision with a clearer, volume-scoped message, so only our own
+# project's container reaches this exemption.
+redis_6379_owned_by_this_project() {
+  command -v docker >/dev/null 2>&1 || return 1
+  local me="${COMPOSE_PROJECT_NAME:-langwatch}" cid project
+  for cid in $(docker ps -q --filter "publish=6379" 2>/dev/null); do
+    project=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$cid" 2>/dev/null || true)
+    [ "$project" = "$me" ] && return 0
+  done
+  return 1
+}
+
+# Detect a host-side process holding port 6379 before the compose redis service
+# tries to bind it. Our own already-running redis container is exempt: docker
+# compose reuses it, so re-running quickstart on an up stack must not fail.
 check_host_redis_collision() {
   [ "${SKIP_HOST_REDIS_CHECK:-0}" = "1" ] && return 0
-  local pid=""
-  if command -v lsof >/dev/null 2>&1; then
-    pid=$(lsof -iTCP:6379 -sTCP:LISTEN -t 2>/dev/null | head -n1)
-  elif command -v ss >/dev/null 2>&1; then
-    ss -ltnH "sport = :6379" 2>/dev/null | grep -q ":6379" && pid="<unknown>"
-  fi
-  [ -z "$pid" ] && return 0
+  redis_port_in_use || return 0
+  redis_6379_owned_by_this_project && return 0
   cat >&2 <<EOF
-ERROR: A process is already listening on host port 6379 (redis).
-       The dev-stack redis container needs that port to bind. Stop the
-       host-side redis first (e.g. 'brew services stop redis' on macOS,
-       'sudo systemctl stop redis-server' on Linux), or set
-       SKIP_HOST_REDIS_CHECK=1 if you've intentionally repointed the dev
+ERROR: A process is already listening on host port 6379 (redis), and it is not
+       this dev stack's own redis container. The compose redis service needs
+       that port to bind. Stop the host-side redis first (e.g. 'brew services
+       stop redis' on macOS, 'sudo systemctl stop redis-server' on Linux), or
+       set SKIP_HOST_REDIS_CHECK=1 if you've intentionally repointed the dev
        stack at a host redis.
 EOF
   exit 1
@@ -301,7 +316,6 @@ run_all_local() {
 run_all_local_nlp() {
   ensure_prepared
   export APP_PORT=$(find_free_port 5560)
-  export BULLBOARD_PORT=$(find_free_port 6380)
   . "$(dirname "$0")/lib/sanitize-dev-env.sh"
   sanitize_localhost_dev_env
   write_overrides all-local-nlp
@@ -445,7 +459,6 @@ EOF
 run_full_local() {
   ensure_prepared
   export APP_PORT=$(find_free_port 5560)
-  export BULLBOARD_PORT=$(find_free_port 6380)
   export AI_SERVER_PORT=$(find_free_port 3456)
   . "$(dirname "$0")/lib/sanitize-dev-env.sh"
   sanitize_localhost_dev_env
@@ -481,7 +494,6 @@ run_meta() {
       echo "Rebuilding (removes container node_modules)..."
       $COMPOSE --profile full down
       docker volume rm "${VOLUME_PREFIX:-langwatch}-app-modules" 2>/dev/null || true
-      docker volume rm "${VOLUME_PREFIX:-langwatch}-bullboard-modules" 2>/dev/null || true
       docker volume rm "${VOLUME_PREFIX:-langwatch}-goose-bin" 2>/dev/null || true
       local last_preset=""
       [ -f "$LAST_CHOICE_FILE" ] && last_preset=$(cat "$LAST_CHOICE_FILE")
@@ -542,7 +554,7 @@ Pick a preset:
   4) dev-infra       Local app + Redis + workers, shared dev infra for PG/CH/NLP/S3. Most faithful e2e.
   5) frontend-only   No compose. UI / design / static iteration.
   6) migration       postgres + clickhouse on host ports for prisma migrate (no app, no workers).
-  7) full-local      Kitchen-sink local: all-local-nlp + dedicated workers container + bullboard + ai-server.
+  7) full-local      Kitchen-sink local: all-local-nlp + dedicated workers container + ai-server.
 
   d) down            stop all services
   l) logs            tail compose logs

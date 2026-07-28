@@ -4,6 +4,7 @@
  * Integration tests for SavedViews tRPC endpoints.
  * Tests the actual CRUD operations through the tRPC layer.
  */
+import { getEnvironment, parse, setEnvironment } from "@langwatch/ksuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getTestUser } from "../../../../utils/testUtils";
 import { prisma } from "../../../db";
@@ -24,8 +25,16 @@ describe("SavedViews Endpoints", () => {
   const projectId = "test-project-id";
   let caller: ReturnType<typeof appRouter.createCaller>;
   let userId: string;
+  const previousKsuidEnvironment = getEnvironment();
+
+  const expectViewKsuid = (id: string) => {
+    const parsed = parse(id);
+    expect(parsed.environment).toBe("local");
+    expect(parsed.resource).toBe("view");
+  };
 
   beforeAll(async () => {
+    setEnvironment("local");
     // Clean up any existing test saved views before running tests
     await prisma.savedView.deleteMany({
       where: { projectId },
@@ -43,9 +52,13 @@ describe("SavedViews Endpoints", () => {
   });
 
   afterAll(async () => {
-    await prisma.savedView.deleteMany({
-      where: { projectId },
-    });
+    try {
+      await prisma.savedView.deleteMany({
+        where: { projectId },
+      });
+    } finally {
+      setEnvironment(previousKsuidEnvironment);
+    }
   });
 
   describe("getAll", () => {
@@ -54,6 +67,7 @@ describe("SavedViews Endpoints", () => {
       await prisma.savedView.deleteMany({ where: { projectId } });
     });
 
+    /** @scenario "First-visit projects auto-seed and show All Traces plus 4 seed views" */
     it("seeds views on first access for a project", async () => {
       const result = await caller.savedViews.getAll({ projectId });
 
@@ -65,8 +79,14 @@ describe("SavedViews Endpoints", () => {
         "Playground",
         "Gateway",
       ]);
+      const ids = result.map((view) => view.id);
+      expect(ids).toHaveLength(new Set(ids).size);
+      for (const id of ids) {
+        expectViewKsuid(id);
+      }
     });
 
+    /** @scenario "getAll returns views ordered by position" */
     it("returns views ordered by order field", async () => {
       const result = await caller.savedViews.getAll({ projectId });
 
@@ -83,9 +103,33 @@ describe("SavedViews Endpoints", () => {
       // Same IDs means no re-seeding happened
       expect(second.map((v) => v.id)).toEqual(first.map((v) => v.id));
     });
+
+    it("preserves a legacy id while backfilling missing seed views with KSUIDs", async () => {
+      await prisma.savedView.deleteMany({ where: { projectId } });
+      await prisma.savedView.create({
+        data: {
+          id: "legacy-saved-view-id",
+          projectId,
+          name: "Application",
+          filters: { "traces.origin": ["application"] },
+          order: 0,
+        },
+      });
+
+      const result = await caller.savedViews.getAll({ projectId });
+
+      expect(result).toHaveLength(5);
+      expect(result.find((view) => view.name === "Application")?.id).toBe(
+        "legacy-saved-view-id",
+      );
+      for (const view of result.filter((view) => view.name !== "Application")) {
+        expectViewKsuid(view.id);
+      }
+    });
   });
 
   describe("create", () => {
+    /** @scenario "create adds a new view at the end" */
     it("adds a view with correct data and order", async () => {
       const result = await caller.savedViews.create({
         projectId,
@@ -100,6 +144,7 @@ describe("SavedViews Endpoints", () => {
       expect(result.query).toBe("error timeout");
       expect(result.period).toEqual({ relativeDays: 7 });
       expect(result.projectId).toBe(projectId);
+      expectViewKsuid(result.id);
     });
 
     it("sets order after last existing view", async () => {
@@ -114,9 +159,27 @@ describe("SavedViews Endpoints", () => {
 
       expect(result.order).toBe(lastOrder + 1);
     });
+
+    it("generates a unique view KSUID when the client omits the id", async () => {
+      const first = await caller.savedViews.create({
+        projectId,
+        name: "Generated View A",
+        filters: {},
+      });
+      const second = await caller.savedViews.create({
+        projectId,
+        name: "Generated View B",
+        filters: {},
+      });
+
+      expectViewKsuid(first.id);
+      expectViewKsuid(second.id);
+      expect(second.id).not.toBe(first.id);
+    });
   });
 
   describe("delete", () => {
+    /** @scenario "delete removes a view" */
     it("removes a view", async () => {
       const created = await caller.savedViews.create({
         projectId,
@@ -166,6 +229,7 @@ describe("SavedViews Endpoints", () => {
   });
 
   describe("rename", () => {
+    /** @scenario "rename updates the view name" */
     it("updates the view name", async () => {
       const created = await caller.savedViews.create({
         projectId,
@@ -198,6 +262,7 @@ describe("SavedViews Endpoints", () => {
   });
 
   describe("reorder", () => {
+    /** @scenario "reorder updates the order of all views" */
     it("updates order for all views", async () => {
       // Clean slate
       await prisma.savedView.deleteMany({ where: { projectId } });
@@ -317,9 +382,7 @@ describe("SavedViews Endpoints", () => {
 
       const result = await caller.savedViews.getAll({ projectId });
 
-      const otherUserViews = result.filter(
-        (v) => v.userId === otherUser.id,
-      );
+      const otherUserViews = result.filter((v) => v.userId === otherUser.id);
       expect(otherUserViews).toHaveLength(0);
     });
   });

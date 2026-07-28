@@ -65,7 +65,8 @@ const hasCompositeOrgKey = (clause: any): boolean => {
 // id (a team or project id), so it resolves to exactly one organization.
 const hasInlineScope = (clause: any): boolean =>
   typeof clause?.scopeType === "string" &&
-  (typeof clause?.scopeId === "string" || isNonEmptyStringList(clause?.scopeId));
+  (typeof clause?.scopeId === "string" ||
+    isNonEmptyStringList(clause?.scopeId));
 
 const boundsToSingleOrg = (clause: any): boolean =>
   hasOrganizationId(clause) || hasRowId(clause) || hasCompositeOrgKey(clause);
@@ -109,6 +110,13 @@ const ORG_SCOPED_MODELS: Record<string, OrgScopedModelConfig> = {
   RoutingPolicy: {},
   AiToolEntry: {},
   GatewayBudget: {},
+  // GitHub App installation mapped to a LangWatch org (Langy bot-authored PRs).
+  // Bound by organizationId (admin reads) or the globally-unique installationId
+  // (webhook + mint paths). Issue #4747; spec
+  // specs/langy/langy-github-install.feature.
+  LangyGithubInstallation: {
+    extraBound: (c) => typeof c?.installationId === "string",
+  },
 };
 
 /**

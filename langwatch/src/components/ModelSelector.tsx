@@ -10,8 +10,20 @@ import {
 } from "@chakra-ui/react";
 import { AlertTriangle, Search } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { LuSettings2 } from "react-icons/lu";
 import { useOrganizationTeamProject } from "../hooks/useOrganizationTeamProject";
-import { modelProviderIcons } from "../server/modelProviders/iconsMap";
+import {
+  isCodexModel,
+  isModelAllowedForFeature,
+} from "../server/modelProviders/codexRestrictions";
+import {
+  buildCustomModelDisplayNames,
+  modelDisplayLabel,
+} from "../server/modelProviders/customModelDisplayNames";
+import {
+  modelProviderIcons,
+  ProviderIconGlyph,
+} from "../server/modelProviders/iconsMap";
 import type { MaybeStoredModelProvider } from "../server/modelProviders/registry";
 import { allLitellmModels } from "../server/modelProviders/registry";
 import { api } from "../utils/api";
@@ -20,12 +32,11 @@ import {
   MODEL_ICON_SIZE,
   MODEL_ICON_SIZE_SM,
 } from "./llmPromptConfigs/constants";
+import { NoModelsConfiguredCallout } from "./NoModelsConfiguredCallout";
 import { InputGroup } from "./ui/input-group";
 import { Link } from "./ui/link";
 import { Select } from "./ui/select";
 import { Tooltip } from "./ui/tooltip";
-import { LuSettings2 } from "react-icons/lu";
-import { NoModelsConfiguredCallout } from "./NoModelsConfiguredCallout";
 
 export type ModelOption = {
   label: string;
@@ -60,10 +71,31 @@ export type ModelOptionGroup = {
 
 export type GroupedModelOptions = ModelOptionGroup[];
 
+/**
+ * Fail-closed gate for restricted-provider models (codex today): a picker
+ * only offers them when it declares which feature it serves AND that
+ * feature is licensed to run them. Pickers that pass no `featureKey`
+ * (playground, workflows, evaluators) therefore never see them.
+ * Exported for tests.
+ */
+export const filterRestrictedModels = ({
+  models,
+  featureKey,
+}: {
+  models: string[];
+  featureKey?: string | undefined;
+}): string[] =>
+  models.filter((model) =>
+    featureKey === undefined
+      ? !isCodexModel(model)
+      : isModelAllowedForFeature({ modelId: model, featureKey }),
+  );
+
 export const useModelSelectionOptions = (
   options: string[],
   model: string,
   mode: "chat" | "embedding" = "chat",
+  opts?: { featureKey?: string | undefined },
 ) => {
   const { project } = useOrganizationTeamProject();
   // `listAllForProjectForFrontend` returns the providers actually
@@ -104,7 +136,10 @@ export const useModelSelectionOptions = (
     };
   }
 
-  const allModels = getCustomModels(providersByKey, options, mode);
+  const allModels = filterRestrictedModels({
+    models: getCustomModels(providersByKey, options, mode),
+    featureKey: opts?.featureKey,
+  });
 
   // Build a set of custom model IDs for quick lookup
   const customModelIdSet = new Set<string>();
@@ -118,12 +153,15 @@ export const useModelSelectionOptions = (
     }
   }
 
+  const displayNames = buildCustomModelDisplayNames(
+    modelProviders.data?.providers ?? [],
+  );
+
   const selectOptions: ModelOption[] = allModels.map((modelValue) => {
     const provider = modelValue.split("/")[0]!;
-    const modelName = modelValue.split("/").slice(1).join("/");
 
     return {
-      label: modelName,
+      label: modelDisplayLabel({ fullModelId: modelValue, displayNames }),
       value: modelValue,
       icon: modelProviderIcons[provider as keyof typeof modelProviderIcons],
       isDisabled: false,
@@ -190,6 +228,8 @@ export const ModelSelector = React.memo(function ModelSelector({
   mode,
   showConfigureAction = false,
   forFeatureLabel,
+  open,
+  onOpenChange,
 }: {
   model?: string;
   options: string[];
@@ -202,6 +242,10 @@ export const ModelSelector = React.memo(function ModelSelector({
    *  models are available — e.g. "for AI search", "for evaluators".
    *  Optional; the callout falls back to a generic message. */
   forFeatureLabel?: string;
+  /** Controlled open state. Pass with onOpenChange to drive the dropdown
+   *  from outside — e.g. force-close it when the parent collapses. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { selectOptions, groupedByProvider, isEmpty, isLoading } =
     useModelSelectionOptions(options, model, mode);
@@ -248,9 +292,10 @@ export const ModelSelector = React.memo(function ModelSelector({
   const selectValueText = (
     <HStack overflow="hidden" gap={2} align="center">
       {selectedItem?.icon && (
-        <Box minWidth={size === "sm" ? MODEL_ICON_SIZE_SM : MODEL_ICON_SIZE}>
-          {selectedItem.icon}
-        </Box>
+        <ProviderIconGlyph
+          provider={providerKey as keyof typeof modelProviderIcons}
+          size={size === "sm" ? MODEL_ICON_SIZE_SM : MODEL_ICON_SIZE}
+        />
       )}
       <Box
         fontSize={size === "sm" ? 12 : 14}
@@ -343,6 +388,8 @@ export const ModelSelector = React.memo(function ModelSelector({
           onChange(selectedValue);
         }
       }}
+      {...(open !== undefined ? { open } : {})}
+      {...(onOpenChange ? { onOpenChange: (e) => onOpenChange(e.open) } : {})}
       loopFocus={true}
       highlightedValue={highlightedValue}
       onHighlightChange={(details) => {
@@ -380,6 +427,8 @@ export const ModelSelector = React.memo(function ModelSelector({
                 size="sm"
                 placeholder="Search models"
                 type="search"
+                background="transparent"
+                color="fg"
                 value={modelSearch}
                 onChange={(e) => setModelSearch(e.target.value)}
               />
@@ -403,7 +452,10 @@ export const ModelSelector = React.memo(function ModelSelector({
                 // Add a subtle divider between custom and registry models
                 const prevItem = group.models[itemIndex - 1];
                 const showDivider =
-                  hasCustom && hasRegistry && !item.isCustom && prevItem?.isCustom;
+                  hasCustom &&
+                  hasRegistry &&
+                  !item.isCustom &&
+                  prevItem?.isCustom;
 
                 return (
                   <React.Fragment key={item.value}>
@@ -418,9 +470,14 @@ export const ModelSelector = React.memo(function ModelSelector({
                     <Select.Item item={item}>
                       <HStack gap={2}>
                         {item.icon && (
-                          <Box width={MODEL_ICON_SIZE} minWidth={MODEL_ICON_SIZE}>
-                            {item.icon}
-                          </Box>
+                          <ProviderIconGlyph
+                            provider={
+                              item.value.split(
+                                "/",
+                              )[0] as keyof typeof modelProviderIcons
+                            }
+                            size={MODEL_ICON_SIZE}
+                          />
                         )}
                         <Box
                           fontSize={size === "sm" ? 12 : 14}
@@ -446,7 +503,18 @@ export const ModelSelector = React.memo(function ModelSelector({
             borderColor="border"
             zIndex="1"
           >
-            <Button width="full" fontWeight="500" color="fg.muted" paddingY={5} justifyContent="flex-start" variant="ghost" colorPalette="gray" size="sm" borderRadius="none" asChild>
+            <Button
+              width="full"
+              fontWeight="500"
+              color="fg.muted"
+              paddingY={5}
+              justifyContent="flex-start"
+              variant="ghost"
+              colorPalette="gray"
+              size="sm"
+              borderRadius="none"
+              asChild
+            >
               <Link
                 href="/settings/model-providers"
                 isExternal
