@@ -503,7 +503,9 @@ describe("<SubscriptionPage/>", () => {
           await user.click(screen.getByRole("button", { name: /Done/i }));
 
           await waitFor(() => {
-            expect(screen.getByTestId("update-seats-block")).toBeInTheDocument();
+            expect(
+              screen.getByTestId("update-seats-block"),
+            ).toBeInTheDocument();
           });
         } finally {
           setEnvironment(previousKsuidEnvironment);
