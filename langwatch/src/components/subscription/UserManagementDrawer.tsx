@@ -16,11 +16,12 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
+import { generate } from "@langwatch/ksuid";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer } from "~/components/ui/drawer";
 import type { MemberType } from "~/server/license-enforcement/member-classification";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 import {
   type BillingInterval,
   type Currency,
@@ -106,7 +107,7 @@ export function UserManagementDrawer({
 
   const handleAddSeat = () => {
     const newPlannedUser: PlannedUser = {
-      id: `planned-${generateUUID()}`,
+      id: generate(KSUID_RESOURCES.PLANNED_USER).toString(),
       email: "",
       memberType: "FullMember",
     };
@@ -143,7 +144,7 @@ export function UserManagementDrawer({
 
     const autoRows = localPlannedUsers.filter((u) => u.id.startsWith("auto-"));
     const manualRows = localPlannedUsers.filter((u) =>
-      u.id.startsWith("planned-"),
+      u.id.startsWith(`${KSUID_RESOURCES.PLANNED_USER}_`),
     );
     const autoRowsWithEmail = autoRows.filter((u) => u.email.trim() !== "");
     const deletedAutoCount = initialAutoFillCount - autoRows.length;

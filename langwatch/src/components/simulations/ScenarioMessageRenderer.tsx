@@ -1,4 +1,5 @@
 import { Box, HStack, Image, Text, VStack } from "@chakra-ui/react";
+import { generate } from "@langwatch/ksuid";
 import { useEffect, useMemo, useRef } from "react";
 import { Settings } from "react-feather";
 import { getDisplayRoleVisuals } from "~/features/traces-v2/components/TraceDrawer/scenarioRoles";
@@ -8,7 +9,7 @@ import type { ScenarioMessageSnapshotEvent } from "~/server/scenarios/scenario-e
 import { coerceContentToArray } from "~/server/stored-objects/coerce-content-to-array";
 import { visitContentPart } from "~/shared/content-parts/visit-content-part";
 import type { MediaPartData } from "~/shared/traces/mediaParts";
-import { generateUUID } from "~/utils/generateUUID";
+import { KSUID_RESOURCES } from "~/utils/constants";
 import { RenderInputOutput } from "../traces/RenderInputOutput";
 import { MediaPart } from "./MediaPart";
 import { RunTurnSeparator } from "./RunTurnSeparator";
@@ -323,7 +324,7 @@ function flattenMessages(
     } else if (msg.role === "tool") {
       items.push({
         kind: "tool_result",
-        id: msg.id ?? generateUUID(),
+        id: msg.id ?? generate(KSUID_RESOURCES.SCENARIO_MESSAGE).toString(),
         result: safeJsonParseOrStringFallback(
           typeof msg.content === "string"
             ? msg.content
@@ -363,7 +364,7 @@ function flattenContent(msg: RawMessage): DisplayItem[] {
     return [
       {
         kind: "text",
-        id: msg.id ?? generateUUID(),
+        id: msg.id ?? generate(KSUID_RESOURCES.SCENARIO_MESSAGE).toString(),
         role: msg.role ?? "assistant",
         content: raw,
         traceId: msg.trace_id,
