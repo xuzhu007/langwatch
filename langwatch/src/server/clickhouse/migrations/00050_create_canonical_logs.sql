@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS ${CLICKHOUSE_DATABASE}.log_usage_estimates
 ENGINE = ${CLICKHOUSE_ENGINE_REPLACING_PREFIX:-ReplacingMergeTree(}DedupVersion)
 PARTITION BY toYYYYMM(AcceptedAt)
 ORDER BY (OrganizationId, TenantId, RecordId)
-TTL AcceptedAt + INTERVAL 13 MONTH DELETE
+TTL toDateTime(AcceptedAt) + INTERVAL 13 MONTH DELETE
 SETTINGS index_granularity = 8192${CLICKHOUSE_STORAGE_POLICY_SETTING};
 -- +goose StatementEnd
 

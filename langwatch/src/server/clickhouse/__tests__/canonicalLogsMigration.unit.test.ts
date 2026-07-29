@@ -34,7 +34,9 @@ describe("canonical log ClickHouse migration", () => {
     const usage = tableDefinition("log_usage_estimates");
     expect(usage).toContain("OrganizationId String");
     expect(usage).toContain("CanonicalSourceBytes UInt32");
-    expect(usage).toContain("TTL AcceptedAt + INTERVAL 13 MONTH DELETE");
+    expect(usage).toContain(
+      "TTL toDateTime(AcceptedAt) + INTERVAL 13 MONTH DELETE",
+    );
     expect(usage).not.toMatch(/BodyJson|AttributesJson|CanonicalPayload/);
   });
 
