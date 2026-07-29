@@ -50,7 +50,9 @@ describe("canonical metric ClickHouse migration", () => {
     expect(shadow).toContain("OrganizationId String");
     expect(shadow).toContain("TenantId String");
     expect(shadow).toContain("AcceptedHour DateTime");
-    expect(shadow).toContain("TTL AcceptedAt + INTERVAL 13 MONTH DELETE");
+    expect(shadow).toContain(
+      "TTL toDateTime(AcceptedAt) + INTERVAL 13 MONTH DELETE",
+    );
     expect(shadow).not.toMatch(
       /Attributes|CanonicalPayload|ValueDouble|BucketCounts/,
     );
