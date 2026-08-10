@@ -503,7 +503,11 @@ export class TraceService {
     traceIds: string[],
     protections: Protections,
     occurredAt?: { from: number; to: number },
-    opts?: { full?: boolean; includeSpans?: boolean; withEditOverlay?: boolean },
+    opts?: {
+      full?: boolean;
+      includeSpans?: boolean;
+      withEditOverlay?: boolean;
+    },
   ): Promise<Trace[]> {
     return this.tracer.withActiveSpan(
       "TraceService.getTracesWithSpans",
