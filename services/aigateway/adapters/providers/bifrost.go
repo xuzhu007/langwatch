@@ -11,9 +11,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -25,6 +27,8 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/langwatch/langwatch/pkg/herr"
@@ -53,6 +57,10 @@ type BifrostRouter struct {
 	discoveryOnce   sync.Once
 	discoveryHTTP   *http.Client
 	discoveryModels *modelsDiscoveryCache
+	// hostedCatalogs overrides hostedModelCatalogs (tests only), pointing
+	// hosted providers' catalog probes at local servers. nil means the
+	// production table; an empty non-nil map disables hosted probes.
+	hostedCatalogs map[domain.ProviderID]catalogProbe
 	// codexClient streams against OpenAI's codex backend (no overall
 	// timeout — turns run for minutes; cancellation rides the context).
 	codexClient *http.Client
@@ -175,12 +183,12 @@ func (r *BifrostRouter) validateCredentialEndpoints(ctx context.Context, cred do
 // + un-normalizes the response back to OpenAI shape.
 //
 // For /v1/messages (RequestTypeMessages) the inbound body is already
-// provider-native (Anthropic /v1/messages shape). Running it through
-// the OpenAI parser would silently drop Anthropic-specific fields like
-// `thinking`, so we opt into Bifrost's raw-forward mode and let it
-// passthrough. Downstream VKs for `/v1/messages` are expected to route
-// to an Anthropic-family provider; sending it to OpenAI is a caller
-// error and Bifrost/OpenAI will reject accordingly.
+// provider-native (Anthropic /v1/messages shape). Destinations that speak
+// the Anthropic wire format keep Bifrost's raw-forward mode so the bytes
+// pass through untouched; every other destination is translated through
+// the neutral Responses request (see anthropic_translation.go), because
+// forwarding an Anthropic body verbatim hands the provider JSON it
+// cannot parse.
 func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred domain.Credential) (*domain.Response, error) {
 	if err := r.validateCredentialEndpoints(ctx, cred); err != nil {
 		return nil, err
@@ -201,7 +209,13 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 
 	// Codex streams upstream always (the backend is SSE-only); the
 	// non-streaming path aggregates to the completed Response. See codex.go.
+	// The backend speaks the Responses dialect only, so /v1/messages is
+	// translated first (anthropic_codex.go): raw-forwarding an Anthropic body
+	// would be rejected before it ever left the gateway.
 	if cred.ProviderID == domain.ProviderOpenAICodex {
+		if req.Type == domain.RequestTypeMessages {
+			return r.dispatchMessagesTranslatedCodex(ctx, req, model, cred)
+		}
 		return r.dispatchCodex(ctx, req, model, cred)
 	}
 
@@ -227,16 +241,24 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 		return r.dispatchPassthrough(ctx, req, provider, model, cred)
 	}
 
+	// /v1/messages to a destination that does not speak the Anthropic wire
+	// format is translated rather than raw-forwarded. Forwarding verbatim
+	// hands the provider a body it cannot parse and surfaces its own
+	// "Unknown parameter: 'system'" back to the caller.
+	if req.Type == domain.RequestTypeMessages && !isAnthropicWireProvider(provider) {
+		return r.dispatchMessagesTranslated(ctx, req, provider, model, cred)
+	}
+
 	// Managed-Bedrock with a per-request runtime endpoint (the customer's
 	// VPC endpoint) dispatches through the official AWS SDK bedrockruntime
 	// client with BaseEndpoint pinned to that VPCE, so the request is
 	// SigV4-signed for and sent to that host instead of the public AWS
 	// endpoint. Without this, the customer's VPCE-conditioned IAM policy
-	// rejects the InvokeModel with a 403. Gated to RequestTypeChat only:
-	// /v1/messages must stay on the raw-forward path below (routing
-	// Anthropic-native bodies through Converse would drop messages-only
-	// fields like `thinking`); embeddings/responses/passthrough are handled
-	// above. A no-op for Bedrock credentials without a runtime endpoint.
+	// rejects the InvokeModel with a 403. Gated to RequestTypeChat here:
+	// /v1/messages took the translated lane above, which runs its own VPCE
+	// intercept (anthropic_bedrock_vpce.go); embeddings/responses/passthrough
+	// are handled above. A no-op for Bedrock credentials without a runtime
+	// endpoint.
 	if req.Type == domain.RequestTypeChat {
 		if endpoint, err := bedrockVPCEEndpoint(cred); err != nil {
 			return nil, err
@@ -247,8 +269,9 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 
 	bfReq, dispatchCtx, err := buildChatRequest(ctx, req, provider, model)
 	if err != nil {
-		return nil, err
+		return nil, classifyChatBuildError(ctx, err)
 	}
+	stampParamsDropped(ctx, paramsDroppedFrom(dispatchCtx))
 
 	bfCtx := bfschemas.NewBifrostContext(withCredential(dispatchCtx, cred), time.Time{})
 
@@ -279,20 +302,81 @@ func (r *BifrostRouter) Dispatch(ctx context.Context, req *domain.Request, cred 
 	// shape.
 	if req.Type == domain.RequestTypeMessages {
 		if rawBody, ok := rawResponseBytes(resp); ok {
+			usage := extractUsage(resp)
+			// The normalized usage struct has one flat cache-write count, so
+			// the write's lifetime is only in the provider's own body. Read it
+			// back off the bytes we are about to return, then reconcile: this
+			// lane mixes the normalized struct's write total with a split read
+			// from the raw bytes, and on Anthropic-native responses the struct
+			// reports no writes at all.
+			usage.CacheCreation1hTokens = anthropicCacheCreation1h(rawBody)
+			usage = usage.ReconcileCacheWrites()
 			return &domain.Response{
 				Body:       rawBody,
 				StatusCode: http.StatusOK,
-				Usage:      extractUsage(resp),
+				Usage:      usage,
 			}, nil
 		}
 	}
 
 	body, _ := sonic.Marshal(resp)
+	// Translated-lane response contract: a 200 must carry at least one
+	// choice, and a policy drop must be visible on the envelope. Scoped to
+	// the translated lanes: an OpenAI-compatible target can legitimately
+	// answer 200 with an empty choices array when its safety system blocks
+	// the output, and rewriting that into finish_reason "length" would
+	// report a truncation that never happened.
+	if _, translated := policyLaneFor(provider); translated {
+		body = ensureChoicesPresent(body)
+	}
+	body = injectParamsDropped(body, paramsDroppedFrom(dispatchCtx))
 	return &domain.Response{
 		Body:       body,
 		StatusCode: http.StatusOK,
 		Usage:      extractUsage(resp),
 	}, nil
+}
+
+// ensureChoicesPresent repairs a 200 whose choices came back null or
+// empty. The gemini translator skips candidates whose content has no
+// parts (providers/gemini/chat.go, the thinking-exhausted-cap case), so
+// a model that spent the whole completion budget on thinking produced an
+// HTTP 200 with "choices": null, usage billed, and no signal anywhere: an
+// empty success that also breaks strict OpenAI parsers. Synthesizing a
+// finish_reason "length" choice with empty content makes the outcome what
+// an OpenAI client understands: the cap truncated the answer.
+func ensureChoicesPresent(body []byte) []byte {
+	choices := gjson.GetBytes(body, "choices")
+	if choices.IsArray() && len(choices.Array()) > 0 {
+		return body
+	}
+	out, err := sjson.SetBytes(body, "choices", []map[string]any{{
+		"index": 0,
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": "",
+		},
+		"finish_reason": "length",
+	}})
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// injectParamsDropped records the parameter-policy drop list on the
+// response envelope (extra_fields.params_dropped), alongside the
+// X-LangWatch-Params-Dropped header and the span attribute, so a dropped
+// parameter is observable from the response body alone.
+func injectParamsDropped(body []byte, dropped []string) []byte {
+	if len(dropped) == 0 {
+		return body
+	}
+	out, err := sjson.SetBytes(body, "extra_fields.params_dropped", dropped)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // dispatchResponses routes /v1/responses traffic through Bifrost's
@@ -500,8 +584,14 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 	}
 
 	// Codex bypasses Bifrost entirely: a direct SSE proxy to OpenAI's codex
-	// backend with OAuth + one-shot token refresh. See codex.go.
+	// backend with OAuth + one-shot token refresh. See codex.go. Its backend
+	// speaks the Responses dialect only, so /v1/messages goes through the
+	// translated codex lane (anthropic_codex.go) and comes back as the
+	// Anthropic SSE union.
 	if cred.ProviderID == domain.ProviderOpenAICodex {
+		if req.Type == domain.RequestTypeMessages {
+			return r.dispatchMessagesTranslatedCodexStream(ctx, req, model, cred)
+		}
 		return r.dispatchCodexStream(ctx, req, model, cred)
 	}
 
@@ -516,14 +606,23 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 	}
 
 	if req.Type == domain.RequestTypeMessages {
-		return r.dispatchMessagesStream(ctx, req, provider, model, cred)
+		// Anthropic-wire destinations keep the raw-forward passthrough so the
+		// provider's own SSE frames reach the client untouched. Everything
+		// else is translated: PassthroughStream would POST /v1/messages to a
+		// provider that has no such route, and the iterator would then block
+		// on a channel yielding neither chunk nor error.
+		if isAnthropicWireProvider(provider) {
+			return r.dispatchMessagesStream(ctx, req, provider, model, cred)
+		}
+		return r.dispatchMessagesTranslatedStream(ctx, req, provider, model, cred)
 	}
 
 	// Managed-Bedrock with a per-request runtime endpoint streams through the
 	// official Bedrock ConverseStream API over the customer's VPC endpoint —
-	// same rationale as the non-streaming Dispatch intercept above, and gated
-	// to RequestTypeChat for the same reason (/v1/messages stays raw-forward).
-	// A no-op for Bedrock credentials without a runtime endpoint.
+	// same rationale as the non-streaming Dispatch intercept above. Gated to
+	// RequestTypeChat because /v1/messages took its own lanes above, each
+	// with its own VPCE handling. A no-op for Bedrock credentials without a
+	// runtime endpoint.
 	if req.Type == domain.RequestTypeChat {
 		if endpoint, err := bedrockVPCEEndpoint(cred); err != nil {
 			return nil, err
@@ -538,8 +637,10 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 
 	bfReq, dispatchCtx, err := buildChatRequest(ctx, req, provider, model)
 	if err != nil {
-		return nil, err
+		return nil, classifyChatBuildError(ctx, err)
 	}
+	dropped := paramsDroppedFrom(dispatchCtx)
+	stampParamsDropped(ctx, dropped)
 
 	bfCtx := bfschemas.NewBifrostContext(withCredential(dispatchCtx, cred), time.Time{})
 
@@ -548,7 +649,33 @@ func (r *BifrostRouter) DispatchStream(ctx context.Context, req *domain.Request,
 		return nil, errFromBifrost(ctx, berr, bifrostResponseHeaders(bfCtx))
 	}
 
-	return &bifrostStreamIterator{ch: ch}, nil
+	return &bifrostStreamIterator{ch: ch, paramsDropped: dropped}, nil
+}
+
+// classifyChatBuildError turns a buildChatRequest failure into the right
+// client-facing 400: parameter-policy refusals carry the policy's full
+// sentence under unsupported_parameter (the code OpenAI itself uses for
+// parameter rejections), everything else is a malformed client body.
+func classifyChatBuildError(ctx context.Context, err error) error {
+	var refusal *paramRefusalError
+	if errors.As(err, &refusal) {
+		return herr.New(ctx, domain.ErrUnsupportedParameter, herr.M{"message": refusal.msg, "fault": "customer"})
+	}
+	// Everything else buildChatRequest can reject is a client-body problem
+	// (unparseable JSON, malformed params): classify it as a 400 the same
+	// way the embeddings lane does, not an internal error.
+	return herr.New(ctx, domain.ErrBadRequest, herr.M{"reason": err.Error()})
+}
+
+// stampParamsDropped records the policy drop list on the gateway's
+// request span so drops are visible on the trace, not only on the
+// response envelope. Parameter names are shape metadata, never content.
+func stampParamsDropped(ctx context.Context, dropped []string) {
+	if len(dropped) == 0 {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.StringSlice("langwatch.gateway.params_dropped", dropped))
 }
 
 // dispatchMessagesStream raw-forwards a streaming /v1/messages request
@@ -727,7 +854,10 @@ func passthroughResponseHeaders(in map[string]string) map[string]string {
 	for k, v := range in {
 		switch {
 		case strings.EqualFold(k, "Content-Length"),
-			strings.EqualFold(k, "Content-Encoding"):
+			strings.EqualFold(k, "Content-Encoding"),
+			// A provider must not be able to echo this header and have it
+			// forwarded as if the gateway had authored the response.
+			strings.EqualFold(k, herr.HandledErrorHeader):
 			continue
 		default:
 			out[k] = v
@@ -745,6 +875,25 @@ func rawForwardCtx(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, bfschemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx = context.WithValue(ctx, bfschemas.BifrostContextKeySendBackRawResponse, true)
 	return ctx
+}
+
+// paramsDroppedCtxKey carries the parameter-policy drop list from the
+// parse layer to the response path, so the drop can be signaled on the
+// response envelope, header, and span.
+type paramsDroppedCtxKey struct{}
+
+func withParamsDropped(ctx context.Context, dropped []string) context.Context {
+	if len(dropped) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, paramsDroppedCtxKey{}, dropped)
+}
+
+// paramsDroppedFrom returns the drop list recorded by the parameter
+// policy, nil when nothing was dropped.
+func paramsDroppedFrom(ctx context.Context) []string {
+	dropped, _ := ctx.Value(paramsDroppedCtxKey{}).([]string)
+	return dropped
 }
 
 // rawResponseBytes extracts the provider's native chat-completion
@@ -876,14 +1025,15 @@ const ProviderRequestTimeoutSeconds = 14 * 60
 
 func (a *account) GetConfigForProvider(provider bfschemas.ModelProvider) (*bfschemas.ProviderConfig, error) {
 	cfg := &bfschemas.ProviderConfig{}
-	if strings.HasPrefix(string(provider), anthropicCompatPrefix) {
+	if strings.HasPrefix(string(provider), anthropicCompatPrefix) ||
+		strings.HasPrefix(string(provider), geminiCompatPrefix) {
 		endpoint, ok := a.anthropicCompat.lookup(string(provider))
 		if !ok {
-			return nil, fmt.Errorf("no endpoint registered for anthropic-compatible provider %q", provider)
+			return nil, fmt.Errorf("no endpoint registered for URL-derived provider %q", provider)
 		}
 		cfg.NetworkConfig.BaseURL = endpoint.baseURL
 		cfg.CustomProviderConfig = &bfschemas.CustomProviderConfig{
-			BaseProviderType: bfschemas.Anthropic,
+			BaseProviderType: endpoint.baseType,
 			IsKeyLess:        endpoint.keyless,
 		}
 		// Every compat endpoint gets its own bifrost worker pool, unlike the
@@ -1021,7 +1171,8 @@ func envVar(v string) bfschemas.EnvVar {
 // never the ones evicted.
 func (r *BifrostRouter) mapProviderForDispatch(cred domain.Credential) bfschemas.ModelProvider {
 	provider := mapProvider(cred)
-	if strings.HasPrefix(string(provider), anthropicCompatPrefix) {
+	if strings.HasPrefix(string(provider), anthropicCompatPrefix) ||
+		strings.HasPrefix(string(provider), geminiCompatPrefix) {
 		return r.anthropicCompat.register(cred)
 	}
 	return provider
@@ -1036,6 +1187,15 @@ func mapProvider(cred domain.Credential) bfschemas.ModelProvider {
 	case domain.ProviderVertex:
 		return bfschemas.Vertex
 	case domain.ProviderGemini:
+		// A credential carrying a project and region is an Agent Platform
+		// key — Gemini's second door. It dispatches through a derived
+		// custom provider (base type Gemini) whose base URL names the
+		// project and location, because the stock Gemini provider is
+		// pinned to generativelanguage.googleapis.com, where such a key
+		// is refused by its own restrictions.
+		if credentialIsAgentPlatform(cred) {
+			return geminiCompatProviderKey(cred)
+		}
 		return bfschemas.Gemini
 	case domain.ProviderAnthropic:
 		// Anthropic with a base-URL override (self-hosted server speaking
@@ -1102,6 +1262,13 @@ type anthropicCompatEndpoint struct {
 	// empty-value keys for base provider Anthropic and fails the
 	// dispatch; CustomProviderConfig.IsKeyLess skips selection entirely.
 	keyless bool
+	// baseType is the bifrost provider whose wire format the endpoint
+	// speaks: Anthropic for self-hosted Anthropic-compatible servers,
+	// Gemini for the Agent Platform door (a Gemini credential carrying a
+	// project and location — see geminiAgentPlatformEndpointForCred). The
+	// registry that holds these entries is shared by both; only the
+	// derivation and the prefix differ.
+	baseType bfschemas.ModelProvider
 }
 
 // anthropicCompatMaxEndpoints bounds the endpoint registry. Every distinct
@@ -1161,7 +1328,7 @@ func newAnthropicCompatRegistry(capacity int) *anthropicCompatRegistry {
 // register records the credential's endpoint under its derived provider key,
 // refreshes LRU recency, and returns the key. Evicts beyond capacity.
 func (reg *anthropicCompatRegistry) register(cred domain.Credential) bfschemas.ModelProvider {
-	endpoint, key := anthropicCompatEndpointForCred(cred)
+	endpoint, key := compatEndpointForCred(cred)
 
 	reg.mu.Lock()
 	if el, ok := reg.entries[string(key)]; ok {
@@ -1232,8 +1399,9 @@ func anthropicCompatEndpointForCred(cred domain.Credential) (anthropicCompatEndp
 	endpoint := anthropicCompatEndpoint{
 		// Same "/v1"-stripping as the OpenAI-compat path: Bifrost's
 		// Anthropic provider appends the full "/v1/messages" path itself.
-		baseURL: normalizeOpenAICompatBaseURL(credBaseURL(cred)),
-		keyless: strings.TrimSpace(cred.APIKey) == "",
+		baseURL:  normalizeOpenAICompatBaseURL(credBaseURL(cred)),
+		keyless:  strings.TrimSpace(cred.APIKey) == "",
+		baseType: bfschemas.Anthropic,
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|keyless=%t", endpoint.baseURL, endpoint.keyless)))
 	return endpoint, bfschemas.ModelProvider(anthropicCompatPrefix + hex.EncodeToString(sum[:8]))
@@ -1244,6 +1412,58 @@ func anthropicCompatEndpointForCred(cred domain.Credential) (anthropicCompatEndp
 func anthropicCompatProviderKey(cred domain.Credential) bfschemas.ModelProvider {
 	_, key := anthropicCompatEndpointForCred(cred)
 	return key
+}
+
+// geminiCompatPrefix namespaces derived provider keys for Gemini credentials
+// served through the Agent Platform door, the way anthropicCompatPrefix does
+// for self-hosted Anthropic endpoints. A distinct prefix keeps the two
+// derivations from ever colliding in the shared registry.
+const geminiCompatPrefix = "gemini-url-"
+
+// geminiAgentPlatformEndpointForCred derives the endpoint identity and
+// provider key for a Gemini credential carrying a project and location — an
+// Agent Platform key, Gemini's second door. Bifrost's Gemini provider
+// appends "/models/{model}:generateContent" to its base URL and sends the
+// key as `x-goog-api-key`, both verified to be exactly what Agent Platform
+// serves, so the whole door is a base-URL prefix naming the project and
+// location. See specs/model-providers/google-agent-platform.feature.
+func geminiAgentPlatformEndpointForCred(cred domain.Credential) (anthropicCompatEndpoint, bfschemas.ModelProvider) {
+	endpoint := anthropicCompatEndpoint{
+		baseURL: fmt.Sprintf(
+			"https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google",
+			url.PathEscape(cred.Extra["project_id"]),
+			url.PathEscape(cred.Extra["region"]),
+		),
+		keyless:  false,
+		baseType: bfschemas.Gemini,
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|keyless=%t", endpoint.baseURL, endpoint.keyless)))
+	return endpoint, bfschemas.ModelProvider(geminiCompatPrefix + hex.EncodeToString(sum[:8]))
+}
+
+// geminiCompatProviderKey derives the provider key for a Gemini credential
+// with Agent Platform routing fields.
+func geminiCompatProviderKey(cred domain.Credential) bfschemas.ModelProvider {
+	_, key := geminiAgentPlatformEndpointForCred(cred)
+	return key
+}
+
+// credentialIsAgentPlatform reports whether a Gemini credential names the
+// Agent Platform door: both routing fields present, per the materialiser's
+// contract (config.materialiser.ts emits project_id and region together or
+// not at all).
+func credentialIsAgentPlatform(cred domain.Credential) bool {
+	return cred.Extra["project_id"] != "" && cred.Extra["region"] != ""
+}
+
+// compatEndpointForCred picks the derivation matching the credential — the
+// registry stores both kinds of derived endpoint, and the credential's
+// provider says which one this is.
+func compatEndpointForCred(cred domain.Credential) (anthropicCompatEndpoint, bfschemas.ModelProvider) {
+	if cred.ProviderID == domain.ProviderGemini {
+		return geminiAgentPlatformEndpointForCred(cred)
+	}
+	return anthropicCompatEndpointForCred(cred)
 }
 
 // normalizeOpenAICompatBaseURL strips a trailing "/v1" (and trailing
@@ -1281,10 +1501,13 @@ func errFromBifrost(ctx context.Context, berr *bfschemas.BifrostError, respHeade
 		return classifyBifrostError(ctx, berr)
 	}
 	body, _ := extractRawResponseBytes(berr.ExtraFields.RawResponse)
+	errType, errCode := bfErrorTypeCode(berr)
 	return &domain.UpstreamError{
 		StatusCode: status,
 		Body:       body,
 		Message:    bfErrorMsg(berr),
+		ErrorType:  errType,
+		ErrorCode:  errCode,
 		Headers:    forwardableUpstreamHeaders(respHeaders),
 	}
 }
@@ -1358,6 +1581,23 @@ func bfErrorMsg(e *bfschemas.BifrostError) string {
 	return fmt.Sprintf("bifrost error (status %v)", e.StatusCode)
 }
 
+// bfErrorTypeCode lifts the provider's own error discriminants (error.type /
+// error.code as parsed by Bifrost's provider adapter) off a BifrostError.
+// These carry the error's identity (insufficient_quota, overloaded_error,
+// ThrottlingException, ...) on lanes where the native body is not captured.
+func bfErrorTypeCode(e *bfschemas.BifrostError) (errType, errCode string) {
+	if e == nil || e.Error == nil {
+		return "", ""
+	}
+	if e.Error.Type != nil {
+		errType = *e.Error.Type
+	}
+	if e.Error.Code != nil {
+		errCode = *e.Error.Code
+	}
+	return errType, errCode
+}
+
 // upstreamStreamError converts a mid-stream BifrostError chunk into a
 // structured domain.UpstreamError the SSE writer can forward faithfully.
 //
@@ -1375,6 +1615,7 @@ func upstreamStreamError(e *bfschemas.BifrostError) *domain.UpstreamError {
 		ue.Message = "provider stream error"
 		return ue
 	}
+	ue.ErrorType, ue.ErrorCode = bfErrorTypeCode(e)
 	if code := e.StatusCode; code != nil {
 		ue.StatusCode = *code
 	}
@@ -1480,6 +1721,11 @@ type bifrostStreamIterator struct {
 	// first delta, driving the leading-role repair in ensureLeadingRoleDelta
 	// (see chat_stream_role.go). Lazily allocated on the first chat chunk.
 	roleSeenByChoice map[int]bool
+	// paramsDropped is the parameter-policy drop list for this request;
+	// injected into the final usage-bearing chunk so streamed responses
+	// carry the same extra_fields.params_dropped signal as sync ones.
+	// Never set on raw-framing passthrough streams.
+	paramsDropped []string
 }
 
 func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
@@ -1504,10 +1750,14 @@ func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
 		if chunk.BifrostChatResponse != nil {
 			it.ensureLeadingRoleDelta(chunk.BifrostChatResponse)
 			data, _ := sonic.Marshal(chunk.BifrostChatResponse)
-			it.current = data
 			if chunk.BifrostChatResponse.Usage != nil {
 				it.usage = extractUsage(chunk.BifrostChatResponse)
+				// The usage-bearing final chunk carries the policy drop
+				// signal, mirroring extra_fields.params_dropped on sync
+				// responses.
+				data = injectParamsDropped(data, it.paramsDropped)
 			}
+			it.current = data
 		} else if chunk.BifrostResponsesStreamResponse != nil {
 			// Responses API stream frames (response.created /
 			// response.output_text.delta / response.completed / ...).
@@ -1559,6 +1809,9 @@ func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
 				if u.CacheCreationTokens > 0 {
 					it.usage.CacheCreationTokens = u.CacheCreationTokens
 				}
+				if u.CacheCreation1hTokens > 0 {
+					it.usage.CacheCreation1hTokens = u.CacheCreation1hTokens
+				}
 				// Prefer the parser's reported total when non-zero —
 				// Gemini's `totalTokenCount` can exceed prompt+completion
 				// (reasoning / thinking tokens). Anthropic doesn't report
@@ -1569,6 +1822,10 @@ func (it *bifrostStreamIterator) Next(ctx context.Context) bool {
 				} else if it.usage.PromptTokens > 0 || it.usage.CompletionTokens > 0 {
 					it.usage.TotalTokens = it.usage.PromptTokens + it.usage.CompletionTokens
 				}
+				// The two cache-write counters merge independently across
+				// chunks, so keep the running usage obeying the rule that the
+				// hour-long count is a portion of the total.
+				it.usage = it.usage.ReconcileCacheWrites()
 			}
 		}
 		return true
@@ -1618,6 +1875,17 @@ func parseGeminiPassthroughUsage(body []byte) (domain.Usage, bool) {
 	}, true
 }
 
+// anthropicCacheCreation1h reads how many of a response's cache writes bought
+// an hour-long entry, from Anthropic's own `usage.cache_creation` breakdown.
+// Zero when the field is absent, which is what a request that did not ask for
+// the extended TTL looks like, and prices the writes short-lived.
+func anthropicCacheCreation1h(body []byte) int {
+	if len(body) == 0 {
+		return 0
+	}
+	return int(gjson.GetBytes(body, "usage.cache_creation.ephemeral_1h_input_tokens").Int())
+}
+
 // parseAnthropicPassthroughUsage extracts Anthropic's usage block from a
 // raw /v1/messages SSE chunk. Anthropic's streaming protocol emits
 // usage data twice:
@@ -1625,6 +1893,8 @@ func parseGeminiPassthroughUsage(body []byte) (domain.Usage, bool) {
 //	event: message_start
 //	data: {"type":"message_start","message":{"usage":{"input_tokens":N,
 //	       "cache_creation_input_tokens":N,"cache_read_input_tokens":N,
+//	       "cache_creation":{"ephemeral_5m_input_tokens":N,
+//	                         "ephemeral_1h_input_tokens":N},
 //	       "output_tokens":1, ...}}}
 //
 //	event: message_delta
@@ -1664,6 +1934,10 @@ func parseAnthropicPassthroughUsage(body []byte) (domain.Usage, bool) {
 				usage.CompletionTokens = int(m.Get("output_tokens").Int())
 				usage.CacheReadTokens = int(m.Get("cache_read_input_tokens").Int())
 				usage.CacheCreationTokens = int(m.Get("cache_creation_input_tokens").Int())
+				// How long those writes live, which decides their rate.
+				// Present only when the request asked for the extended
+				// TTL; absent leaves it zero and they price short-lived.
+				usage.CacheCreation1hTokens = int(m.Get("cache_creation.ephemeral_1h_input_tokens").Int())
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 				matched = true
 			}
