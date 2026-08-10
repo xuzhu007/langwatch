@@ -7,13 +7,23 @@ import (
 	"time"
 
 	"github.com/langwatch/langwatch/pkg/forkedcontext"
+	"github.com/langwatch/langwatch/pkg/herr"
 	"github.com/langwatch/langwatch/services/aigateway/domain"
 )
 
 // classifyUpstream maps a dispatch error to an HTTP status + short error-class
 // token for the customer trace. A *domain.UpstreamError forwards the provider's
-// verbatim status; everything else collapses to a generic 502/provider_error so
-// the trace still records that the request failed rather than dropping silently.
+// verbatim status; a handled error carries its own; anything else collapses to
+// a generic 502/provider_error so the trace still records that the request
+// failed rather than dropping silently.
+//
+// The middle case is the point: a herr already HAS the two facts this function
+// exists to produce — a registered HTTP status and a stable code — and they
+// are the same two the client was answered with. Collapsing it to
+// 502/provider_error wrote an upstream outage into the customer's own trace
+// for a failure that was never upstream (a dead Codex sign-in, a guardrail
+// block, a rate limit we imposed), sending them to look at the provider's
+// status page for something only they can fix.
 func classifyUpstream(err error) (status int, errType string) {
 	var ue *domain.UpstreamError
 	if errors.As(err, &ue) {
@@ -32,6 +42,13 @@ func classifyUpstream(err error) (status int, errType string) {
 		default:
 			return status, "provider_error"
 		}
+	}
+	var e herr.E
+	if errors.As(err, &e) && e.Code != "" {
+		// herr.HTTPStatus answers 500 for a code nobody registered, which is
+		// exactly what the client was told, so the trace and the response
+		// agree either way.
+		return herr.HTTPStatus(err), string(e.Code)
 	}
 	return 502, "provider_error"
 }
@@ -69,6 +86,7 @@ func Trace(begin BeginSpanFunc, end EndSpanFunc) Interceptor {
 							InternalProviderID: internalProviderID,
 							RequestType:        call.Request.Type,
 							VirtualKeyID:       call.Bundle.VirtualKeyID,
+							ModelProviderID:    call.Meta.DispatchedProviderID(),
 							VKTags:             call.Bundle.Config.VKTags,
 							GatewayRequestID:   gatewayRequestID,
 							RequestBody:        call.Request.Body,
@@ -90,6 +108,7 @@ func Trace(begin BeginSpanFunc, end EndSpanFunc) Interceptor {
 						Usage:              resp.Usage,
 						RequestType:        call.Request.Type,
 						VirtualKeyID:       call.Bundle.VirtualKeyID,
+						ModelProviderID:    call.Meta.DispatchedProviderID(),
 						VKTags:             call.Bundle.Config.VKTags,
 						GatewayRequestID:   gatewayRequestID,
 						RequestBody:        call.Request.Body,
@@ -123,6 +142,7 @@ func Trace(begin BeginSpanFunc, end EndSpanFunc) Interceptor {
 							InternalProviderID: internalProviderID,
 							RequestType:        call.Request.Type,
 							VirtualKeyID:       call.Bundle.VirtualKeyID,
+							ModelProviderID:    call.Meta.DispatchedProviderID(),
 							VKTags:             call.Bundle.Config.VKTags,
 							GatewayRequestID:   gatewayRequestID,
 							RequestBody:        call.Request.Body,
@@ -142,6 +162,7 @@ func Trace(begin BeginSpanFunc, end EndSpanFunc) Interceptor {
 					end:                end,
 					bundle:             call.Bundle,
 					req:                call.Request,
+					meta:               call.Meta,
 					gatewayRequestID:   gatewayRequestID,
 					spanCtx:            spanCtx,
 					internalModel:      internalModel,
@@ -182,10 +203,13 @@ const responseBodyCap = 8 * 1024 * 1024
 // extractOutputMessages return "" for every streamed Path A trace — the
 // gen_ai.output.messages key was simply absent from every streaming span.
 type traceStreamWrapper struct {
-	inner              domain.StreamIterator
-	end                EndSpanFunc
-	bundle             *domain.Bundle
-	req                *domain.Request
+	inner  domain.StreamIterator
+	end    EndSpanFunc
+	bundle *domain.Bundle
+	req    *domain.Request
+	// meta is the request's accumulator; read at close for the dispatched
+	// provider id (dispatch has long finished by then, the value is final).
+	meta               *MetaAccumulator
 	gatewayRequestID   string
 	spanCtx            context.Context
 	internalModel      string
@@ -276,6 +300,7 @@ func (w *traceStreamWrapper) onClose() {
 				Usage:              w.inner.Usage(),
 				RequestType:        w.req.Type,
 				VirtualKeyID:       w.bundle.VirtualKeyID,
+				ModelProviderID:    w.meta.DispatchedProviderID(),
 				VKTags:             w.bundle.Config.VKTags,
 				GatewayRequestID:   w.gatewayRequestID,
 				RequestBody:        w.req.Body,
