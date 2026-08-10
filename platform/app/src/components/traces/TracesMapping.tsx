@@ -238,20 +238,6 @@ export const TracesMapping = ({
     return Array.from(new Set(ids));
   }, [traces]);
 
-  // Fetch all traces for these thread_ids, read the same way the traces being
-  // mapped were: a thread_* column and a trace column filled from the same
-  // surface must not disagree about what the conversation said.
-  const allThreadTraces = api.traces.getTracesWithSpansByThreadIds.useQuery(
-    {
-      projectId: project?.id ?? "",
-      threadIds,
-      withEditOverlay: shouldApplyCorrections,
-    },
-    {
-      enabled: !!project?.id && threadIds.length > 0,
-      refetchOnWindowFocus: false,
-    },
-  );
   const traces_ = useMemo(
     () =>
       traces.map((trace) => ({
@@ -307,10 +293,15 @@ export const TracesMapping = ({
       ),
     [mapping],
   );
+  // Fetch all traces for these thread_ids, read the same way the traces being
+  // mapped were: a thread_* column and a trace column filled from the same
+  // surface must not disagree about what the conversation said.
+  // fork 定制：仅在真正映射了 thread_* 列时才惰性发起查询。
   const allThreadTraces = api.traces.getTracesWithSpansByThreadIds.useQuery(
     {
       projectId: project?.id ?? "",
       threadIds,
+      withEditOverlay: shouldApplyCorrections,
     },
     {
       enabled: !!project?.id && needsThreadTraces && threadIds.length > 0,
