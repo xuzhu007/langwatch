@@ -28,7 +28,8 @@
 --   2. The view is dropped before the rebuild's ledger snapshot, so no
 --      fold runs concurrently with the snapshot. Debits inserted while
 --      no view exists land only in the ledger, losing nothing.
---   3. EXCHANGE TABLES swaps the rebuilt rollup in atomically.
+--   3. 单条 RENAME（让位 + 换入）把重建表换成正式表（内核兼容替代
+--      EXCHANGE TABLES，详见换表语句处注释）。
 --   4. The view is recreated; folding resumes against the rebuilt table.
 --   5. Reconciliation: the ledger is re-aggregated into a scratch
 --      snapshot, then a delta insert adds, per rollup key, exactly the
@@ -48,7 +49,7 @@
 --
 -- Single-connection correctness on a cluster: goose runs every statement
 -- through one connection, i.e. on one replica. The DDL statements
--- (CREATE / DROP / EXCHANGE) replicate through the database engine. The
+-- (CREATE / DROP / RENAME) replicate through the database engine. The
 -- INSERT ... SELECT statements execute only on the connected replica, but
 -- they read gateway_budget_ledger_events, which is a Replicated engine and
 -- therefore identical on every replica, and they write into Replicated
@@ -61,9 +62,9 @@
 -- Re-run safety (the runner may re-apply a partially executed file after
 -- a crash): the scratch tables are DROPPED and recreated rather than
 -- truncated and reused. This matters because the migration converts the
--- engine: after a crash between the EXCHANGE and the final drops, the
--- scratch NAME holds the old plain-engine table, and truncating and
--- reusing it would rebuild into the wrong engine and swap the plain
+-- engine: after a crash between the swap and the final drops, the
+-- old plain-engine table survives under the _old name, and reusing it
+-- would rebuild into the wrong engine and swap the plain
 -- engine back in. Dropping always recreates the scratch with the correct
 -- engine, the rebuild re-derives its content from the current ledger, and
 -- the reconciliation re-derives its delta, so every complete run
@@ -135,7 +136,20 @@ GROUP BY TenantId, Scope, ScopeId, Window, PeriodStart;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
-EXCHANGE TABLES ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals AND ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_rebuild;
+-- 内核兼容（fork 定制）：EXCHANGE TABLES 依赖 renameat2(RENAME_EXCHANGE)，
+-- 需要 Linux 3.15+；3.10 内核上报 Code 48 NOT_IMPLEMENTED。改用「让位 + 换入」
+-- 的单条 RENAME（Atomic/Replicated 库都只做元数据改名，不需 renameat2）实现
+-- 同一交换；先清掉残留的 _old，崩溃后重跑可从任意断点收敛。
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+RENAME TABLE ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals TO ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old,
+             ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_rebuild TO ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
