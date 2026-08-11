@@ -69,6 +69,55 @@ export function tryParseJSON(s: string): unknown | null {
   }
 }
 
+type ToolCall = NonNullable<ChatMessage["tool_calls"]>[number];
+
+/**
+ * 把任意形状的 `tool_calls` 归一化为渲染层依赖的 OpenAI 数组形状
+ * `[{function:{name,arguments}, id, type}]`。
+ *
+ * 携带脏数据的消息可以穿过 `coerceToChatMessages` 的宽松分支进入渲染：
+ * `isOneChatMessage` 只要 content 合法就放行，显式 chat_messages 信封更是
+ * 只查 role/content 键。实际 trace 里见过的形状：
+ *   - 字符串化 JSON（埋点/网关把嵌套结构 stringify 后上报）
+ *   - 单个 tool_call 对象而非数组
+ *   - 扁平 `{name, arguments}`（缺 `function` 包裹）
+ *   - `arguments` 是对象而非字符串
+ * 直接展开这些值会抛 `TypeError: tool_calls is not iterable`，把整个
+ * span 详情砌进错误边界。无法辨认的项丢弃，全部丢弃时返回 undefined。
+ */
+export function normalizeToolCalls(raw: unknown): ToolCall[] | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === "string") {
+    const parsed = tryParseJSON(raw);
+    return parsed === null ? undefined : normalizeToolCalls(parsed);
+  }
+  const list = Array.isArray(raw) ? raw : [raw];
+  const calls: ToolCall[] = [];
+  for (const item of list) {
+    if (typeof item !== "object" || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    // OpenAI 形状在 obj.function 里；扁平形状直接把 name/arguments 放在顶层。
+    const fn = (
+      typeof obj.function === "object" && obj.function !== null
+        ? obj.function
+        : obj
+    ) as Record<string, unknown>;
+    if (typeof fn.name !== "string" || fn.name.length === 0) continue;
+    calls.push({
+      function: {
+        name: fn.name,
+        arguments:
+          typeof fn.arguments === "string"
+            ? fn.arguments
+            : JSON.stringify(fn.arguments ?? {}),
+      },
+      id: typeof obj.id === "string" ? obj.id : "",
+      type: typeof obj.type === "string" ? obj.type : "function",
+    });
+  }
+  return calls.length > 0 ? calls : undefined;
+}
+
 const VALID_CHAT_ROLES = new Set([
   "system",
   "user",

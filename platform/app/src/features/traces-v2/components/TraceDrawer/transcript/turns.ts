@@ -1,4 +1,8 @@
-import { getReasoning, parseContentBlocks } from "./parsing";
+import {
+  getReasoning,
+  normalizeToolCalls,
+  parseContentBlocks,
+} from "./parsing";
 import type { ChatMessage, ContentBlock, ConversationTurn } from "./types";
 
 /**
@@ -40,16 +44,19 @@ export function groupMessagesIntoTurns(
       blocks.unshift({ kind: "thinking", text: reasoning });
     }
 
+    // tool_calls 可能不是数组（字符串化 JSON、单对象…），直接展开会抛
+    // "not iterable" 把 span 详情砌进错误边界，先归一化。
+    const toolCalls = normalizeToolCalls(msg.tool_calls) ?? [];
     const last = turns[turns.length - 1];
     if (last && last.kind === "assistant") {
       last.blocks.push(...blocks);
-      if (msg.tool_calls) last.toolCalls.push(...msg.tool_calls);
+      last.toolCalls.push(...toolCalls);
       last.messages.push(msg);
     } else {
       turns.push({
         kind: "assistant",
         blocks,
-        toolCalls: msg.tool_calls ? [...msg.tool_calls] : [],
+        toolCalls,
         messages: [msg],
       });
     }
@@ -81,7 +88,7 @@ export function groupMessagesIntoTurns(
         turns.push({
           kind: "user",
           blocks,
-          toolCalls: msg.tool_calls ? [...msg.tool_calls] : [],
+          toolCalls: normalizeToolCalls(msg.tool_calls) ?? [],
           messages: [msg],
         });
       }
