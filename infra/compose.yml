@@ -1,6 +1,19 @@
+# fork 定制：app / workers 的镜像可覆盖。
+#
+# 这两个服务跑的是本仓库的代码，而本仓库是 fork，带着官方镜像里
+# 没有的定制（例如老内核不支持 renameat2 时的 ClickHouse 迁移写法）。
+# 写死 `langwatch/langwatch:latest` + `pull_policy: always` 会让自建镜像
+# 永远用不上：即使把本地镜像打成同名 tag，每次 `up` 也会从远端重拉
+# 覆盖，表现为“重新打包了但报错照旧”。
+#
+# 用自建镜像：
+#   docker build -f infra/docker/Dockerfile -t langwatch-local:dev .
+#   LANGWATCH_IMAGE=langwatch-local:dev LANGWATCH_PULL_POLICY=never docker compose -f infra/compose.yml up -d
+#
+# 不设这两个变量时行为与以前完全一致（官方 latest + 每次拉取）。
 services:
   app:
-    image: langwatch/langwatch:latest
+    image: ${LANGWATCH_IMAGE:-langwatch/langwatch:latest}
     environment:
       SKIP_ENV_VALIDATION: true
       DATABASE_URL: postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb
@@ -19,7 +32,7 @@ services:
       NODE_ENV: production
     env_file:
       - platform/app/.env
-    pull_policy: always
+    pull_policy: ${LANGWATCH_PULL_POLICY:-always}
     ports:
       - "5560:5560"
     depends_on:
@@ -31,7 +44,7 @@ services:
         condition: service_healthy
 
   workers:
-    image: langwatch/langwatch:latest
+    image: ${LANGWATCH_IMAGE:-langwatch/langwatch:latest}
     command: ["pnpm", "run", "start:workers"]
     working_dir: /app/platform/app
     environment:
@@ -51,7 +64,7 @@ services:
       NODE_ENV: production
     env_file:
       - platform/app/.env
-    pull_policy: always
+    pull_policy: ${LANGWATCH_PULL_POLICY:-always}
     depends_on:
       postgres:
         condition: service_healthy
