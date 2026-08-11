@@ -39,24 +39,24 @@
 --     dev/docs/runbooks/analytics-rollup-replay.md.
 --
 -- Single-connection correctness on a cluster: goose runs every statement
--- through one connection. CREATE / EXCHANGE / DROP are DDL and replicate
+-- through one connection. CREATE / RENAME / DROP are DDL and replicate
 -- through the database engine; the carry-over INSERT (single-node only)
 -- runs where the complete dataset lives.
 --
 -- Mid-migration inserts: an increment inserted between the carry-over
--- SELECT and the EXCHANGE lands in the outgoing table and is dropped with
+-- SELECT and the swap lands in the outgoing table and is dropped with
 -- it. The window is the sub-second gap between two statements, the rollup
 -- explicitly tolerates single-increment drift (00038 accepts re-delivery
 -- over-count), and a replay rebuild erases the drift entirely. From the
--- EXCHANGE onward inserts land in the replacement table and are kept.
+-- swap onward inserts land in the replacement table and are kept.
 --
 -- Re-run safety (the runner may re-apply a partially executed file after
 -- a crash): the scratch is DROPPED and recreated rather than truncated
 -- and reused. This matters because the migration converts the engine:
--- after a crash between the EXCHANGE and the final drop, the scratch NAME
--- holds the old plain-engine table, and truncating and reusing it would
+-- after a crash between the swap and the final drop, the old plain-engine
+-- table survives under the _old name, and reusing it would
 -- swap the plain engine back in. A re-run after such a crash discards
--- increments accrued since the first EXCHANGE (bounded by the
+-- increments accrued since the first swap (bounded by the
 -- crash-to-rerun gap); the replay rebuild recovers them on a cluster, and
 -- on a single node the re-run's carry-over re-copies the live table, so
 -- only the crash-window increments are lost.
@@ -119,7 +119,20 @@ WHERE ${CLICKHOUSE_IS_REPLICATED:-1} = 0;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
-EXCHANGE TABLES ${CLICKHOUSE_DATABASE}.trace_analytics_rollup AND ${CLICKHOUSE_DATABASE}.trace_analytics_rollup_rebuild;
+-- 内核兼容（fork 定制）：EXCHANGE TABLES 依赖 renameat2(RENAME_EXCHANGE)，
+-- 需要 Linux 3.15+；3.10 内核上报 Code 48 NOT_IMPLEMENTED。改用「让位 + 换入」
+-- 的单条 RENAME（只做元数据改名，不需 renameat2）实现同一交换；
+-- 先清掉残留的 _old，崩溃后重跑可从任意断点收敛。
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.trace_analytics_rollup_old;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+RENAME TABLE ${CLICKHOUSE_DATABASE}.trace_analytics_rollup TO ${CLICKHOUSE_DATABASE}.trace_analytics_rollup_old,
+             ${CLICKHOUSE_DATABASE}.trace_analytics_rollup_rebuild TO ${CLICKHOUSE_DATABASE}.trace_analytics_rollup;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.trace_analytics_rollup_old;
 -- +goose StatementEnd
 
 -- +goose StatementBegin

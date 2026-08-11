@@ -35,7 +35,8 @@
 --   2. The view is dropped before the rebuild's ledger snapshot, so no
 --      fold runs concurrently with the snapshot. Debits inserted while
 --      no view exists land only in the ledger, losing nothing.
---   3. EXCHANGE TABLES swaps the rebuilt rollup in atomically.
+--   3. 单条 RENAME 语句「让位 + 换入」把重建表换成正式表（内核兼容替代
+--      EXCHANGE TABLES，详见换表语句处注释）。
 --   4. The view is recreated; folding resumes against the rebuilt table.
 --   5. Reconciliation: the ledger is re-aggregated into a scratch
 --      snapshot, then a delta insert adds, per rollup key, exactly the
@@ -131,7 +132,23 @@ GROUP BY TenantId, Scope, ScopeId, Window, PeriodStart;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
-EXCHANGE TABLES ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals AND ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_rebuild;
+-- 内核兼容（fork 定制）：EXCHANGE TABLES 依赖 renameat2(RENAME_EXCHANGE)，
+-- 需要 Linux 3.15+ 内核；在 3.10 内核（如 CentOS 7）上 ClickHouse 报
+-- Code 48 NOT_IMPLEMENTED。Atomic 库的 RENAME 只做元数据改名，不依赖
+-- renameat2，因此用「让位 + 换入」的单条 RENAME 语句实现同一交换：
+-- 先清掉上次中断可能残留的 _old；单条语句内两个改名由服务端顺序执行，
+-- goose 层面不可分割，读方只在该语句执行的瞬间短暂看不到表；崩溃后
+-- 重跑从任意断点收敛（_rebuild 会重建，_old 在此处和末尾各清一次）。
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+RENAME TABLE ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals TO ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old,
+             ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_rebuild TO ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS ${CLICKHOUSE_DATABASE}.gateway_budget_scope_totals_old;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
