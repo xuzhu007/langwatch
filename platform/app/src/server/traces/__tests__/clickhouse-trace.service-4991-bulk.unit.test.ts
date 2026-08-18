@@ -266,6 +266,44 @@ describe("ClickHouseTraceService.getTracesWithSpans — dataset mapping", () => 
         expect(traces[0]!.spans).toEqual([]);
       });
     });
+
+    describe("when dataset mapping reads more than one summary batch", () => {
+      it("keeps stored-span reads in 25-trace batches", async () => {
+        const traceIds = Array.from({ length: 26 }, (_, i) => `trace-${i}`);
+        mockClickHouseQuery
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(0, 25).map((id) => makeSummaryRow(id)),
+              ),
+          })
+          .mockResolvedValueOnce({ json: () => Promise.resolve([]) })
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve(
+                traceIds.slice(25).map((id) => makeSummaryRow(id)),
+              ),
+          })
+          .mockResolvedValueOnce({ json: () => Promise.resolve([]) });
+        const { blobStore } = makeEventRefBlobStore();
+        const service = buildService(blobStore);
+
+        await service.getTracesWithSpans(
+          PROJECT_ID,
+          traceIds,
+          protections,
+          { from: 0, to: Date.now() },
+          { includeSpans: false, resolveBlobs: true },
+        );
+
+        expect(
+          mockClickHouseQuery.mock.calls[0]![0].query_params.traceIds,
+        ).toHaveLength(25);
+        expect(
+          mockClickHouseQuery.mock.calls[2]![0].query_params.traceIds,
+        ).toHaveLength(1);
+      });
+    });
   });
 });
 // ---------------------------------------------------------------------------

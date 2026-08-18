@@ -483,7 +483,7 @@ export class ClickHouseTraceService {
             string,
             { summary: TraceSummaryData; spans: NormalizedSpan[] }
           >();
-          const batchSize = needsSpanRead
+          const batchSize = wantsSpans
             ? uniqueTraceIds.length
             : ClickHouseTraceService.SUMMARY_BATCH_SIZE;
           for (

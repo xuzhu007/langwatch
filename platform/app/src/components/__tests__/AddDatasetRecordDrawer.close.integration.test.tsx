@@ -68,6 +68,26 @@ vi.mock("~/hooks/useLocalStorageSelectedDataSetId", () => ({
 
 vi.mock("~/utils/api", () => ({
   api: {
+    useQueries: (
+      buildQueries: (trpc: {
+        traces: {
+          getTracesWithSpans: (input: { traceIds: string[] }) => {
+            data: { trace_id: string }[];
+            isLoading: boolean;
+            isError: boolean;
+          };
+        };
+      }) => unknown[],
+    ) =>
+      buildQueries({
+        traces: {
+          getTracesWithSpans: ({ traceIds }) => ({
+            data: traceIds.map((traceId) => ({ trace_id: traceId })),
+            isLoading: false,
+            isError: false,
+          }),
+        },
+      }),
     useContext: () => ({
       dataset: { getAll: { invalidate: vi.fn() } },
       datasetRecord: { getAll: { invalidate: vi.fn() } },
