@@ -17,12 +17,12 @@
 # -----------------------------------------------------------------------------
 # Stage 1: build the Go manager binary.
 # -----------------------------------------------------------------------------
-# Pin an explicit Go toolchain patch (1.26.5) at or above the go.mod language
-# floor (`go 1.26.5`) so every build uses the same compiler. Bump this tag when
+# Pin an explicit Go toolchain patch (1.26.6) at or above the go.mod language
+# floor (`go 1.26.6`) so every build uses the same compiler. Bump this tag when
 # raising the go.mod floor -- the official images set GOTOOLCHAIN=local, so a
 # tag BELOW the floor does not download a newer toolchain, it fails the build
 # with "go.mod requires go >= X (running go Y)".
-FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS builder
 
 WORKDIR /src
 
@@ -111,6 +111,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # is still a `workspace:*` dependency of the CLI; it is source-only (its `main`
 # points at src/index.ts) and is bundled into the binary.
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
+# fork 定制：根锁文件声明了 patchedDependencies，安装前必须复制补丁文件。
+COPY patches ./patches
 COPY packages/langy ./packages/langy
 COPY sdks/typescript ./sdks/typescript
 # Manifests only. `--frozen-lockfile` checks the lockfile against every

@@ -55833,8 +55833,8 @@ Docker Compose starts the following services:
 
 | Service | Image | Port | Description |
 |---------|-------|------|-------------|
-| `app` | `langwatch/langwatch:latest` | 5560 | Main application |
-| `workers` | `langwatch/langwatch:latest` |, | Background job processing |
+| `app` | `$LANGWATCH_IMAGE` (default `langwatch/langwatch:latest`) | 5560 | Main application |
+| `workers` | `$LANGWATCH_IMAGE` (default `langwatch/langwatch:latest`) |, | Background job processing |
 | `langwatch_nlp` | `langwatch/langwatch_nlp:latest` | 5561 | NLP processing, workflows |
 | `langevals` | `langwatch/langevals:latest` | 5562 | Evaluators, guardrails |
 | `postgres` | `postgres:16` | 5432 | Control plane database |
@@ -55893,6 +55893,31 @@ docker compose up
 ```
 
 ## Customization
+
+### Run a locally built image
+
+`app` and `workers` run this repository's code, so a fork or a private patch only
+takes effect if the stack runs an image you built. Both services read
+`LANGWATCH_IMAGE` and `LANGWATCH_PULL_POLICY`:
+
+```bash
+docker build -f infra/docker/Dockerfile -t langwatch-local:dev .
+
+LANGWATCH_IMAGE=langwatch-local:dev \
+LANGWATCH_PULL_POLICY=never \
+  docker compose -f infra/compose.yml up -d
+```
+
+`LANGWATCH_PULL_POLICY=never` is not optional here. The default is `always`, so
+tagging a local build as `langwatch/langwatch:latest` is not enough: every `up`
+re-pulls that tag from the registry and silently replaces the local image, which
+looks like a rebuild that changed nothing.
+
+Verify which build is actually running:
+
+```bash
+docker compose -f infra/compose.yml images app
+```
 
 ### Disable optional services
 

@@ -20,7 +20,7 @@ describe("ClickHouse migrations", () => {
     expect(duplicates).toEqual([]);
   });
 
-  /** @scenario 迁移不使用 EXCHANGE TABLES（老内核兼容） */
+  /** 验证迁移兼容不支持 renameat2 的老内核。 */
   it("不在迁移中使用 EXCHANGE TABLES（renameat2 需要 Linux 3.15+ 内核）", () => {
     // EXCHANGE TABLES 依赖 renameat2(RENAME_EXCHANGE) 系统调用，在 3.10 内核
     // （如 CentOS 7）上 ClickHouse 报 Code 48 NOT_IMPLEMENTED，迁移会在启动时

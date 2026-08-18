@@ -6,7 +6,7 @@
  *
  * @see specs/typescript-sdk/cli-management-apis.feature
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../utils/apiKey", () => ({
   resolveCredentials: vi.fn(async () => ({
@@ -84,6 +84,7 @@ const lastRequest = (): { url: string; body: unknown; init: RequestInit } =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("LANGWATCH_ENDPOINT", "https://app.langwatch.ai");
   succeeded.length = 0;
   // The real resolver publishes the key it found into the credential holder;
   // the mock above does not, so the environment stands in as the source the
@@ -96,6 +97,9 @@ beforeEach(() => {
     logged.push(args.map(String).join(" "));
   });
   vi.spyOn(console, "error").mockImplementation(noop);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("role-bindings list", () => {
