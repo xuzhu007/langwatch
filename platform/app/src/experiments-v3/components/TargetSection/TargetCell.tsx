@@ -22,6 +22,7 @@ import { Tooltip } from "~/components/ui/tooltip";
 import { describeCellFailure } from "~/experiments-v3/utils/cellFailure";
 import { TraceIdPeek } from "~/features/traces-v2/components/TraceIdPeek";
 import { useDrawer } from "~/hooks/useDrawer";
+import { useEscapeKey } from "~/hooks/useEscapeKey";
 import { copyToClipboard } from "~/utils/clipboard";
 import { parseLLMError } from "~/utils/formatLLMError";
 import { formatTargetOutput } from "~/utils/formatTargetOutput";
@@ -167,6 +168,8 @@ export function TargetCellContent({
   const handleCloseExpanded = useCallback(() => {
     setIsOutputExpanded(false);
   }, []);
+
+  useEscapeKey({ enabled: isOutputExpanded, onEscape: handleCloseExpanded });
 
   // Calculate which evaluators have missing mappings for this target
   const missingMappingsSet = useMemo(() => {

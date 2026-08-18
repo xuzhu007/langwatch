@@ -319,6 +319,15 @@ export default defineConfig(async (): Promise<UserConfig> => {
         // No-op when API is on plain HTTP.
         secure: false,
       },
+      // An exporter given the site root as its OTLP endpoint posts to
+      // `/v1/traces`. In production start.ts routes those into the API; in dev
+      // the frontend owns the root, so they need an entry of their own or they
+      // fall through to the SPA. Exact-match, same reasoning as /mcp below.
+      "^/v1/(?:traces|logs|metrics)/?(?:\\?.*)?$": {
+        target: API_TARGET,
+        changeOrigin: true,
+        secure: false,
+      },
       // Exact-match only ("^...$") — a plain "/mcp" prefix also swallows the
       // /mcp/authorize frontend page route (src/pages/mcp/authorize.tsx),
       // sending it to the API server, which has no dev-mode page fallback.
@@ -356,6 +365,14 @@ export default defineConfig(async (): Promise<UserConfig> => {
         secure: false,
       },
       "/.well-known/oauth-authorization-server": {
+        target: API_TARGET,
+        changeOrigin: true,
+        secure: false,
+      },
+      // Probed by MCP clients during discovery. The API answers a JSON 404;
+      // without this entry dev would answer the SPA's HTML instead, which is
+      // the failure mode this route exists to avoid.
+      "/.well-known/openid-configuration": {
         target: API_TARGET,
         changeOrigin: true,
         secure: false,

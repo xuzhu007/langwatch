@@ -828,6 +828,12 @@ model Trigger {
   createdAt            DateTime                  @default(now())
   updatedAt            DateTime                  @default(now()) @updatedAt
   active               Boolean                   @default(true)
+  // Why the platform paused this automation, and when. NULL means it was not
+  // paused by the platform: `active = false` alone cannot distinguish an
+  // automation a customer switched off from one runaway containment stopped,
+  // and resuming must clear both. Today the only value is "runaway_volume".
+  pausedReason         String?
+  pausedAt             DateTime? @db.Timestamptz(3)
   message              String?
   deleted              Boolean                   @default(false)
   alertType            AlertType?
@@ -2577,10 +2583,22 @@ model VirtualKey {
   principalUserId String?
   principalUser   User?   @relation("PrincipalScopedVirtualKeys", fields: [principalUserId], references: [id], onDelete: SetNull)
 
-  // Where this key's traces and costs land, for keys whose access scopes
-  // do not name a single project (org- and team-owned keys). Deliberately
-  // NOT a VirtualKeyScope row: scope rows grant access and visibility,
-  // and the trace destination must grant neither.
+  // Where this key's traces and costs land. Decided once, when the key is
+  // written, and stored: it used to be derived on every read by trying this
+  // column, then the key's single project scope, then the organization's
+  // governance project, which is three lookups that each had to remember
+  // that a deleted project is not a destination.
+  //
+  // Deliberately NOT a VirtualKeyScope row: scope rows grant access and
+  // visibility, and the trace destination must grant neither. Editing the
+  // scopes therefore does not move it.
+  //
+  // Nullable at the database level, and the invariant that every key
+  // written carries a destination is enforced in the app. A NOT NULL would
+  // fail a self-hosted migration on an organization whose data predates
+  // governance projects, where there is genuinely nothing to write; those
+  // keys read as null, the gateway skips span export rather than failing,
+  // and the next edit of the key is refused until it is given a home.
   traceProjectId String?
 
   // Slim config blob - per-key state only. The "gateway-config bundle"
@@ -3538,6 +3556,12 @@ model ProcessManagerInbox {
 
   @@unique([processName, projectId, sourceEventKey])
   @@index([processName, projectId, processKey, consumedAt])
+  // Do not add an index on `consumedAt` here. The retention sweep can use one,
+  // but a deploy-time CREATE INDEX holds a SHARE lock that blocks INSERT on
+  // this table, the highest-volume write path in the system. The index is
+  // ops-managed instead: built with CREATE INDEX CONCURRENTLY, see
+  // dev/docs/runbooks/process-manager-table-purge.md. The sweep works without
+  // it on the bounded table it maintains.
 }
 
 enum ProcessManagerOutboxStatus {
@@ -3571,6 +3595,13 @@ model ProcessManagerOutbox {
   @@unique([processName, projectId, messageKey])
   @@index([processName, projectId, processKey, createdAt])
   @@index([status, nextAttemptAt, leasedUntil])
+  // Do not add an index on `dispatchedAt` here. The retention sweep can use a
+  // partial one (WHERE status = 'dispatched'), but Prisma cannot express a
+  // partial index and a deploy-time CREATE INDEX holds a SHARE lock that
+  // blocks INSERT on this table, the highest-volume write path in the system.
+  // The index is ops-managed instead: built with CREATE INDEX CONCURRENTLY,
+  // see dev/docs/runbooks/process-manager-table-purge.md. The sweep works
+  // without it on the bounded table it maintains.
 }
 
 /// Per-project topic clustering run status (ADR-051): the rebuildable

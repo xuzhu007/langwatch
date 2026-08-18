@@ -65,6 +65,7 @@ const renderBar = () =>
         totalHits={100}
         pageTraceIds={["t1", "t2", "t3"]}
         traceNamesById={{}}
+        traceTimeRange={{ from: 0, to: 1 }}
         onExportSelected={vi.fn()}
       />
     </ChakraProvider>,
