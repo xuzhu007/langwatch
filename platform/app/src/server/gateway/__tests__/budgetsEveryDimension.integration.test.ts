@@ -16,7 +16,7 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { nanoid } from "nanoid";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-
+import { holdClickHouseSchemaLockForFile } from "~/server/clickhouse/__tests__/holdSchemaLock";
 import { prisma } from "~/server/db";
 import {
   getTestClickHouseClient,
@@ -75,6 +75,11 @@ async function seedProviders() {
   }
 }
 
+// Held for the whole file. The rollup this suite writes to and reads back is
+// database-wide, so a neighbouring suite rebuilding it drops the materialised
+// view out from under these fixtures.
+holdClickHouseSchemaLockForFile();
+
 describe("budgets on every dimension (real PG + real CH)", () => {
   beforeAll(async () => {
     await startTestContainers();
@@ -131,6 +136,9 @@ describe("budgets on every dimension (real PG + real CH)", () => {
         displayPrefix: "vk-lw-per",
         principalUserId: USER_ID,
         createdById: USER_ID,
+        // The destination is stored on the key rather than taken from its
+        // scope, so a row written straight to PG has to carry it.
+        traceProjectId: PROJECT_ID,
         scopes: { create: [{ scopeType: "PROJECT", scopeId: PROJECT_ID }] },
       },
     });
@@ -142,6 +150,7 @@ describe("budgets on every dimension (real PG + real CH)", () => {
         hashedSecret: `hash-shared-${suffix}`,
         displayPrefix: "vk-lw-shr",
         createdById: USER_ID,
+        traceProjectId: PROJECT_ID,
         scopes: { create: [{ scopeType: "PROJECT", scopeId: PROJECT_ID }] },
       },
     });
@@ -901,10 +910,10 @@ describe("budgets on every dimension (real PG + real CH)", () => {
           },
         });
 
-        // teamId is the team the key's traces land in, which for a key not
-        // scoped to exactly one project is the governance team, never the
-        // team that owns the key. Passing a different team here is the whole
-        // point: the budget must still resolve, from the key's own scope.
+        // teamId is the team the key's traces land in, which for a shared
+        // key is usually the governance team, never the team that owns the
+        // key. Passing a different team here is the whole point: the budget
+        // must still resolve, from the key's own scope.
         const resolved = await resolveApplicableBudgets({
           client: prisma,
           target: {
