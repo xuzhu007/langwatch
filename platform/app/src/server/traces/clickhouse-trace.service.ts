@@ -465,13 +465,15 @@ export class ClickHouseTraceService {
         if (uniqueTraceIds.length === 0) {
           return [];
         }
-        const includeSpans = opts?.includeSpans ?? true;
+        const wantsSpans = opts?.includeSpans ?? true;
+        const wantsFullIo = opts?.resolveBlobs === true;
+        const needsSpanRead = wantsSpans || wantsFullIo;
 
         this.logger.debug(
           {
             projectId,
             traceIdCount: uniqueTraceIds.length,
-            includeSpans,
+            includeSpans: wantsSpans,
           },
           "Fetching traces with spans from ClickHouse",
         );
@@ -481,7 +483,7 @@ export class ClickHouseTraceService {
             string,
             { summary: TraceSummaryData; spans: NormalizedSpan[] }
           >();
-          const batchSize = includeSpans
+          const batchSize = needsSpanRead
             ? uniqueTraceIds.length
             : ClickHouseTraceService.SUMMARY_BATCH_SIZE;
           for (
@@ -494,7 +496,7 @@ export class ClickHouseTraceService {
               projectId,
               batch,
               occurredAt,
-              includeSpans,
+              needsSpanRead,
             );
             for (const [traceId, value] of batchResult) {
               tracesWithSpans.set(traceId, value);
@@ -508,7 +510,7 @@ export class ClickHouseTraceService {
             projectId,
             entries: [...tracesWithSpans.values()],
             protections,
-            resolveBlobs: includeSpans && opts?.resolveBlobs,
+            resolveBlobs: wantsFullIo,
           });
 
           this.logger.debug(
@@ -516,7 +518,9 @@ export class ClickHouseTraceService {
             "Successfully fetched traces from ClickHouse",
           );
 
-          return traces;
+          return wantsSpans
+            ? traces
+            : traces.map((trace) => ({ ...trace, spans: [] }));
         } catch (error) {
           // A resolver-contract violation is a code bug, not a fetch failure —
           // surface it verbatim rather than flattening it into the generic

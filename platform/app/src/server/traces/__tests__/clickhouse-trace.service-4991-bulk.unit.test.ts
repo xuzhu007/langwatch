@@ -223,6 +223,51 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("ClickHouseTraceService.getTracesWithSpans — dataset mapping", () => {
+  describe("given resolveBlobs without emitted spans", () => {
+    describe("when dataset mapping reads trace-level IO", () => {
+      it("reads stored spans for resolution, returns full output, and omits spans", async () => {
+        mockClickHouseQuery
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve([
+                makeSummaryRow(TRACE_ID, {
+                  computedOutput: `{"type":"text","value":${JSON.stringify(PREVIEW_OUTPUT)}}`,
+                }),
+              ]),
+          })
+          .mockResolvedValueOnce({
+            json: () =>
+              Promise.resolve([
+                makeSpanRowWithEventRef(TRACE_ID, "span-1", {
+                  tenantId: PROJECT_ID,
+                  previewOutput: PREVIEW_OUTPUT,
+                }),
+              ]),
+          });
+        const { blobStore, getFromEventLog } = makeEventRefBlobStore();
+        const service = buildService(blobStore);
+
+        const traces = await service.getTracesWithSpans(
+          PROJECT_ID,
+          [TRACE_ID],
+          protections,
+          { from: 0, to: Date.now() },
+          { includeSpans: false, resolveBlobs: true },
+        );
+
+        expect(
+          mockClickHouseQuery.mock.calls.some(([args]) =>
+            String(args.query).includes("FROM stored_spans AS t"),
+          ),
+        ).toBe(true);
+        expect(getFromEventLog).toHaveBeenCalled();
+        expect(traces[0]!.output?.value).toBe(FULL_OUTPUT);
+        expect(traces[0]!.spans).toEqual([]);
+      });
+    });
+  });
+});
 // ---------------------------------------------------------------------------
 // AC1 — download/export resolves full during enrichment
 // ---------------------------------------------------------------------------
