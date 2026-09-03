@@ -21,7 +21,6 @@ export async function copyToClipboard({
       title: "Copied",
       description: successMessage,
       type: "success",
-      meta: { closable: true },
     });
     return true;
   } catch {
@@ -29,7 +28,6 @@ export async function copyToClipboard({
       title: "Failed to copy",
       description: "Couldn't copy. Please try again.",
       type: "error",
-      meta: { closable: true },
     });
     return false;
   }

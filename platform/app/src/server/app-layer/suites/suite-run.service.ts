@@ -4,6 +4,9 @@ import type { ClickHouseClientResolver } from "~/server/clickhouse/clickhouseCli
 import type { QueueRunCommandData } from "~/server/event-sourcing/pipelines/simulation-processing/schemas/commands";
 import type { SuiteRunStateData } from "~/server/event-sourcing/pipelines/suite-run-processing/projections/suiteRunState.foldProjection";
 import type { StartSuiteRunCommandData } from "~/server/event-sourcing/pipelines/suite-run-processing/schemas/commands";
+import type { RunParameterValues } from "~/server/scenarios/parameters";
+import { withNote } from "~/server/scenarios/run-note";
+import type { RunSecretCiphertext } from "~/server/scenarios/run-secret-values";
 import { generateBatchRunId } from "~/server/scenarios/scenario.ids";
 import { getSuiteSetId } from "~/server/suites/suite-set-id";
 import { KSUID_RESOURCES } from "~/utils/constants";
@@ -42,6 +45,58 @@ export type SuiteRunTarget = {
   type: "http" | "prompt" | "code" | "workflow";
   referenceId: string;
 };
+
+/**
+ * The `parameters` entry for a queued run's metadata, or nothing at all when
+ * the run resolved none. A run without parameters records the metadata it
+ * always did rather than an empty object nothing reads.
+ */
+function withParameters(
+  parameters: RunParameterValues | undefined,
+): { parameters: RunParameterValues } | Record<string, never> {
+  return parameters && Object.keys(parameters).length > 0 ? { parameters } : {};
+}
+
+/**
+ * The `scenarioVersion` entry of the reserved langwatch namespace, or nothing
+ * at all. The map built from the queue-time read holds every scheduled
+ * scenario, so an absent entry only happens if a caller schedules a scenario
+ * it never read; the run then records no version rather than an undefined.
+ */
+function withScenarioVersion(
+  version: number | undefined,
+): { scenarioVersion: number } | Record<string, never> {
+  return version !== undefined ? { scenarioVersion: version } : {};
+}
+
+/**
+ * The names of the secrets a run used, for the run's metadata.
+ *
+ * Names only. They are what lets a person see which credentials a run needed;
+ * the values ride the event beside the metadata, encrypted, and never enter it.
+ */
+function withSecretParameterNames(
+  secretParameters: RunSecretCiphertext | undefined,
+): { secretParameterNames: string[] } | Record<string, never> {
+  const names = Object.keys(secretParameters ?? {});
+  return names.length > 0 ? { secretParameterNames: names } : {};
+}
+
+/**
+ * The encrypted secret values, as a sibling of the metadata rather than a
+ * member of it.
+ *
+ * The fold projection stringifies the metadata object into a stored column, so
+ * a worker running an older build would copy anything inside it into the runs
+ * store. A sibling field is dropped by that same worker instead.
+ */
+function withSecretParameters(
+  secretParameters: RunSecretCiphertext | undefined,
+): { secretParameters: RunSecretCiphertext } | Record<string, never> {
+  return secretParameters && Object.keys(secretParameters).length > 0
+    ? { secretParameters }
+    : {};
+}
 
 export class SuiteRunService {
   constructor(
@@ -83,21 +138,50 @@ export class SuiteRunService {
     projectId: string;
     activeScenarioIds: string[];
     scenarioNameMap: Map<string, string>;
+    /**
+     * Each scenario's version from the same read that resolved the names, so
+     * every queued run says which state of its scenario it ran. Stamped at
+     * queue time: a later edit never changes what an old run says.
+     */
+    scenarioVersionMap: Map<string, number>;
     activeTargets: SuiteRunTarget[];
     repeatCount: number;
     skippedArchived: SuiteRunResult["skippedArchived"];
     idempotencyKey: string;
     batchRunId?: string;
+    /**
+     * The values each scenario resolved for this run, keyed by scenario id.
+     * Recorded on the queued event so the run reads back with the values it
+     * actually ran against, and so the executor gets them without a second
+     * resolution pass reaching a different answer.
+     */
+    parametersByScenarioId?: Map<string, RunParameterValues>;
+    /**
+     * The secret values each scenario resolved, already encrypted, keyed by
+     * scenario id. They ride the queued event beside the metadata so the run
+     * carries them into execution without any store holding a readable
+     * credential.
+     */
+    secretParametersByScenarioId?: Map<string, RunSecretCiphertext>;
+    /**
+     * One short line describing why this batch was run. Stamped onto every run
+     * of the batch, so a run carries its note from its first moment.
+     */
+    note?: string;
   }): Promise<SuiteRunResult> {
     const {
       suiteId,
       projectId,
       activeScenarioIds,
       scenarioNameMap,
+      scenarioVersionMap,
       activeTargets,
       repeatCount,
       skippedArchived,
       idempotencyKey,
+      parametersByScenarioId,
+      secretParametersByScenarioId,
+      note,
     } = params;
 
     const batchRunId = params.batchRunId ?? generateBatchRunId();
@@ -154,8 +238,11 @@ export class SuiteRunService {
 
     const now = Date.now();
     await Promise.allSettled(
-      items.map((item) =>
-        this.queueSimulationRunCommand({
+      items.map((item) => {
+        const secretParameters = secretParametersByScenarioId?.get(
+          item.scenarioId,
+        );
+        return this.queueSimulationRunCommand({
           tenantId: projectId,
           scenarioRunId: item.scenarioRunId,
           scenarioId: item.scenarioId,
@@ -163,18 +250,26 @@ export class SuiteRunService {
           scenarioSetId: setId,
           name: scenarioNameMap.get(item.scenarioId),
           metadata: {
-            langwatch: { targetReferenceId: item.target.referenceId },
+            langwatch: {
+              targetReferenceId: item.target.referenceId,
+              targetType: item.target.type,
+              ...withScenarioVersion(scenarioVersionMap.get(item.scenarioId)),
+            },
+            ...withNote(note),
+            ...withParameters(parametersByScenarioId?.get(item.scenarioId)),
+            ...withSecretParameterNames(secretParameters),
           },
+          ...withSecretParameters(secretParameters),
           target: {
             type: item.target.type,
             referenceId: item.target.referenceId,
           },
           occurredAt: now,
-        }),
-      ),
+        });
+      }),
     );
 
-    // No explicit job scheduling — the execution reactor picks up queued events
+    // No explicit job scheduling — the execution subscriber picks up queued events
     // via the GroupQueue and spawns child processes in the execution pool.
 
     logger.debug(

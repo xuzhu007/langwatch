@@ -124,7 +124,7 @@ export class LegacyAnalyticsBackendClickHouseRepository
         })),
       };
     } catch (error) {
-      logger.error(
+      logger.warn(
         { error: error instanceof Error ? error.message : error, sql },
         "Failed to execute dataForFilter query",
       );
@@ -203,7 +203,7 @@ export class LegacyAnalyticsBackendClickHouseRepository
           typeof total === "string" ? parseInt(total, 10) : total,
       };
     } catch (error) {
-      logger.error(
+      logger.warn(
         { error: error instanceof Error ? error.message : error, sql },
         "Failed to execute topDocuments query",
       );
@@ -253,7 +253,7 @@ export class LegacyAnalyticsBackendClickHouseRepository
 
       return { events };
     } catch (error) {
-      logger.error(
+      logger.warn(
         { error: error instanceof Error ? error.message : error, sql },
         "Failed to execute feedbacks query",
       );

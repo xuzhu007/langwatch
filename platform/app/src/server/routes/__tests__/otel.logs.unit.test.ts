@@ -6,6 +6,8 @@ const mockResolve = vi.fn();
 const mockMarkUsed = vi.fn();
 
 vi.mock("~/server/app-layer/app", () => ({
+  // Consumers that degrade without Redis read through this one.
+  tryGetApp: () => null,
   getApp: vi.fn(() => ({
     traces: { logCollection: { handleOtlpLogRequest: mockHandleLogs } },
   })),

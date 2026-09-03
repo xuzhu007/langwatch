@@ -13,20 +13,23 @@
 import { HandledError } from "@langwatch/handled-error";
 import { generate } from "@langwatch/ksuid";
 import { createLogger } from "@langwatch/observability";
-import type { Project } from "@prisma/client";
-import { CostReferenceType, CostType, ExperimentType } from "@prisma/client";
-import type { JsonArray } from "@prisma/client/runtime/library";
+import type { JsonArray } from "@prisma/client/runtime/client";
 import { TRPCError } from "@trpc/server";
 import type { Edge, Node } from "@xyflow/react";
 import type { Context } from "hono";
-import { describeRoute } from "hono-openapi";
-import { resolver } from "hono-openapi/zod";
+import { describeRoute, resolver } from "hono-openapi";
 import { nanoid } from "nanoid";
 import { type ZodError, ZodError as ZodErrorClass, z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { fromZodError } from "zod-validation-error";
 import { LEGACY_PAIRWISE_EVALUATOR_TYPE } from "~/experiments-v3/types";
 import { resolveDispatchEvaluatorType } from "~/experiments-v3/utils/normalizeComparison";
+import type { Project } from "~/generated/prisma/client";
+import {
+  CostReferenceType,
+  CostType,
+  ExperimentType,
+} from "~/generated/prisma/client";
 import type { Workflow } from "~/optimization_studio/types/dsl";
 import { getInputsOutputs } from "~/optimization_studio/utils/nodeUtils";
 import { getWorkflowEntryOutputs } from "~/optimization_studio/utils/workflowFields";
@@ -56,7 +59,10 @@ import {
   evaluatorsSchema,
   type SingleEvaluationResult,
 } from "~/server/evaluations/evaluators";
-import { getEvaluatorDefaultSettings } from "~/server/evaluations/getEvaluator";
+import {
+  type CustomEvaluatorDefinition,
+  getEvaluatorDefaultSettings,
+} from "~/server/evaluations/getEvaluator";
 import {
   type DataForEvaluation,
   runEvaluation,
@@ -174,7 +180,7 @@ async function authenticateRequest(
   }
 
   try {
-    await enforceApiKeyCeiling({ prisma, resolved, permission });
+    await enforceApiKeyCeiling({ resolved, permission });
   } catch (error) {
     const denial = apiKeyCeilingDenialResponse(error);
     // The ceiling only ever denies with 403; narrowed here so the descriptor
@@ -730,7 +736,7 @@ secured.access(legacyEvaluationAuth).post(
       };
     }
 
-    const experiment = await ExperimentService.create(prisma).findBySlug({
+    const experiment = await ExperimentService.create({ prisma }).findBySlug({
       projectId: project.id,
       slug: experimentSlug,
     });
@@ -985,14 +991,15 @@ export const getEvaluatorIncludingCustom = async (
   projectId: string,
   checkType: EvaluatorTypes,
 ): Promise<
-  EvaluatorDefinition<keyof typeof AVAILABLE_EVALUATORS> | undefined
+  | EvaluatorDefinition<keyof typeof AVAILABLE_EVALUATORS>
+  | CustomEvaluatorDefinition
+  | undefined
 > => {
   const availableCustomEvaluators = await getCustomEvaluators({
     projectId,
   });
 
-  const customEntries: [string, { name: string; requiredFields: string[] }][] =
-    [];
+  const customEntries: [string, CustomEvaluatorDefinition][] = [];
   for (const evaluator of availableCustomEvaluators ?? []) {
     const dsl = evaluator.versions[0]?.dsl;
     if (!dsl) {
@@ -1276,9 +1283,12 @@ async function handleEvaluatorCall(
     // flips silently on reroute. Narrow enough (and low-impact enough) to
     // document rather than special-case.
     const mergedSettings = {
+      // Custom evaluator definitions have no `settings` to derive defaults
+      // from — getEvaluatorDefaultSettings returns {} for that arm instead of
+      // crashing. (Workflow evaluators never reach it: this branch.)
       ...(!workflowEvaluatorDef
         ? getEvaluatorDefaultSettings(
-            evaluatorDefinition as any,
+            evaluatorDefinition,
             await resolveEvaluatorSettingsDefaults(project.id),
           )
         : {}),

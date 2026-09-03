@@ -1,5 +1,5 @@
-import type { SimulationSuite } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrismaClient, SimulationSuite } from "~/generated/prisma/client";
 import type { AgentRepository } from "../../agents/agent.repository";
 import type { SuiteRunService } from "../../app-layer/suites/suite-run.service";
 import type { LlmConfigRepository } from "../../prompt-config/repositories/llm-config.repository";
@@ -19,6 +19,8 @@ function makeSuite(overrides: Partial<SimulationSuite> = {}): SimulationSuite {
     projectId: "proj_1",
     name: "Test Suite",
     slug: "test-suite",
+    kind: "custom",
+    scope: null,
     description: null,
     scenarioIds: ["scen_1", "scen_2", "scen_3"],
     targets: [
@@ -47,7 +49,9 @@ function makeMockRepository(
     create: vi.fn(),
     findById: vi.fn(),
     findBySlug: vi.fn().mockResolvedValue(null),
-    findAll: vi.fn(),
+    findAll: vi.fn().mockResolvedValue([]),
+    findSlugsByPrefix: vi.fn().mockResolvedValue([]),
+    findFirstByLabel: vi.fn().mockResolvedValue(null),
     update: vi.fn(),
     archive: vi.fn(),
     ...overrides,
@@ -57,6 +61,9 @@ function makeMockRepository(
 type MockScenarioRepository = {
   findManyIncludingArchived: ReturnType<typeof vi.fn>;
   findNamesByIds: ReturnType<typeof vi.fn>;
+  findRunConfigByIds: ReturnType<typeof vi.fn>;
+  findManyByFolder: ReturnType<typeof vi.fn>;
+  findAll: ReturnType<typeof vi.fn>;
 };
 
 type MockAgentRepository = {
@@ -77,6 +84,18 @@ function makeMockScenarioRepository(
       Promise.resolve(ids.map((id) => ({ id, archivedAt: null }))),
     ),
     findNamesByIds: vi.fn(async () => []),
+    findRunConfigByIds: vi.fn(async ({ ids }: { ids: string[] }) =>
+      ids.map((id) => ({
+        id,
+        name: id,
+        situation: "A customer asks for help",
+        criteria: ["Answers the question"],
+        parameters: null,
+        version: 1,
+      })),
+    ),
+    findManyByFolder: vi.fn(async () => []),
+    findAll: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -144,6 +163,9 @@ function createService(overrides?: {
     agentRepo as unknown as AgentRepository,
     llmConfigRepo as unknown as LlmConfigRepository,
     suiteRunService,
+    // Unit paths never open a transaction; the folder cascades that do are
+    // covered by the datastore-lane integration tests.
+    {} as unknown as PrismaClient,
   );
 
   return {
@@ -253,6 +275,148 @@ describe("SuiteService", () => {
           expect(suiteRunService.startRun).toHaveBeenCalledWith(
             expect.objectContaining({ repeatCount: 3 }),
           );
+        });
+      });
+    });
+
+    describe("given the run supplies parameter values", () => {
+      const declaring = (parameters: unknown) => ({
+        findRunConfigByIds: vi.fn(async ({ ids }: { ids: string[] }) =>
+          ids.map((id) => ({
+            id,
+            name: id,
+            situation: "A {{ params.account_tier }} customer asks for help",
+            criteria: ["Answers the question"],
+            parameters,
+            version: 1,
+          })),
+        ),
+      });
+
+      describe("when every supplied name is declared", () => {
+        it("hands the resolved values to suiteRunService per scenario", async () => {
+          const { service, suiteRunService } = createService({
+            scenarioRepository: declaring([
+              { name: "account_tier", defaultValue: "gold" },
+              { name: "region", defaultValue: "eu-central" },
+            ]),
+          });
+
+          await service.run({
+            suite: makeSuite({ scenarioIds: ["scen_1"] }),
+            ...RUN_DEFAULTS,
+            parameters: { account_tier: "platinum" },
+          });
+
+          const { parametersByScenarioId } = suiteRunService.startRun.mock
+            .calls[0]?.[0] as {
+            parametersByScenarioId: Map<string, Record<string, unknown>>;
+          };
+          expect(parametersByScenarioId.get("scen_1")).toEqual({
+            account_tier: "platinum",
+            region: "eu-central",
+          });
+        });
+      });
+
+      describe("when a supplied name is declared by no scenario in the run", () => {
+        it("rejects with scenario_parameter_unknown before anything is scheduled", async () => {
+          const { service, suiteRunService } = createService({
+            scenarioRepository: declaring([
+              { name: "account_tier", defaultValue: "gold" },
+            ]),
+          });
+
+          await expect(
+            service.run({
+              suite: makeSuite({ scenarioIds: ["scen_1"] }),
+              ...RUN_DEFAULTS,
+              parameters: { regoin: "eu-central" },
+            }),
+          ).rejects.toMatchObject({ code: "scenario_parameter_unknown" });
+
+          expect(suiteRunService.startRun).not.toHaveBeenCalled();
+        });
+      });
+
+      describe("when a scenario declares one of them secret", () => {
+        const declaringSecret = {
+          findRunConfigByIds: vi.fn(async ({ ids }: { ids: string[] }) =>
+            ids.map((id) => ({
+              id,
+              name: id,
+              situation: "A {{ params.account_tier }} customer asks for help",
+              criteria: ["Answers the question"],
+              parameters: [
+                { name: "account_tier", defaultValue: "gold" },
+                { name: "api_token", secret: true },
+              ],
+            })),
+          ),
+        };
+
+        // The store boundary itself is covered where it is crossed, in
+        // suite-run-parameters.integration.test.ts. What this pins is the
+        // handoff: the value leaves the suite service encrypted, and the plain
+        // record it travels beside never holds it.
+        it("hands the secret to suiteRunService encrypted and out of the plain values", async () => {
+          const { service, suiteRunService } = createService({
+            scenarioRepository: declaringSecret,
+          });
+
+          await service.run({
+            suite: makeSuite({ scenarioIds: ["scen_1"] }),
+            ...RUN_DEFAULTS,
+            parameters: { api_token: "tok-live-1" },
+          });
+
+          const { parametersByScenarioId, secretParametersByScenarioId } =
+            suiteRunService.startRun.mock.calls[0]?.[0] as {
+              parametersByScenarioId: Map<string, Record<string, unknown>>;
+              secretParametersByScenarioId: Map<string, Record<string, string>>;
+            };
+
+          expect(parametersByScenarioId.get("scen_1")).toEqual({
+            account_tier: "gold",
+          });
+          const stamped = secretParametersByScenarioId.get("scen_1");
+          expect(Object.keys(stamped!)).toEqual(["api_token"]);
+          expect(stamped!.api_token).not.toContain("tok-live-1");
+        });
+
+        /** @scenario "A secret parameter value must be supplied when the run starts" */
+        it("rejects the run when the secret has no value", async () => {
+          const { service, suiteRunService } = createService({
+            scenarioRepository: declaringSecret,
+          });
+
+          await expect(
+            service.run({
+              suite: makeSuite({ scenarioIds: ["scen_1"] }),
+              ...RUN_DEFAULTS,
+            }),
+          ).rejects.toMatchObject({
+            code: "scenario_secret_parameter_missing",
+          });
+
+          expect(suiteRunService.startRun).not.toHaveBeenCalled();
+        });
+      });
+
+      describe("when the scenario reads a parameter nothing resolves", () => {
+        it("rejects with scenario_parameter_missing before anything is scheduled", async () => {
+          const { service, suiteRunService } = createService({
+            scenarioRepository: declaring([{ name: "account_tier" }]),
+          });
+
+          await expect(
+            service.run({
+              suite: makeSuite({ scenarioIds: ["scen_1"] }),
+              ...RUN_DEFAULTS,
+            }),
+          ).rejects.toMatchObject({ code: "scenario_parameter_missing" });
+
+          expect(suiteRunService.startRun).not.toHaveBeenCalled();
         });
       });
     });
@@ -1015,6 +1179,177 @@ describe("SuiteService", () => {
           projectId: "proj_1",
           organizationId: "org_1",
         });
+      });
+    });
+  });
+
+  describe("getAll()", () => {
+    describe("when the caller names no kind", () => {
+      /** @scenario "A caller that names no kind of suite gets custom run plans only" */
+      it("asks the repository for custom suites only", async () => {
+        const { service, suiteRepo } = createService();
+        suiteRepo.findAll.mockResolvedValue([makeSuite()]);
+
+        await service.getAll({ projectId: "proj_1" });
+
+        expect(suiteRepo.findAll).toHaveBeenCalledWith({
+          projectId: "proj_1",
+          kinds: ["custom"],
+        });
+      });
+    });
+
+    describe("when the caller names kinds explicitly", () => {
+      it("passes them through", async () => {
+        const { service, suiteRepo } = createService();
+
+        await service.getAll({
+          projectId: "proj_1",
+          kinds: ["folder", "custom"],
+        });
+
+        expect(suiteRepo.findAll).toHaveBeenCalledWith({
+          projectId: "proj_1",
+          kinds: ["folder", "custom"],
+        });
+      });
+    });
+  });
+
+  describe("createFolder()", () => {
+    describe("when the name is only spaces", () => {
+      /** @scenario "A folder created with a blank name is rejected with validation_error" */
+      it("rejects with validation_error and stores nothing", async () => {
+        const { service, suiteRepo } = createService();
+
+        await expect(
+          service.createFolder({ projectId: "proj_1", name: "   " }),
+        ).rejects.toMatchObject({ code: "validation_error" });
+
+        expect(suiteRepo.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("when the slug is free", () => {
+      it("creates an empty folder", async () => {
+        const { service, suiteRepo } = createService();
+        suiteRepo.create.mockImplementation(
+          async (input: Record<string, unknown>) => makeSuite(input),
+        );
+
+        await service.createFolder({ projectId: "proj_1", name: "Refunds" });
+
+        expect(suiteRepo.create).toHaveBeenCalledWith({
+          projectId: "proj_1",
+          name: "Refunds",
+          slug: "refunds",
+          kind: "folder",
+          scenarioIds: [],
+          targets: [],
+          repeatCount: 1,
+          labels: [],
+        });
+      });
+    });
+
+    describe("when another suite already holds the slug", () => {
+      /** @scenario "A folder created with a name another suite already uses keeps both names readable" */
+      it("appends a numeric suffix instead of refusing", async () => {
+        const { service, suiteRepo } = createService({
+          suiteRepository: {
+            findSlugsByPrefix: vi
+              .fn()
+              .mockResolvedValue(["refunds", "refunds-2"]),
+          },
+        });
+        suiteRepo.create.mockImplementation(
+          async (input: Record<string, unknown>) => makeSuite(input),
+        );
+
+        const folder = await service.createFolder({
+          projectId: "proj_1",
+          name: "Refunds",
+        });
+
+        expect(folder.name).toBe("Refunds");
+        expect(folder.slug).toBe("refunds-3");
+      });
+
+      it("retries once when the insert loses the slug race", async () => {
+        const raceLoss = Object.assign(new Error("unique"), {
+          code: "P2002",
+        });
+        const { service, suiteRepo } = createService();
+        suiteRepo.findSlugsByPrefix
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce(["refunds"]);
+        suiteRepo.create
+          .mockRejectedValueOnce(raceLoss)
+          .mockImplementation(async (input: Record<string, unknown>) =>
+            makeSuite(input),
+          );
+
+        const folder = await service.createFolder({
+          projectId: "proj_1",
+          name: "Refunds",
+        });
+
+        expect(folder.slug).toBe("refunds-2");
+        expect(suiteRepo.create).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe("when running a folder", () => {
+    describe("when the folder carries a repeat count", () => {
+      /** @scenario "A folder run honours the repeat count on the folder" */
+      it("schedules cases x targets x repeat count runs", async () => {
+        const { service, scenarioRepo, suiteRunService } = createService({
+          scenarioRepository: {
+            findManyByFolder: vi.fn().mockResolvedValue([
+              { id: "scen_1", archivedAt: null },
+              { id: "scen_2", archivedAt: null },
+            ]),
+          },
+        });
+        const folder = makeSuite({
+          id: "folder_1",
+          kind: "folder",
+          scenarioIds: ["scen_1", "scen_2"],
+          targets: [{ type: "http", referenceId: "agent_1" }] as SuiteTarget[],
+          repeatCount: 3,
+        });
+
+        const result = await service.run({
+          suite: folder,
+          ...RUN_DEFAULTS,
+        });
+
+        expect(result.jobCount).toBe(6);
+        expect(scenarioRepo.findManyByFolder).toHaveBeenCalledWith({
+          projectId: "proj_1",
+          folderId: "folder_1",
+        });
+        expect(suiteRunService.startRun).toHaveBeenCalledWith(
+          expect.objectContaining({ repeatCount: 3 }),
+        );
+      });
+    });
+
+    describe("when the folder has no target", () => {
+      it("refuses with suite_targets_required before resolving anything", async () => {
+        const { service, suiteRunService } = createService();
+        const folder = makeSuite({
+          id: "folder_1",
+          kind: "folder",
+          targets: [] as unknown as SimulationSuite["targets"],
+        });
+
+        await expect(
+          service.run({ suite: folder, ...RUN_DEFAULTS }),
+        ).rejects.toMatchObject({ code: "suite_targets_required" });
+
+        expect(suiteRunService.startRun).not.toHaveBeenCalled();
       });
     });
   });

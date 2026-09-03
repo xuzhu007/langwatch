@@ -38,9 +38,6 @@ export function CopyInput(
               : `Unable to copy ${props.label}, please copy it manually`,
             type: copied ? "success" : "error",
             duration: 2000,
-            meta: {
-              closable: true,
-            },
           });
         });
       }}

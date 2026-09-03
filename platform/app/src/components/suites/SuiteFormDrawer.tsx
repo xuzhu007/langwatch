@@ -24,7 +24,6 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { generate } from "@langwatch/ksuid";
-import type { SimulationSuite } from "@prisma/client";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -34,6 +33,7 @@ import {
   readHandledError,
   showErrorToast,
 } from "~/features/errors";
+import type { SimulationSuite } from "~/generated/prisma/client";
 import {
   getFlowCallbacks,
   useDrawer,
@@ -68,6 +68,9 @@ function buildMutationPayload(data: SuiteFormData, projectId: string) {
     name: data.name.trim(),
     description: data.description.trim() || undefined,
     scenarioIds: data.selectedScenarioIds,
+    // This drawer only ever picks a list, so it says so: a plan saved here
+    // covers the cases it names and nothing else.
+    scope: data.scope,
     targets: data.selectedTargets,
     repeatCount: data.repeatCount,
     labels: data.labels,
@@ -89,7 +92,7 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
    *  close/toast behavior — the per-call onSuccess handles it. */
   const saveAndRunRef = useRef(false);
   const params = useDrawerParams();
-  const utils = api.useContext();
+  const utils = api.useUtils();
 
   const isOpen = drawerOpen("suiteEditor");
   const suiteId = params.suiteId;
@@ -118,6 +121,13 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
   );
 
   const { data: prompts } = api.prompts.getAllPromptsForProject.useQuery(
+    { projectId: project?.id ?? "" },
+    { enabled: !!project && isOpen },
+  );
+
+  // A project that uses test suites reads its cases under the suite names in
+  // the picker. A project with no suite reads the flat list it always did.
+  const { data: folders } = api.suites.folders.getAll.useQuery(
     { projectId: project?.id ?? "" },
     { enabled: !!project && isOpen },
   );
@@ -178,7 +188,6 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
       toaster.create({
         title: "Run plan created",
         type: "success",
-        meta: { closable: true },
       });
     },
     onError: (err) => {
@@ -208,7 +217,6 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
       toaster.create({
         title: "Run plan updated",
         type: "success",
-        meta: { closable: true },
       });
     },
     onError: (err) => {
@@ -377,6 +385,7 @@ export function SuiteFormDrawer(_props: SuiteFormDrawerProps) {
                     hasError={!!errors.selectedScenarioIds}
                     archivedIds={archivedScenariosWithNames}
                     onRemoveArchived={suiteForm.removeArchivedScenario}
+                    folders={folders}
                   />
                   {errors.selectedScenarioIds && (
                     <Text fontSize="xs" color="red.fg">

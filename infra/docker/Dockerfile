@@ -25,8 +25,6 @@ RUN ARCH=$(uname -m) && \
 
 WORKDIR /app
 
-# Skip Prisma checksum verification for air-gapped builds
-ENV PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
 # pnpm 必须使用 npm_config_* 环境变量读取这些设置。
 ENV npm_config_package_import_method=copy
 # 部分宿主机内核或 seccomp 配置会让 libuv 的 io_uring 写入返回 EPERM。
@@ -37,7 +35,6 @@ ENV npm_config_fetch_retry_mintimeout=20000
 ENV npm_config_fetch_retry_maxtimeout=120000
 ENV npm_config_fetch_timeout=300000
 ENV npm_config_network_concurrency=4
-
 # mcp/typescript is a workspace member — copy it early so pnpm install can link
 # it. Its build runs automatically as part of the app's `pnpm run build`
 # (via start:prepare:files → build:mcp-server).
@@ -117,8 +114,8 @@ RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm --filter "@langwatch/web..." run
 # --ignore-scripts: this pass exists only to drop devDependencies. Without it
 # the SDK's `prepare` re-runs here and dies — it regenerates types with
 # openapi-typescript, a devDependency this very command is removing. Nothing
-# needs regenerating at this point; the dist was built in the step above, and
-# the Prisma client is regenerated explicitly after the prune below.
+# needs regenerating at this point; the dist and Prisma client were generated
+# by the build step above.
 RUN CI=true pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@langwatch/web..."
 
 # ...and then actually reclaim the disk. The step above rewrites each member's
@@ -133,13 +130,12 @@ RUN CI=true pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@la
 # `prune` takes no --filter, which is why the install above is filtered and
 # this is not. That is fine here: the members outside the app's closure have
 # no node_modules in this image at all, so there is nothing for prune to get
-# wrong. It must run BEFORE `prisma generate`, because prune drops the
-# generated client (it is not a declared dependency).
+# wrong. No post-prune `prisma generate` anymore: Prisma 7's generator emits
+# into platform/app/src/generated/prisma (first-party source, inlined into the
+# dist bundles by the build above), not into node_modules, so prune cannot
+# drop it. The runtime stage still needs the `prisma` CLI (a prod dep) for
+# `migrate deploy` at boot.
 RUN CI=true pnpm prune --prod
-# Regenerate Prisma client after pruning (prisma is a prod dep, but generate needs re-run)
-WORKDIR /app/platform/app
-RUN pnpm prisma generate
-WORKDIR /app
 
 # ── Stage 2: runtime ───────────────────────────────────────────────
 FROM ${NODE_IMAGE}
