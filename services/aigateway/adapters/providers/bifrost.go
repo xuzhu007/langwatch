@@ -919,13 +919,11 @@ func passthroughResponseHeaders(in map[string]string) map[string]string {
 	return out
 }
 
-// rawForwardCtx enriches a context with both Bifrost flags the
-// raw-forward code path needs: UseRawRequestBody sends the inbound
-// bytes unchanged to the provider adapter; SendBackRawResponse attaches
-// the provider's native response bytes to ExtraFields.RawResponse so
-// the gateway can emit them verbatim downstream.
+// rawForwardCtx 为原始转发链路启用请求体直传，并授权按请求捕获原始响应，
+// 使网关能从 ExtraFields.RawResponse 逐字节返回提供商响应。
 func rawForwardCtx(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, bfschemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx = context.WithValue(ctx, bfschemas.BifrostContextKeyAllowPerRequestRawOverride, true)
 	ctx = context.WithValue(ctx, bfschemas.BifrostContextKeySendBackRawResponse, true)
 	return ctx
 }
@@ -1129,9 +1127,10 @@ func (a *account) GetConfigForProvider(provider bfschemas.ModelProvider) (*bfsch
 		// unblocks outbound-delta diagnosis (headers, body) when a
 		// provider-side behavior (e.g. Anthropic cache) fires on direct
 		// curl but not through the gateway. Do NOT set in production.
+		url := envVar(proxyURL)
 		cfg.ProxyConfig = &bfschemas.ProxyConfig{
 			Type: bfschemas.HTTPProxy,
-			URL:  proxyURL,
+			URL:  &url,
 		}
 	}
 	cfg.CheckAndSetDefaults()
@@ -1141,9 +1140,11 @@ func (a *account) GetConfigForProvider(provider bfschemas.ModelProvider) (*bfsch
 // credentialToBifrostKey converts a domain.Credential into bifrost's Key format.
 func credentialToBifrostKey(cred domain.Credential, provider bfschemas.ModelProvider) bfschemas.Key {
 	k := bfschemas.Key{
-		ID:     cred.ID,
-		Name:   cred.ID,
-		Weight: 1,
+		ID:      cred.ID,
+		Name:    cred.ID,
+		Weight:  1,
+		Models:  bfschemas.WhiteList{"*"},
+		Aliases: bfschemas.KeyAliases(cred.DeploymentMap),
 	}
 
 	switch provider {
@@ -1157,15 +1158,9 @@ func credentialToBifrostKey(cred domain.Credential, provider bfschemas.ModelProv
 		// with an empty endpoint → Bifrost "endpoint not set" (#5760). Mirrors the
 		// dual-name tolerance credBaseURL already applies to vLLM.
 		endpoint := credExtra(cred, "endpoint", "api_base")
-		cfg := &bfschemas.AzureKeyConfig{
-			Endpoint:    envVar(endpoint),
-			Deployments: cred.DeploymentMap,
+		k.AzureKeyConfig = &bfschemas.AzureKeyConfig{
+			Endpoint: envVar(endpoint),
 		}
-		if apiVersion, ok := cred.Extra["api_version"]; ok {
-			v := envVar(apiVersion)
-			cfg.APIVersion = &v
-		}
-		k.AzureKeyConfig = cfg
 
 	case bfschemas.Bedrock:
 		// Two nlpgo routes feed Bedrock creds under different key names: the
@@ -1174,9 +1169,8 @@ func credentialToBifrostKey(cred domain.Credential, provider bfschemas.ModelProv
 		// gatewayproxy (/go/proxy) keeps the litellm aws_* names. Accept both
 		// so neither route lands here with empty credentials.
 		cfg := &bfschemas.BedrockKeyConfig{
-			AccessKey:   envVar(credExtra(cred, "access_key", "aws_access_key_id")),
-			SecretKey:   envVar(credExtra(cred, "secret_key", "aws_secret_access_key")),
-			Deployments: cred.DeploymentMap,
+			AccessKey: envVar(credExtra(cred, "access_key", "aws_access_key_id")),
+			SecretKey: envVar(credExtra(cred, "secret_key", "aws_secret_access_key")),
 		}
 		if st := credExtra(cred, "session_token", "aws_session_token"); st != "" {
 			v := envVar(st)

@@ -2,6 +2,7 @@ package codeblock_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -22,7 +23,9 @@ func requirePython(t *testing.T) {
 
 func newExec(t *testing.T) *codeblock.Executor {
 	t.Helper()
-	e, err := codeblock.New(codeblock.Options{})
+	e, err := codeblock.New(codeblock.Options{
+		Python: os.Getenv("LANGWATCH_CODEBLOCK_PYTHON"),
+	})
 	require.NoError(t, err)
 	return e
 }

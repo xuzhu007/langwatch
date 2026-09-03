@@ -103,21 +103,8 @@ func isTruthyEnv(value string) bool {
 // narrows. An explicit CHECK_SLOTS is the operator's call either way.
 func ResolveCheckSlots(machine CheckMachine, env CheckEnv) (int, string) {
 	raw := strings.TrimSpace(env.CheckSlots)
-	if raw != "" {
-		if gateOffRequested(raw) {
-			if !isTruthyEnv(env.Claudecode) {
-				return 0, "CHECK_SLOTS"
-			}
-			if env.HeldByQueue {
-				return 0, "held"
-			}
-			// An agent shell may not turn the queue off: fall through to the
-			// derived limit as if CHECK_SLOTS were unset.
-		} else if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			return parsed, "CHECK_SLOTS"
-		}
-		// An unparseable value falls through to the derived default, exactly
-		// like the JS wrapper: a typo must not turn the gate off.
+	if slots, source, ok := resolveCheckSlotsOverride(raw, env); ok {
+		return slots, source
 	}
 	if isTruthyEnv(env.CI) {
 		return 0, "CI"
@@ -128,6 +115,24 @@ func ResolveCheckSlots(machine CheckMachine, env CheckEnv) (int, string) {
 	byMemory := int(machine.TotalRAMBytes / checkRAMPerRun)
 	byCPU := machine.NumCPU / checkCPUsPerRun
 	return max(1, min(byMemory, byCPU)), "machine"
+}
+func resolveCheckSlotsOverride(raw string, env CheckEnv) (int, string, bool) {
+	if raw == "" {
+		return 0, "", false
+	}
+	if gateOffRequested(raw) {
+		if !isTruthyEnv(env.Claudecode) {
+			return 0, "CHECK_SLOTS", true
+		}
+		if env.HeldByQueue {
+			return 0, "held", true
+		}
+		return 0, "", false
+	}
+	if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+		return parsed, "CHECK_SLOTS", true
+	}
+	return 0, "", false
 }
 
 // gateOffRequested reads the values that ask for the queue to be off entirely.
