@@ -489,7 +489,9 @@ jobs:
             DUR="--reporter=./src/test-utils/durationManifestReporter.ts"
           fi
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
-            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
+            # 否则 Vitest 会把变更误判为无受影响测试。
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
             pnpm test:unit --run --changed origin/main --passWithNoTests \
               --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
               --dangerouslyIgnoreUnhandledErrors
@@ -624,7 +626,9 @@ jobs:
             DUR="--reporter=./src/test-utils/durationManifestReporter.ts"
           fi
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
-            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
+            # 否则 Vitest 会把变更误判为无受影响测试。
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
             pnpm test:component --run --changed origin/main --passWithNoTests \
               --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
               --dangerouslyIgnoreUnhandledErrors
@@ -883,7 +887,9 @@ jobs:
             DUR="--reporter=./src/test-utils/durationManifestReporter.ts"
           fi
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
-            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
+            # 否则 Vitest 会把变更误判为无受影响测试。
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
             pnpm test:integration --changed origin/main --passWithNoTests \
               --reporter=default --reporter=json --reporter=./src/test-utils/shardFailureReporter.ts \
               --outputFile=test-results.json
