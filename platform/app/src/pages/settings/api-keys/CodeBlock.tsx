@@ -41,7 +41,6 @@ export function CodeBlock({
           : "Clipboard not available. Copy manually.",
         type: copied ? "success" : "error",
         duration: copied ? 2000 : 3000,
-        meta: { closable: true },
       });
     });
   };

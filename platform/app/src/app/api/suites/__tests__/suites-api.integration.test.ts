@@ -1,20 +1,26 @@
+import { nanoid } from "nanoid";
+import type { Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { projectFactory } from "~/factories/project.factory";
 import type {
+  Agent,
   Organization,
+  Prisma,
   Project,
   Scenario,
   SimulationSuite,
   Team,
-} from "@prisma/client";
-import { nanoid } from "nanoid";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { projectFactory } from "~/factories/project.factory";
+} from "~/generated/prisma/client";
 import { globalForApp, resetApp } from "~/server/app-layer/app";
 import { createTestApp } from "~/server/app-layer/presets";
 import {
   type PlanProvider,
   PlanProviderService,
 } from "~/server/app-layer/subscription/plan-provider";
+import { SuiteRunService } from "~/server/app-layer/suites/suite-run.service";
 import { prisma } from "~/server/db";
+import type { QueueRunCommandData } from "~/server/event-sourcing/pipelines/simulation-processing/schemas/commands";
+import type { StartSuiteRunCommandData } from "~/server/event-sourcing/pipelines/suite-run-processing/schemas/commands";
 import { cleanupTestRows } from "~/test-utils/cleanupTestRows";
 import { FREE_PLAN } from "../../../../../ee/licensing/constants";
 import { app } from "../[[...route]]/app";
@@ -25,6 +31,8 @@ describe("Feature: Suites REST API", () => {
   let testOrganization: Organization;
   let testTeam: Team;
   let testProject: Project;
+  let startSuiteRun: Mock<(data: StartSuiteRunCommandData) => Promise<void>>;
+  let queueSimulationRun: Mock<(data: QueueRunCommandData) => Promise<void>>;
   let helpers: {
     api: {
       get: (path: string) => Response | Promise<Response>;
@@ -42,6 +50,8 @@ describe("Feature: Suites REST API", () => {
   beforeEach(async () => {
     await resetApp();
     const mockGetActivePlan = vi.fn().mockResolvedValue(FREE_PLAN);
+    startSuiteRun = vi.fn(async () => {});
+    queueSimulationRun = vi.fn(async () => {});
     globalForApp.__langwatch_app = createTestApp({
       planProvider: PlanProviderService.create({
         getActivePlan: mockGetActivePlan as PlanProvider["getActivePlan"],
@@ -50,6 +60,16 @@ describe("Feature: Suites REST API", () => {
         notifyPlanLimitReached: vi.fn().mockResolvedValue(undefined),
         checkAndSendWarning: vi.fn().mockResolvedValue(undefined),
       } as any,
+      // The run route reaches the event stream through this service, so
+      // standing it up on spies is what lets a test read the commands a run
+      // actually dispatched.
+      suiteRuns: {
+        runs: SuiteRunService.create({
+          resolveClickHouseClient: null,
+          startSuiteRun,
+          queueSimulationRun,
+        }),
+      },
     });
 
     testOrganization = await prisma.organization.create({
@@ -107,6 +127,7 @@ describe("Feature: Suites REST API", () => {
     await cleanupTestRows(prisma, [
       ["simulationSuite", { projectId: testProjectId }],
       ["scenario", { projectId: testProjectId }],
+      ["agent", { projectId: testProjectId }],
     ]);
     await prisma.project.delete({
       where: { id: testProjectId },
@@ -120,14 +141,36 @@ describe("Feature: Suites REST API", () => {
     await resetApp();
   });
 
-  async function createScenario(name: string): Promise<Scenario> {
+  async function createScenario(
+    name: string,
+    overrides: Partial<{ situation: string; parameters: unknown }> = {},
+  ): Promise<Scenario> {
     return prisma.scenario.create({
       data: {
         projectId: testProjectId,
         name,
-        situation: `Testing ${name}`,
+        situation: overrides.situation ?? `Testing ${name}`,
         criteria: ["criterion_1"],
         labels: [],
+        ...(overrides.parameters !== undefined && {
+          parameters: overrides.parameters as Prisma.InputJsonValue,
+        }),
+      },
+    });
+  }
+
+  async function createHttpAgent(): Promise<Agent> {
+    return prisma.agent.create({
+      data: {
+        projectId: testProjectId,
+        name: "Test Agent",
+        type: "http",
+        config: {
+          url: "https://example.com/chat",
+          method: "POST",
+          headers: [],
+          bodyTemplate: '{"message": "{{input}}"}',
+        },
       },
     });
   }
@@ -203,6 +246,188 @@ describe("Feature: Suites REST API", () => {
         const body = await res.json();
         expect(body.length).toBe(0);
       });
+    });
+  });
+
+  describe("GET /api/suites with folders in the project", () => {
+    async function createFolder(name: string) {
+      return prisma.simulationSuite.create({
+        data: {
+          id: `suite_${nanoid()}`,
+          projectId: testProjectId,
+          name,
+          slug: `${name.toLowerCase()}-${nanoid(6)}`,
+          kind: "folder",
+          scenarioIds: [],
+          targets: [],
+          labels: [],
+        },
+      });
+    }
+
+    describe("when no kind is named", () => {
+      /** @scenario "The v1 run plan list holds no folder rows" */
+      it("returns only custom run plans", async () => {
+        await createFolder("Refunds");
+        await createFolder("Checkout");
+        const plan = await createSuite({ name: "Nightly" });
+
+        const res = await helpers.api.get("/api/suites");
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.map((s: { id: string }) => s.id)).toEqual([plan.id]);
+        expect(body[0].kind).toBe("custom");
+      });
+    });
+
+    describe("when kind=folder is named", () => {
+      it("returns the folders only", async () => {
+        const folder = await createFolder("Refunds");
+        await createSuite({ name: "Nightly" });
+
+        const res = await helpers.api.get("/api/suites?kind=folder");
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.map((s: { id: string }) => s.id)).toEqual([folder.id]);
+        expect(body[0].kind).toBe("folder");
+      });
+    });
+  });
+
+  describe("POST /api/suites with a kind", () => {
+    describe("when the body names kind folder", () => {
+      /** @scenario "A new folder is created empty and appears in the rail" */
+      it("creates an empty folder without scenarios or targets", async () => {
+        const res = await helpers.api.post("/api/suites", {
+          name: "Refunds",
+          kind: "folder",
+        });
+
+        expect(res.status).toBe(201);
+        const body = await res.json();
+        expect(body.kind).toBe("folder");
+        expect(body.scenarioIds).toEqual([]);
+        expect(body.targets).toEqual([]);
+      });
+
+      it("refuses a folder body that carries scenarios or targets", async () => {
+        const res = await helpers.api.post("/api/suites", {
+          name: "Refunds",
+          kind: "folder",
+          scenarioIds: ["scen_1"],
+        });
+
+        expect(res.status).toBe(422);
+      });
+    });
+
+    describe("when the body names no kind", () => {
+      it("keeps requiring at least one scenario and one target", async () => {
+        const res = await helpers.api.post("/api/suites", {
+          name: "Empty plan",
+        });
+
+        expect(res.status).toBe(422);
+        const body = await res.json();
+        expect(body.fields).toContain("scenarioIds");
+        expect(body.fields).toContain("targets");
+      });
+    });
+  });
+
+  // A folder holds the cases filed into it, so archiving the folder archives
+  // them with it. A run plan only references cases and leaves them alone.
+  describe("DELETE /api/suites/:id for a folder", () => {
+    async function createFolderWithCases(name: string, caseCount: number) {
+      const folder = await prisma.simulationSuite.create({
+        data: {
+          id: `suite_${nanoid()}`,
+          projectId: testProjectId,
+          name,
+          slug: `${name.toLowerCase()}-${nanoid(6)}`,
+          kind: "folder",
+          scenarioIds: [],
+          targets: [],
+          labels: [],
+        },
+      });
+      const cases: Scenario[] = [];
+      for (let index = 0; index < caseCount; index++) {
+        const scenario = await createScenario(`${name} case ${index}`);
+        await prisma.scenario.updateMany({
+          where: { id: scenario.id, projectId: testProjectId },
+          data: { folderId: folder.id },
+        });
+        cases.push(scenario);
+      }
+      await prisma.simulationSuite.updateMany({
+        where: { id: folder.id, projectId: testProjectId },
+        data: { scenarioIds: cases.map((one) => one.id) },
+      });
+      return { folder, cases };
+    }
+
+    it("archives the folder", async () => {
+      const { folder } = await createFolderWithCases("Refunds", 2);
+
+      const res = await helpers.api.delete(`/api/suites/${folder.id}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: folder.id, archived: true });
+
+      const stored = await prisma.simulationSuite.findFirst({
+        where: { id: folder.id, projectId: testProjectId },
+      });
+      expect(stored?.archivedAt).not.toBeNull();
+    });
+
+    it("archives every test case filed in it", async () => {
+      const { folder, cases } = await createFolderWithCases("Refunds", 2);
+
+      await helpers.api.delete(`/api/suites/${folder.id}`);
+
+      const stored = await prisma.scenario.findMany({
+        where: {
+          id: { in: cases.map((one) => one.id) },
+          projectId: testProjectId,
+        },
+      });
+      expect(stored).toHaveLength(2);
+      for (const scenario of stored) {
+        expect(scenario.archivedAt).not.toBeNull();
+      }
+    });
+
+    it("leaves the cases of a run plan alone", async () => {
+      const scenario = await createScenario("Still active");
+      const plan = await prisma.simulationSuite.create({
+        data: {
+          id: `suite_${nanoid()}`,
+          projectId: testProjectId,
+          name: "Nightly",
+          slug: `nightly-${nanoid(6)}`,
+          scenarioIds: [scenario.id],
+          targets: [{ type: "http", referenceId: "agent_test" }],
+          repeatCount: 1,
+          labels: [],
+        },
+      });
+
+      const res = await helpers.api.delete(`/api/suites/${plan.id}`);
+
+      expect(res.status).toBe(200);
+      const stored = await prisma.scenario.findFirst({
+        where: { id: scenario.id, projectId: testProjectId },
+      });
+      expect(stored?.archivedAt).toBeNull();
+    });
+
+    it("answers 404 for an id that names no suite", async () => {
+      const res = await helpers.api.delete("/api/suites/suite_nonexistent");
+
+      expect(res.status).toBe(404);
     });
   });
 
@@ -297,6 +522,228 @@ describe("Feature: Suites REST API", () => {
       const body = await res.json();
       expect(body.name).toBe("Original (copy)");
       expect(body.id).not.toBe(suite.id);
+    });
+  });
+
+  describe("POST /api/suites/:id/run", () => {
+    async function createRunnableSuite(
+      scenarioOverrides: Partial<{
+        situation: string;
+        parameters: unknown;
+      }> = {},
+    ) {
+      const scenario = await createScenario("Refund Flow", scenarioOverrides);
+      const agent = await createHttpAgent();
+      const suite = await prisma.simulationSuite.create({
+        data: {
+          id: `suite_${nanoid()}`,
+          projectId: testProjectId,
+          name: "Runnable Suite",
+          slug: `runnable-suite-${nanoid()}`,
+          scenarioIds: [scenario.id],
+          targets: [{ type: "http", referenceId: agent.id }],
+          repeatCount: 1,
+          labels: [],
+        },
+      });
+      return { scenario, agent, suite };
+    }
+
+    describe("when the run plan is valid", () => {
+      /** @scenario "The suite run REST endpoint schedules jobs and returns the batch id" */
+      it("schedules the jobs and returns the batch id", async () => {
+        const { suite } = await createRunnableSuite();
+
+        const res = await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-1",
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body).toMatchObject({ scheduled: true, jobCount: 1 });
+        expect(body.batchRunId).toEqual(expect.any(String));
+        expect(startSuiteRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            batchRunId: body.batchRunId,
+            idempotencyKey: "run-key-1",
+            total: 1,
+          }),
+        );
+        expect(queueSimulationRun).toHaveBeenCalledTimes(1);
+      });
+
+      /** @scenario "The suite run REST endpoint schedules jobs and returns the batch id" */
+      it("records the resolved parameter values on the queued run", async () => {
+        const { scenario, suite } = await createRunnableSuite({
+          situation: "A {{ params.account_tier }} customer asks for a refund",
+          parameters: [
+            { name: "account_tier", defaultValue: "gold" },
+            { name: "region", defaultValue: "eu-central" },
+          ],
+        });
+
+        const res = await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-2",
+          parameters: { account_tier: "platinum" },
+        });
+
+        expect(res.status).toBe(200);
+        expect(queueSimulationRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            scenarioId: scenario.id,
+            metadata: expect.objectContaining({
+              parameters: {
+                account_tier: "platinum",
+                region: "eu-central",
+              },
+            }),
+          }),
+        );
+      });
+    });
+
+    describe("when the run carries a note", () => {
+      async function createRunnableSuiteWithThreeCasesAndTwoTargets() {
+        const first = await createScenario("Refund Flow");
+        const second = await createScenario("Cancellation Flow");
+        const third = await createScenario("Upgrade Flow");
+        const firstTarget = await createHttpAgent();
+        const secondTarget = await createHttpAgent();
+        const suite = await prisma.simulationSuite.create({
+          data: {
+            id: `suite_${nanoid()}`,
+            projectId: testProjectId,
+            name: "Noted Suite",
+            slug: `noted-suite-${nanoid()}`,
+            scenarioIds: [first.id, second.id, third.id],
+            targets: [
+              { type: "http", referenceId: firstTarget.id },
+              { type: "http", referenceId: secondTarget.id },
+            ],
+            repeatCount: 1,
+            labels: [],
+          },
+        });
+        return suite;
+      }
+
+      /** @scenario "Every run of a batch carries the note stamped at queue time" */
+      /** @scenario "A note given on the command line is stored with the batch" */
+      it("stamps the note on every queued run of the batch", async () => {
+        const suite = await createRunnableSuiteWithThreeCasesAndTwoTargets();
+
+        const res = await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-note-1",
+          note: "switched judge to the stricter rubric",
+        });
+
+        expect(res.status).toBe(200);
+        expect(queueSimulationRun).toHaveBeenCalledTimes(6);
+        for (const call of queueSimulationRun.mock.calls) {
+          expect(call[0].metadata).toMatchObject({
+            note: "switched judge to the stricter rubric",
+          });
+        }
+      });
+
+      it("removes the spaces around the note before storing it", async () => {
+        const { suite } = await createRunnableSuite();
+
+        await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-note-2",
+          note: "  retry after the timeout fix  ",
+        });
+
+        expect(queueSimulationRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              note: "retry after the timeout fix",
+            }),
+          }),
+        );
+      });
+
+      it("records no note key when the note is only spaces", async () => {
+        const { suite } = await createRunnableSuite();
+
+        await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-note-3",
+          note: "   ",
+        });
+
+        const queued = queueSimulationRun.mock.calls[0]?.[0];
+        expect(queued?.metadata).not.toHaveProperty("note");
+      });
+    });
+
+    describe("when the note is longer than the limit", () => {
+      /** @scenario "A note over two hundred characters is rejected with validation_error" */
+      it("rejects the run with validation_error naming the note field", async () => {
+        const { suite } = await createRunnableSuite();
+
+        const res = await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-note-4",
+          note: "a".repeat(201),
+        });
+
+        expect(res.status).toBe(422);
+        const body = await res.json();
+        expect(body.error).toBe("validation_error");
+        expect(body.fields).toContain("note");
+      });
+
+      /** @scenario "A note over two hundred characters is rejected with validation_error" */
+      it("schedules nothing", async () => {
+        const { suite } = await createRunnableSuite();
+
+        await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-note-5",
+          note: "a".repeat(201),
+        });
+
+        expect(startSuiteRun).not.toHaveBeenCalled();
+        expect(queueSimulationRun).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("when a supplied name is declared by no scenario in the run", () => {
+      /** @scenario "A run-time key no scenario in the run declares is rejected with scenario_parameter_unknown" */
+      it("rejects the run with scenario_parameter_unknown", async () => {
+        const { suite } = await createRunnableSuite({
+          parameters: [
+            { name: "account_tier", defaultValue: "gold" },
+            { name: "region", defaultValue: "eu-central" },
+          ],
+        });
+
+        const res = await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-3",
+          parameters: { regoin: "eu-west" },
+        });
+
+        expect(res.status).toBe(422);
+        const body = await res.json();
+        expect(body.error).toBe("scenario_parameter_unknown");
+        expect(body.unknownKeys).toEqual(["regoin"]);
+        expect(body.declaredNames).toEqual(
+          expect.arrayContaining(["account_tier", "region"]),
+        );
+      });
+
+      /** @scenario "A run-time key no scenario in the run declares is rejected with scenario_parameter_unknown" */
+      it("schedules nothing", async () => {
+        const { suite } = await createRunnableSuite({
+          parameters: [{ name: "account_tier", defaultValue: "gold" }],
+        });
+
+        await helpers.api.post(`/api/suites/${suite.id}/run`, {
+          idempotencyKey: "run-key-4",
+          parameters: { regoin: "eu-west" },
+        });
+
+        expect(startSuiteRun).not.toHaveBeenCalled();
+        expect(queueSimulationRun).not.toHaveBeenCalled();
+      });
     });
   });
 

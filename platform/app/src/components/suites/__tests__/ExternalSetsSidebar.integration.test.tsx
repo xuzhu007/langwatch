@@ -6,10 +6,10 @@
  * @see specs/features/suites/external-sdk-ci-sets-in-sidebar.feature
  */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import type { SimulationSuite } from "@prisma/client";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SimulationSuite } from "~/generated/prisma/client";
 import type { ExternalSetSummary } from "~/server/scenarios/scenario-event.types";
 
 // VoiceAgentsCallout inside SuiteSidebar pulls project context via
@@ -39,6 +39,8 @@ function makeSuite(overrides: Partial<SimulationSuite> = {}): SimulationSuite {
     projectId: "project_1",
     name: "Critical Path",
     slug: "critical-path",
+    kind: "custom",
+    scope: null,
     description: null,
     scenarioIds: [],
     targets: [],

@@ -196,12 +196,14 @@ describe("getSuiteCommand()", () => {
 
 describe("createSuiteCommand()", () => {
   let mockCreate: ReturnType<typeof vi.fn>;
+  let mockGetAll: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreate = vi.fn();
+    mockGetAll = vi.fn(async () => []);
     vi.mocked(SuitesApiService).mockImplementation(function () { return ({
-      getAll: vi.fn(),
+      getAll: mockGetAll,
       get: vi.fn(),
       create: mockCreate,
       update: vi.fn(),
@@ -239,6 +241,75 @@ describe("createSuiteCommand()", () => {
       await expect(
         createSuiteCommand("Test Suite", { targets: ["http:agent_xyz"] }),
       ).rejects.toThrow(ProcessExitError);
+    });
+  });
+
+  describe("when the plan is given a scope", () => {
+    /** @scenario "A plan scoped to all test cases runs every active case" */
+    it("creates it with no test case named", async () => {
+      mockCreate.mockResolvedValue(makeSuite({ scope: { mode: "all" } }));
+
+      await createSuiteCommand("Everything", {
+        targets: ["http:agent_xyz"],
+        scopeAll: true,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith({
+        name: "Everything",
+        description: undefined,
+        scenarioIds: [],
+        scope: { mode: "all" },
+        targets: [{ type: "http", referenceId: "agent_xyz" }],
+        repeatCount: 1,
+        labels: [],
+      });
+    });
+
+    /** @scenario "A plan scoped to labels runs the cases carrying them" */
+    it("carries every repeated label", async () => {
+      mockCreate.mockResolvedValue(makeSuite());
+
+      await createSuiteCommand("Checkout", {
+        targets: ["http:agent_xyz"],
+        scopeLabel: ["checkout", "refunds"],
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: { mode: "labels", labels: ["checkout", "refunds"] },
+        }),
+      );
+    });
+
+    /** @scenario "A plan scoped to test suites runs the cases filed in them" */
+    it("resolves a test suite named by name into its id", async () => {
+      mockGetAll.mockResolvedValue([
+        { id: "suite_folder_1", name: "Refunds", kind: "folder" },
+      ]);
+      mockCreate.mockResolvedValue(makeSuite());
+
+      await createSuiteCommand("Refund plan", {
+        targets: ["http:agent_xyz"],
+        scopeFolder: ["Refunds"],
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: { mode: "folders", folderIds: ["suite_folder_1"] },
+        }),
+      );
+    });
+
+    /** @scenario "The stored shape of every mode is known" */
+    it("exits when two scopes are given at once", async () => {
+      await expect(
+        createSuiteCommand("Confused", {
+          targets: ["http:agent_xyz"],
+          scopeAll: true,
+          scopeLabel: ["checkout"],
+        }),
+      ).rejects.toThrow(ProcessExitError);
+      expect(mockCreate).not.toHaveBeenCalled();
     });
   });
 
@@ -359,9 +430,45 @@ describe("runSuiteCommand()", () => {
     it("schedules the run and returns immediately", async () => {
       mockRun.mockResolvedValue(makeRunResult());
 
-      await runSuiteCommand("suite_abc123", {});
+      await runSuiteCommand({ id: "suite_abc123", options: {} });
 
-      expect(mockRun).toHaveBeenCalledWith("suite_abc123");
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: undefined,
+        note: undefined,
+      });
+    });
+  });
+
+  describe("when --param pairs are given", () => {
+    it("hands the run the values those names resolve to", async () => {
+      mockRun.mockResolvedValue(makeRunResult());
+
+      await runSuiteCommand({
+        id: "suite_abc123",
+        options: {
+          param: ["account_tier=gold", "seats=12", "beta=false", "order=007"],
+        },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: {
+          account_tier: "gold",
+          seats: 12,
+          beta: false,
+          order: "007",
+        },
+        note: undefined,
+      });
+    });
+  });
+
+  describe("when a --param pair has no equals sign", () => {
+    it("refuses the command instead of scheduling a run", async () => {
+      await expect(
+        runSuiteCommand({ id: "suite_abc123", options: { param: ["account_tier"] } }),
+      ).rejects.toThrow(ProcessExitError);
+
+      expect(mockRun).not.toHaveBeenCalled();
     });
   });
 
@@ -370,7 +477,7 @@ describe("runSuiteCommand()", () => {
       const result = makeRunResult();
       mockRun.mockResolvedValue(result);
 
-      await runSuiteCommand("suite_abc123", { format: "json" });
+      await runSuiteCommand({ id: "suite_abc123", options: { format: "json" } });
 
       expect(console.log).toHaveBeenCalledWith(
         JSON.stringify(result, null, 2),
@@ -384,9 +491,12 @@ describe("runSuiteCommand()", () => {
         makeRunResult({ skippedArchived: { scenarios: ["old_scenario"], targets: ["old_agent"] } }),
       );
 
-      await runSuiteCommand("suite_abc123", {});
+      await runSuiteCommand({ id: "suite_abc123", options: {} });
 
-      expect(mockRun).toHaveBeenCalledWith("suite_abc123");
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: undefined,
+        note: undefined,
+      });
     });
   });
 
@@ -406,7 +516,7 @@ describe("runSuiteCommand()", () => {
         .spyOn(globalThis, "fetch")
         .mockResolvedValue(new Response("{}", { status: 200 }));
 
-      await runSuiteCommand("suite_abc123", { wait: true });
+      await runSuiteCommand({ id: "suite_abc123", options: { wait: true } });
 
       expect(fetchSpy).not.toHaveBeenCalled();
     });
@@ -418,7 +528,155 @@ describe("runSuiteCommand()", () => {
         new SuitesApiError("Suite not found", "POST /api/suites/nonexistent/run"),
       );
 
-      await expect(runSuiteCommand("nonexistent", {})).rejects.toThrow(ProcessExitError);
+      await expect(runSuiteCommand({ id: "nonexistent", options: {} })).rejects.toThrow(ProcessExitError);
+    });
+  });
+
+  describe("when --note is given", () => {
+    /** @scenario "Run a suite with a note" */
+    it("schedules the run with that note", async () => {
+      mockRun.mockResolvedValue(makeRunResult());
+
+      await runSuiteCommand({
+        id: "suite_abc123",
+        options: { note: "nightly regression after the retry fix" },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: undefined,
+        note: "nightly regression after the retry fix",
+      });
+    });
+
+    /** @scenario "Run a suite with a note" */
+    it("shows the note beside the batch run ID", async () => {
+      mockRun.mockResolvedValue(makeRunResult());
+
+      await runSuiteCommand({
+        id: "suite_abc123",
+        options: { note: "nightly regression after the retry fix" },
+      });
+
+      const printed = vi.mocked(console.log).mock.calls.flat().join("\n");
+      expect(printed).toContain("batch_123");
+      expect(printed).toContain("nightly regression after the retry fix");
+    });
+
+    /** @scenario "Run a suite with a note and wait for completion" */
+    it("schedules the run with the note and then polls for completion", async () => {
+      mockRun.mockResolvedValue(makeRunResult({ jobCount: 1 }));
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            runs: [
+              {
+                batchRunId: "batch_123",
+                status: "SUCCESS",
+                results: { verdict: "success" },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+      await runSuiteCommand({
+        id: "suite_abc123",
+        options: { note: "nightly regression", wait: true },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: undefined,
+        note: "nightly regression",
+      });
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe("when --note is longer than the limit", () => {
+    /** @scenario "Run a suite with a note over two hundred characters" */
+    it("refuses the command instead of scheduling a run", async () => {
+      await expect(
+        runSuiteCommand({
+          id: "suite_abc123",
+          options: { note: "x".repeat(201) },
+        }),
+      ).rejects.toThrow(ProcessExitError);
+
+      expect(mockRun).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when --note is exactly at the limit", () => {
+    it("schedules the run", async () => {
+      mockRun.mockResolvedValue(makeRunResult());
+
+      await runSuiteCommand({
+        id: "suite_abc123",
+        options: { note: "x".repeat(200) },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        "suite_abc123",
+        expect.objectContaining({ note: "x".repeat(200) }),
+      );
+    });
+  });
+
+  describe("when --note holds only spaces", () => {
+    /** @scenario "Run a suite with a note of only spaces" */
+    it("schedules the run with no note", async () => {
+      mockRun.mockResolvedValue(makeRunResult());
+
+      await runSuiteCommand({ id: "suite_abc123", options: { note: "   " } });
+
+      expect(mockRun).toHaveBeenCalledWith("suite_abc123", {
+        parameters: undefined,
+        note: undefined,
+      });
+    });
+  });
+
+  // A folder IS a suite, so `suite run` takes a folder id with no branch of
+  // its own: the same request, the same result, the same reporting.
+  describe("when the id names a test suite folder", () => {
+    /** @scenario "Run a test suite folder" */
+    it("schedules a run for every scenario against every active target", async () => {
+      mockRun.mockResolvedValue(makeRunResult({ batchRunId: "batch_folder" }));
+
+      await runSuiteCommand({ id: "folder_abc", options: {} });
+
+      expect(mockRun).toHaveBeenCalledWith("folder_abc", {
+        parameters: undefined,
+        note: undefined,
+      });
+    });
+
+    /** @scenario "Run a test suite folder" */
+    it("reports the job count and the batch run ID", async () => {
+      mockRun.mockResolvedValue(
+        makeRunResult({ batchRunId: "batch_folder", jobCount: 4 }),
+      );
+
+      await runSuiteCommand({ id: "folder_abc", options: {} });
+
+      const printed = vi.mocked(console.log).mock.calls.flat().join("\n");
+      expect(printed).toContain("batch_folder");
+      expect(printed).toContain("4");
+    });
+
+    /** @scenario "Run a test suite folder that has no targets" */
+    it("reports the platform's refusal when the folder has no target", async () => {
+      mockRun.mockRejectedValue(
+        new SuitesApiError(
+          "A suite needs at least one target to run against",
+          "POST /api/suites/folder_abc/run",
+        ),
+      );
+
+      await expect(
+        runSuiteCommand({ id: "folder_abc", options: {} }),
+      ).rejects.toThrow(ProcessExitError);
     });
   });
 });

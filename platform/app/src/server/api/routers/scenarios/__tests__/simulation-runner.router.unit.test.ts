@@ -22,14 +22,48 @@ vi.mock("~/server/scenarios/scenario.ids", () => ({
   generateBatchRunId: vi.fn().mockReturnValue("batch_test_123"),
 }));
 
-const mockQueueRun = vi.fn().mockResolvedValue(undefined);
-vi.mock("~/server/app-layer/app", () => ({
-  getApp: vi.fn().mockReturnValue({
-    simulations: {
-      queueRun: (...args: unknown[]) => mockQueueRun(...args),
-    },
-  }),
+// The run resolves the scenario's declared parameters before it queues
+// anything, which is the router's only database read. Stubbed here so this
+// suite stays a unit test of the router's own decisions.
+async function scenariosWithoutParameters({ ids }: { ids: string[] }) {
+  return ids.map((id) => ({
+    id,
+    name: "Test Scenario",
+    situation: "User asks a question",
+    criteria: ["Must respond politely"],
+    parameters: null,
+    version: 5,
+  }));
+}
+
+const mockGetRunConfigByIds = vi.fn<
+  (params: { ids: string[]; projectId: string }) => Promise<unknown[]>
+>(scenariosWithoutParameters);
+vi.mock("~/server/scenarios/scenario.service", () => ({
+  ScenarioService: {
+    create: vi.fn().mockReturnValue({
+      getRunConfigByIds: (params: { ids: string[]; projectId: string }) =>
+        mockGetRunConfigByIds(params),
+    }),
+  },
 }));
+
+const mockQueueRun = vi.fn().mockResolvedValue(undefined);
+vi.mock("~/server/app-layer/app", async () => {
+  const { appPermissionsService } = await import(
+    "~/test-utils/appPermissionsMock"
+  );
+  return {
+    // Consumers that degrade without Redis read through this one.
+    tryGetApp: () => null,
+    getApp: vi.fn().mockReturnValue({
+      permissions: appPermissionsService(),
+      simulations: {
+        queueRun: (...args: unknown[]) => mockQueueRun(...args),
+      },
+    }),
+  };
+});
 
 vi.mock("@langwatch/ksuid", () => ({
   generate: vi.fn().mockReturnValue({
@@ -48,13 +82,9 @@ vi.mock("@langwatch/observability", () => ({
 
 // Mock RBAC to always allow - we're testing business logic, not permissions
 vi.mock("../../../rbac", () => ({
-  checkProjectPermission: vi.fn().mockImplementation(() => {
-    return async ({ ctx, next, input }: any) => {
-      return next({
-        ctx: { ...ctx, permissionChecked: true },
-      });
-    };
-  }),
+  resolveProjectPermission: vi
+    .fn()
+    .mockResolvedValue({ permitted: true, organizationRole: "MEMBER" }),
 }));
 
 // Mock audit log to avoid database calls
@@ -95,6 +125,9 @@ describe("simulationRunnerRouter.run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQueueRun.mockResolvedValue(undefined);
+    // clearAllMocks keeps implementations, so a suite that gave scenarios their
+    // own parameters would otherwise keep them for every suite after it.
+    mockGetRunConfigByIds.mockImplementation(scenariosWithoutParameters);
     caller = createTestCaller();
   });
 
@@ -253,6 +286,7 @@ describe("simulationRunnerRouter.run", () => {
             criteria: ["Must respond politely"],
             labels: [],
           },
+          parameters: {},
           adapterData: {
             type: "prompt",
             promptId: "prompt_123",
@@ -320,6 +354,7 @@ describe("simulationRunnerRouter.run", () => {
             criteria: ["Must respond politely"],
             labels: [],
           },
+          parameters: {},
           adapterData: {
             type: "prompt",
             promptId: "prompt_123",
@@ -350,6 +385,7 @@ describe("simulationRunnerRouter.run", () => {
     });
 
     describe("when run is called without explicit setId", () => {
+      /** @scenario "A single test case run goes to the project internal run set" */
       it("dispatches queueRun command before scheduling", async () => {
         await caller.run(defaultInput);
 
@@ -363,6 +399,15 @@ describe("simulationRunnerRouter.run", () => {
             scenarioSetId: expectedSetId,
             occurredAt: expect.any(Number),
           }),
+        );
+      });
+
+      /** @scenario "A one-off batch carries the name of the test case that ran" */
+      it("stamps the scenario name onto the queued run", async () => {
+        await caller.run(defaultInput);
+
+        expect(mockQueueRun).toHaveBeenCalledWith(
+          expect.objectContaining({ name: "Test Scenario" }),
         );
       });
 
@@ -431,6 +476,171 @@ describe("simulationRunnerRouter.run", () => {
           batchRunId: "batch_test_123",
           scenarioRunId: "scenariorun_test_456",
         });
+      });
+    });
+
+    describe("when the scenario declares parameters", () => {
+      beforeEach(() => {
+        mockGetRunConfigByIds.mockImplementation(async ({ ids }) =>
+          ids.map((id) => ({
+            id,
+            name: "Test Scenario",
+            situation: "A {{ params.account_tier }} customer asks a question",
+            criteria: ["Must respond politely"],
+            parameters: [
+              { name: "account_tier", defaultValue: "gold" },
+              { name: "region", defaultValue: "eu-central" },
+            ],
+            version: 5,
+          })),
+        );
+      });
+
+      it("records the resolved values on the queued run's metadata", async () => {
+        await caller.run({
+          ...defaultInput,
+          parameters: { account_tier: "platinum" },
+        });
+
+        expect(mockQueueRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              parameters: { account_tier: "platinum", region: "eu-central" },
+            }),
+          }),
+        );
+      });
+
+      it("hands the resolved values to the prefetch that validates the run", async () => {
+        await caller.run({
+          ...defaultInput,
+          parameters: { account_tier: "platinum" },
+        });
+
+        expect(mockPrefetchScenarioData).toHaveBeenCalledWith(
+          expect.objectContaining({
+            context: expect.objectContaining({
+              parameters: { account_tier: "platinum", region: "eu-central" },
+            }),
+          }),
+        );
+      });
+
+      it("rejects a name no scenario declares before anything is queued", async () => {
+        await expect(
+          caller.run({ ...defaultInput, parameters: { regoin: "eu-west" } }),
+        ).rejects.toMatchObject({
+          code: "UNPROCESSABLE_CONTENT",
+          cause: { code: "scenario_parameter_unknown" },
+        });
+
+        expect(mockPrefetchScenarioData).not.toHaveBeenCalled();
+        expect(mockQueueRun).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("when the run carries a note", () => {
+      /** @scenario "The note is written under the top-level note key of the run metadata" */
+      /** @scenario "A note on a single test case run is stored with that run" */
+      it("writes the note under the top-level note key of the run metadata", async () => {
+        await caller.run({ ...defaultInput, note: "nightly regression" });
+
+        expect(mockQueueRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({ note: "nightly regression" }),
+          }),
+        );
+      });
+
+      /** @scenario "The note is written under the top-level note key of the run metadata" */
+      it("keeps the note out of the reserved langwatch namespace", async () => {
+        await caller.run({ ...defaultInput, note: "nightly regression" });
+
+        const queued = mockQueueRun.mock.calls[0]?.[0] as {
+          metadata?: Record<string, unknown>;
+        };
+        expect(queued.metadata?.langwatch).not.toHaveProperty("note");
+      });
+
+      it("keeps the note beside the resolved parameters", async () => {
+        mockGetRunConfigByIds.mockImplementation(async ({ ids }) =>
+          ids.map((id) => ({
+            id,
+            name: "Test Scenario",
+            situation: "A {{ params.account_tier }} customer asks a question",
+            criteria: ["Must respond politely"],
+            parameters: [{ name: "account_tier", defaultValue: "gold" }],
+            version: 5,
+          })),
+        );
+
+        await caller.run({ ...defaultInput, note: "checking the gold path" });
+
+        expect(mockQueueRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              note: "checking the gold path",
+              parameters: { account_tier: "gold" },
+            }),
+          }),
+        );
+      });
+
+      it("drops a note of only spaces", async () => {
+        await caller.run({ ...defaultInput, note: "   " });
+
+        const queued = mockQueueRun.mock.calls[0]?.[0] as {
+          metadata?: Record<string, unknown>;
+        };
+        expect(queued.metadata).not.toHaveProperty("note");
+      });
+
+      it("rejects a note longer than the limit before anything is queued", async () => {
+        await expect(
+          caller.run({ ...defaultInput, note: "a".repeat(201) }),
+        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+        expect(mockQueueRun).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("when the run carries no note", () => {
+      /** @scenario "A run queued without a note records metadata identical to before notes existed" */
+      it("records no note key at all", async () => {
+        await caller.run(defaultInput);
+
+        const queued = mockQueueRun.mock.calls[0]?.[0] as {
+          metadata?: Record<string, unknown>;
+        };
+        expect(queued.metadata).not.toHaveProperty("note");
+        // Only the reserved namespace is recorded: the note added nothing.
+        expect(queued.metadata).toEqual({
+          langwatch: {
+            targetReferenceId: "prompt_123",
+            targetType: "prompt",
+            scenarioVersion: 5,
+          },
+        });
+      });
+    });
+
+    describe("the reserved langwatch namespace on a one-off run", () => {
+      /** @scenario "A one-off run records which target it ran against" */
+      /** @scenario "A one-off run of a single case records that case version" */
+      it("records the target, its kind and the scenario version read at queue time", async () => {
+        await caller.run(defaultInput);
+
+        expect(mockQueueRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              langwatch: {
+                targetReferenceId: "prompt_123",
+                targetType: "prompt",
+                scenarioVersion: 5,
+              },
+            }),
+          }),
+        );
       });
     });
   });

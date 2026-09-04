@@ -7,23 +7,17 @@
  */
 
 import { z } from "zod";
-import type { Span } from "../../tracer/types";
+import { FieldMappingSchema } from "../field-mapping";
+import { runParameterValuesSchema } from "../parameters";
 
 // ============================================================================
 // Field Mapping Types
 // (defined first so adapter schemas can reference them)
 // ============================================================================
 
-/** Field mapping for agent inputs — maps to a scenario source or a static value */
-export const FieldMappingSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("source"),
-    sourceId: z.string(),
-    path: z.array(z.string()),
-  }),
-  z.object({ type: z.literal("value"), value: z.string() }),
-]);
-export type FieldMapping = z.infer<typeof FieldMappingSchema>;
+// FieldMappingSchema lives in ../field-mapping: it is the one thing here that
+// the suite schema and the studio DSL also need, and keeping it out means this
+// module has no importers outside the child's own code.
 
 // ============================================================================
 // Adapter Data Types (Zod schemas for data contracts)
@@ -121,6 +115,13 @@ export const HttpAgentDataSchema = z.object({
   outputPath: z.string().optional(),
   /** Maps agent input field identifiers to scenario data sources or static values. */
   scenarioMappings: z.record(z.string(), FieldMappingSchema).optional(),
+  /**
+   * The project's decrypted secrets, so `{{ secrets.NAME }}` resolves in the
+   * url, the header values and the auth fields, the places a credential
+   * belongs. Defaulted so a job queued before secrets reached http targets
+   * still parses.
+   */
+  secrets: z.record(z.string(), z.string()).default({}),
 });
 export type HttpAgentData = z.infer<typeof HttpAgentDataSchema>;
 
@@ -157,6 +158,14 @@ export const CodeAgentDataSchema = z.object({
    * the studio's addEnvs behavior for in-app workflow execution.
    */
   secrets: z.record(z.string(), z.string()).default({}),
+  /**
+   * The run's own LangWatch credential, minted once for the run. It reaches
+   * the project's agent cache and nothing else, and expires by itself, so the
+   * code under test can keep state between turns without the project key ever
+   * entering the sandbox. Absent when the platform could not mint one, which
+   * leaves every turn doing its own work.
+   */
+  sandboxApiKey: z.string().optional(),
 });
 export type CodeAgentData = z.infer<typeof CodeAgentDataSchema>;
 
@@ -234,6 +243,8 @@ export const ScenarioConfigSchema = z.object({
   situation: z.string(),
   criteria: z.array(z.string()),
   labels: z.array(z.string()),
+  maxTurns: z.number().int().optional(),
+  minTurns: z.number().int().optional(),
 });
 export type ScenarioConfig = z.infer<typeof ScenarioConfigSchema>;
 
@@ -270,16 +281,6 @@ export const TargetConfigSchema = z.object({
   referenceId: z.string(),
 });
 export type TargetConfig = z.infer<typeof TargetConfigSchema>;
-
-// ============================================================================
-// Span Query Types
-// ============================================================================
-
-/** Function that queries spans from a data source (ES, trace API, etc.) by trace ID */
-export type SpanQueryFn = (params: {
-  projectId: string;
-  traceId: string;
-}) => Promise<Span[]>;
 
 // ============================================================================
 // Result Types
@@ -323,6 +324,13 @@ export const ChildProcessJobDataSchema = z
   .object({
     context: ExecutionContextSchema,
     scenario: ScenarioConfigSchema,
+    /**
+     * The values the run resolved for this scenario. The scenario's own text
+     * arrives already rendered against them; the target under test reads them
+     * as `params.NAME`. Defaulted so a job queued before parameters existed
+     * still parses.
+     */
+    parameters: runParameterValuesSchema.default({}),
     /** Pre-generated scenario run ID so the SDK uses the same aggregate ID. */
     scenarioRunId: z.string().optional(),
     adapterData: TargetAdapterDataSchema,
@@ -348,6 +356,14 @@ export const ChildProcessJobDataSchema = z
     judgeModelParams: LiteLLMParamsSchema.optional(),
     nlpServiceUrl: z.string(),
     target: TargetConfigSchema,
+    /**
+     * Total time in milliseconds the judge waits at verdict time for an http
+     * target's remote traces to arrive and stabilize. Computed by the
+     * prefetcher from the project's own ingest lag; absent for non-http
+     * targets and on jobs queued before the budget existed, in which case
+     * the scenario SDK's default applies.
+     */
+    traceWaitTimeoutMs: z.number().optional(),
   })
   .superRefine((data, ctx) => {
     if (!data.simulatorModelParams && !data.modelParams) {

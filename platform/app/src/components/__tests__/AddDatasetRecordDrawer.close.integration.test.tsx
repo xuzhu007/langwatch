@@ -88,7 +88,7 @@ vi.mock("~/utils/api", () => ({
           }),
         },
       }),
-    useContext: () => ({
+    useUtils: () => ({
       dataset: { getAll: { invalidate: vi.fn() } },
       datasetRecord: { getAll: { invalidate: vi.fn() } },
     }),

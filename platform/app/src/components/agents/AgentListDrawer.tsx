@@ -55,7 +55,7 @@ export function AgentListDrawer(props: AgentListDrawerProps) {
   const { project } = useOrganizationTeamProject();
   const { closeDrawer, openDrawer } = useDrawer();
   const complexProps = getComplexProps();
-  const utils = api.useContext();
+  const utils = api.useUtils();
 
   // Get flow callbacks for this drawer (set by parent flows like useAgentPickerFlow)
   const flowCallbacks = getFlowCallbacks("agentList");
@@ -104,7 +104,6 @@ export function AgentListDrawer(props: AgentListDrawerProps) {
           ? "Also deleted: 1 workflow"
           : undefined,
         type: "success",
-        meta: { closable: true },
       });
     },
     onError: () => {
@@ -164,7 +163,6 @@ export function AgentListDrawer(props: AgentListDrawerProps) {
             toaster.create({
               title: "Agent deleted",
               type: "success",
-              meta: { closable: true },
             });
           },
           onError: () => {

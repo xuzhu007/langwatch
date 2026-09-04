@@ -28,9 +28,6 @@ export function CopyButton(props: CopyButtonProps) {
               : `Unable to copy ${label}, please copy it manually`,
             type: copied ? "success" : "error",
             duration: 2000,
-            meta: {
-              closable: true,
-            },
           });
         });
       }}

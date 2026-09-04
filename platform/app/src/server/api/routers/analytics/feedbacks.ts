@@ -1,6 +1,5 @@
 import { sharedFiltersInputSchema } from "../../../analytics/types";
 import { getApp } from "../../../app-layer/app";
-import { checkProjectPermission } from "../../rbac";
 import { protectedProcedure } from "../../trpc";
 
 // getFeedbacks 使用 projectId、时间窗口、filters 与 negateFilters。
@@ -8,7 +7,7 @@ import { protectedProcedure } from "../../trpc";
 // query 与 traceIds 仅为保持 API 兼容而接收。
 export const feedbacks = protectedProcedure
   .input(sharedFiltersInputSchema)
-  .use(checkProjectPermission("cost:view"))
+  .permission("cost:view")
   .query(async ({ input }) => {
     const analyticsService = getApp().analytics.service;
     return analyticsService.getFeedbacks(

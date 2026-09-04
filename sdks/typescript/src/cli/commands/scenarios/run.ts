@@ -11,6 +11,8 @@ import { resolveOutputFormat } from "../../utils/errorOutput";
 import { buildAuthHeaders } from "@/internal/api/auth";
 import { resolveControlPlaneUrl } from "@/cli/utils/governance/resolveEndpoint";
 import { fetchBatchRuns, tallyBatchRuns } from "../../utils/batchRunProgress";
+import { parseRunParameterFlags } from "../../utils/keyValueFlags";
+import { parseRunNoteFlag } from "../../utils/runNote";
 
 function parseTarget(targetStr: string): SuiteTarget {
   const colonIndex = targetStr.indexOf(":");
@@ -29,9 +31,20 @@ function parseTarget(targetStr: string): SuiteTarget {
 
 export const runScenarioCommand = async (
   id: string,
-  options: { target: string; wait?: boolean; format?: string },
+  options: {
+    target: string;
+    wait?: boolean;
+    format?: string;
+    param?: string[];
+    note?: string;
+  },
 ): Promise<void> => {
   await resolveCredentials();
+
+  const parameters = parseRunParameterFlags({ pairs: options.param });
+  // The run goes through an ephemeral suite, so the note rides the same body
+  // field a suite run uses and lands on every run of the batch.
+  const note = parseRunNoteFlag({ note: options.note });
 
   if (!options.target) {
     console.error(chalk.red("Error: --target is required. Specify what to run the scenario against."));
@@ -59,10 +72,10 @@ export const runScenarioCommand = async (
 
     spinner.text = `Running scenario against ${target.type}:${target.referenceId}...`;
 
-    const result = await suitesService.run(suite.id);
+    const result = await suitesService.run(suite.id, { parameters, note });
 
     spinner.succeed(
-      `Scenario run scheduled: ${result.jobCount} job${result.jobCount !== 1 ? "s" : ""} (batch: ${result.batchRunId})`,
+      `Scenario run scheduled: ${result.jobCount} job${result.jobCount !== 1 ? "s" : ""} (batch: ${result.batchRunId}${note ? `, note: "${note}"` : ""})`,
     );
 
     if (options.format === "json") {
@@ -75,6 +88,9 @@ export const runScenarioCommand = async (
       console.log();
       console.log(`  ${chalk.gray("Batch Run ID:")} ${chalk.green(result.batchRunId)}`);
       console.log(`  ${chalk.gray("Suite ID:")}     ${chalk.gray(suite.id)} ${chalk.gray("(ephemeral)")}`);
+      if (note) {
+        console.log(`  ${chalk.gray("Note:")}         ${note}`);
+      }
       console.log();
       console.log(
         chalk.gray(`View results in the LangWatch dashboard under Simulations.`),

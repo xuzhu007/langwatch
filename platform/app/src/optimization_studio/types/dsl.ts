@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type { LocalPromptConfig } from "~/experiments-v3/types";
 import type { EvaluatorTypes } from "~/server/evaluations/evaluators";
-import { FieldMappingSchema } from "~/server/scenarios/execution/types";
+import { FieldMappingSchema } from "~/server/scenarios/field-mapping";
 import type { LlmConfigInputType, LlmConfigOutputType } from "~/types";
 
 import { datasetColumnTypeSchema } from "../../server/datasets/types";
@@ -108,6 +108,21 @@ export interface ExecutionState {
     total_tokens?: number;
     reasoning_tokens?: number;
     model?: string;
+  };
+  /**
+   * What an HTTP node saw on the wire. Diagnostics for whoever is configuring
+   * the endpoint, not workflow data: nothing downstream binds to it. Present
+   * on a non-2xx as well as a success, since the failure is the case worth
+   * reading. `rendered_body` is the request body after templating, which is
+   * safe to show because the body template is the one field the engine
+   * deliberately does not resolve secrets into.
+   */
+  http?: {
+    status_code?: number;
+    status_text?: string;
+    response_headers?: Record<string, string>;
+    rendered_body?: string;
+    warnings?: string[];
   };
   timestamps?: {
     started_at?: number;
@@ -423,6 +438,17 @@ export type ServerWorkflow = Omit<Workflow, "workflow_id"> & {
   workflow_id: string;
   project_id: string;
   secrets?: Record<string, string>;
+  /**
+   * The short-lived credential a code node's sandbox authenticates with,
+   * minted once for a run. It reaches the project's agent cache and nothing
+   * else, and expires by itself, so a run can keep state between rows without
+   * the project key entering the sandbox.
+   *
+   * Absent on a run that could not mint one, and on a one-off Studio run,
+   * which carries none by design. The engine injects nothing when it is
+   * absent, so every row then does its own work.
+   */
+  sandbox_api_key?: string;
 };
 
 // ============================================================================
@@ -604,6 +630,18 @@ export const httpComponentSchema = baseComponentSchema.extend({
   timeoutMs: z.number().positive().optional(),
   /** Maps agent input field identifiers to scenario data sources or static values. */
   scenarioMappings: z.record(z.string(), FieldMappingSchema).optional(),
+  /**
+   * Present while `langwatch agent dev` points this agent at a local tunnel:
+   * `previousUrl` is what the CLI restores on exit, `connectedAt` when the
+   * session started. Set and removed by the CLI; the platform reads it to
+   * show the local-tunnel badge and to name tunnel failures.
+   */
+  devTunnel: z
+    .object({
+      previousUrl: z.string().optional(),
+      connectedAt: z.string().optional(),
+    })
+    .optional(),
 });
 
 /**
