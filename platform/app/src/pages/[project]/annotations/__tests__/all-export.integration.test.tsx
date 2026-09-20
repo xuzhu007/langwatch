@@ -16,6 +16,11 @@ import "@testing-library/jest-dom/vitest";
 const mocks = vi.hoisted(() => ({
   annotations: [] as unknown[],
   traces: [] as unknown[],
+  traceHydrationLoading: false,
+  traceHydrationError: null as Error | null,
+  traceHydrationRefetch: vi.fn(),
+  filters: {} as Record<string, unknown>,
+  traceGroupsEnabled: undefined as boolean | undefined,
   downloadCsv: vi.fn(),
   tableProps: null as Record<string, any> | null,
   annotationsByTraceIdsArgs: null as Record<string, unknown> | null,
@@ -47,9 +52,9 @@ vi.mock("~/components/PeriodSelector", () => ({
 }));
 vi.mock("~/hooks/useFilterParams", () => ({
   useFilterParams: () => ({
-    filterParams: { projectId: "p1", filters: {} },
-    queryOpts: { enabled: false },
-    nonEmptyFilters: {},
+    filterParams: { projectId: "p1", filters: mocks.filters },
+    queryOpts: { enabled: true },
+    nonEmptyFilters: mocks.filters,
   }),
 }));
 vi.mock("~/hooks/useAnnotationsByTraceIds", () => ({
@@ -60,6 +65,15 @@ vi.mock("~/hooks/useAnnotationsByTraceIds", () => ({
 }));
 vi.mock("~/hooks/useOrganizationTeamProject", () => ({
   useOrganizationTeamProject: () => ({ project: { id: "p1", slug: "acme" } }),
+}));
+vi.mock("~/hooks/useTracesWithSpansByTraceIds", () => ({
+  useTracesWithSpansByTraceIds: () => ({
+    data: mocks.traces,
+    isLoading: mocks.traceHydrationLoading,
+    isError: mocks.traceHydrationError !== null,
+    error: mocks.traceHydrationError,
+    refetch: mocks.traceHydrationRefetch,
+  }),
 }));
 vi.mock("~/utils/compat/next-router", () => ({
   useRouter: () => ({ query: {}, push: vi.fn(), pathname: "/[project]" }),
@@ -72,10 +86,10 @@ vi.mock("~/utils/api", () => ({
   api: {
     traces: {
       getAllForProject: {
-        useQuery: () => ({ data: undefined, isLoading: false }),
-      },
-      getTracesWithSpans: {
-        useQuery: () => ({ data: mocks.traces, isLoading: false }),
+        useQuery: (_input: unknown, options: { enabled: boolean }) => {
+          mocks.traceGroupsEnabled = options.enabled;
+          return { data: undefined, isLoading: false };
+        },
       },
     },
     annotation: {
@@ -112,8 +126,13 @@ const annotation = (overrides: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   mocks.downloadCsv.mockReset();
+  mocks.traceHydrationRefetch.mockReset();
   mocks.tableProps = null;
   mocks.annotationsByTraceIdsArgs = null;
+  mocks.filters = {};
+  mocks.traceGroupsEnabled = undefined;
+  mocks.traceHydrationLoading = false;
+  mocks.traceHydrationError = null;
   mocks.traces = [
     {
       trace_id: "trace-1",
@@ -173,6 +192,22 @@ describe("All annotations page", () => {
       expect(call.rows[2][suggestionsAt]).toBe("");
     });
 
+    it("keeps empty input and output values when hydration succeeds without them", () => {
+      mocks.traces = [
+        {
+          trace_id: "trace-1",
+          timestamps: { started_at: 1754049600000 },
+        },
+      ];
+
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Export all" }));
+
+      const call = mocks.downloadCsv.mock.calls[0]?.[0];
+      expect(call.rows[0][1]).toBe("");
+      expect(call.rows[0][2]).toBe("");
+    });
+
     /** @scenario "Comments are a count chip that opens on hover" */
     it("reads every comment on these traces, anchored ones included", () => {
       renderPage();
@@ -189,6 +224,36 @@ describe("All annotations page", () => {
       expect(rows[0].date).toEqual(new Date("2026-07-20T10:00:00Z"));
       expect(mocks.tableProps?.dateColumnLabel).toBe("Date annotated");
       expect(mocks.tableProps?.showStatusFilter).toBe(false);
+    });
+
+    it("does not load trace groups when no filters are active", () => {
+      renderPage();
+
+      expect(mocks.traceGroupsEnabled).toBe(false);
+    });
+
+    it("loads trace groups when filters are active", () => {
+      mocks.filters = { models: ["gpt-5"] };
+
+      renderPage();
+
+      expect(mocks.traceGroupsEnabled).toBe(true);
+    });
+
+    it("shows a retryable error instead of rows when trace hydration fails", () => {
+      mocks.traceHydrationError = new Error("trace query failed");
+
+      renderPage();
+
+      expect(
+        screen.getByRole("heading", {
+          name: "Failed to load annotation data",
+        }),
+      ).toBeInTheDocument();
+      expect(mocks.tableProps).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(mocks.traceHydrationRefetch).toHaveBeenCalledOnce();
     });
   });
 });

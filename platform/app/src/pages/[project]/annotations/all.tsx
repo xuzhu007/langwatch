@@ -8,11 +8,13 @@ import {
   groupedAnnotationsToRows,
   suggestionExportLine,
 } from "~/components/annotations/annotationRow";
+import { GatewayErrorPanel } from "~/components/gateway/GatewayErrorPanel";
 import { usePeriodSelector } from "~/components/PeriodSelector";
 import type { Annotation } from "~/generated/prisma/client";
 import { useAnnotationsByTraceIds } from "~/hooks/useAnnotationsByTraceIds";
 import { useFilterParams } from "~/hooks/useFilterParams";
 import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
+import { useTracesWithSpansByTraceIds } from "~/hooks/useTracesWithSpansByTraceIds";
 import type { Trace } from "~/server/tracer/types";
 import { api } from "~/utils/api";
 import { useRouter } from "~/utils/compat/next-router";
@@ -41,7 +43,10 @@ export default function Annotations() {
       sortBy: getSingleQueryParam(router.query.sortBy),
       sortDirection: getSingleQueryParam(router.query.orderBy),
     },
-    queryOpts,
+    {
+      ...queryOpts,
+      enabled: hasAnyFilters && queryOpts.enabled,
+    },
   );
 
   const {
@@ -82,16 +87,11 @@ export default function Annotations() {
 
   const traceIds = annotations.data?.map((annotation) => annotation.traceId);
 
-  const traces = api.traces.getTracesWithSpans.useQuery(
-    {
-      projectId: project?.id ?? "",
-      traceIds: traceIds ?? [],
-    },
-    {
-      enabled: !!project?.id,
-      refetchOnWindowFocus: false,
-    },
-  );
+  const traces = useTracesWithSpansByTraceIds({
+    projectId: project?.id ?? "",
+    traceIds: traceIds ?? [],
+    enabled: !!project?.id,
+  });
 
   const groupByTraceId = (dataArray: Annotation[]): GroupedAnnotation[] => {
     const grouped = dataArray.reduce(
@@ -168,18 +168,26 @@ export default function Annotations() {
   return (
     <AnnotationsLayout>
       <Flex direction="column" flex={1} minWidth={0} height="full">
-        <AnnotationsTable
-          rows={rows}
-          rowsLoading={annotationsLoading || traces.isLoading}
-          heading="All Annotations"
-          dateColumnLabel="Date annotated"
-          showStatusFilter={false}
-          rowTarget="trace"
-          exportLabel="Export all"
-          onExport={exportAll}
-          noDataTitle="No recent annotations yet, change the date range to see more or annotate your messages"
-          noDataDescription="Annotate your messages to add more context and improve your analysis."
-        />
+        {traces.isError ? (
+          <GatewayErrorPanel
+            title="Failed to load annotation data"
+            error={traces.error instanceof Error ? traces.error : undefined}
+            onRetry={() => void traces.refetch()}
+          />
+        ) : (
+          <AnnotationsTable
+            rows={rows}
+            rowsLoading={annotationsLoading || traces.isLoading}
+            heading="All Annotations"
+            dateColumnLabel="Date annotated"
+            showStatusFilter={false}
+            rowTarget="trace"
+            exportLabel="Export all"
+            onExport={exportAll}
+            noDataTitle="No recent annotations yet, change the date range to see more or annotate your messages"
+            noDataDescription="Annotate your messages to add more context and improve your analysis."
+          />
+        )}
       </Flex>
     </AnnotationsLayout>
   );
