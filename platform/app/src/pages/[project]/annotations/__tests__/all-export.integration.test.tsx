@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
+import { skipToken } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   traceHydrationError: null as Error | null,
   traceHydrationRefetch: vi.fn(),
   filters: {} as Record<string, unknown>,
+  traceGroupsInput: undefined as unknown,
   traceGroupsEnabled: undefined as boolean | undefined,
   downloadCsv: vi.fn(),
   tableProps: null as Record<string, any> | null,
@@ -86,7 +88,8 @@ vi.mock("~/utils/api", () => ({
   api: {
     traces: {
       getAllForProject: {
-        useQuery: (_input: unknown, options: { enabled: boolean }) => {
+        useQuery: (input: unknown, options: { enabled: boolean }) => {
+          mocks.traceGroupsInput = input;
           mocks.traceGroupsEnabled = options.enabled;
           return { data: undefined, isLoading: false };
         },
@@ -130,6 +133,7 @@ beforeEach(() => {
   mocks.tableProps = null;
   mocks.annotationsByTraceIdsArgs = null;
   mocks.filters = {};
+  mocks.traceGroupsInput = undefined;
   mocks.traceGroupsEnabled = undefined;
   mocks.traceHydrationLoading = false;
   mocks.traceHydrationError = null;
@@ -228,14 +232,18 @@ describe("All annotations page", () => {
 
     it("does not load trace groups when no filters are active", () => {
       renderPage();
-
-      expect(mocks.traceGroupsEnabled).toBe(false);
+      expect(mocks.traceGroupsInput).toBe(skipToken);
+      expect(mocks.traceGroupsEnabled).toBe(true);
     });
 
     it("loads trace groups when filters are active", () => {
       mocks.filters = { models: ["gpt-5"] };
 
       renderPage();
+      expect(mocks.traceGroupsInput).toMatchObject({
+        filters: { models: ["gpt-5"] },
+        pageSize: 10000,
+      });
 
       expect(mocks.traceGroupsEnabled).toBe(true);
     });
