@@ -1,4 +1,5 @@
 import { Flex } from "@chakra-ui/react";
+import { skipToken } from "@tanstack/react-query";
 import { useMemo } from "react";
 import AnnotationsLayout from "~/components/AnnotationsLayout";
 import { AnnotationsTable } from "~/components/annotations/AnnotationsTable";
@@ -34,29 +35,26 @@ export default function Annotations() {
 
   const hasAnyFilters = Object.keys(nonEmptyFilters).length > 0;
   const traceGroups = api.traces.getAllForProject.useQuery(
-    {
-      ...filterParams,
-      query: getSingleQueryParam(router.query.query),
-      groupBy: "none",
-      pageOffset: 0,
-      pageSize: 10000,
-      sortBy: getSingleQueryParam(router.query.sortBy),
-      sortDirection: getSingleQueryParam(router.query.orderBy),
-    },
-    {
-      ...queryOpts,
-      enabled: hasAnyFilters && queryOpts.enabled,
-    },
+    hasAnyFilters
+      ? {
+          ...filterParams,
+          query: getSingleQueryParam(router.query.query),
+          groupBy: "none",
+          pageOffset: 0,
+          pageSize: 10000,
+          sortBy: getSingleQueryParam(router.query.sortBy),
+          sortDirection: getSingleQueryParam(router.query.orderBy),
+        }
+      : skipToken,
+    queryOpts,
   );
 
   const {
     period: { startDate, endDate },
   } = usePeriodSelector();
 
-  // Both queries are declared unconditionally (rules of hooks) and gated
-  // via `enabled` on the active mode. `getByTraceIds` is chunked so a
-  // fully-filtered project with thousands of matching traces doesn't blow
-  // past the GET URL ceiling tRPC batches into.
+  // Hook 始终声明，但空筛选通过 skipToken 从输入层跳过查询；筛选模式下
+  // getByTraceIds 继续分块，避免大量 trace ID 超过 tRPC GET URL 上限。
   const filteredTraceIds =
     traceGroups.data?.groups.flatMap((group) =>
       group.map((trace) => trace.trace_id),
