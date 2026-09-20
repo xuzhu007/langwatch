@@ -12,7 +12,11 @@ import type { Protections } from "~/server/traces/protections";
 import type { TraceService } from "~/server/traces/trace.service";
 import type { TracesForProjectResult } from "~/server/traces/types";
 import { ExportService } from "../export.service";
-import type { ExportRequest } from "../types";
+import { type ExportRequest, MAX_EXPORT_TRACES } from "../types";
+
+vi.mock("~/server/traces/trace-blob-resolution.deps", () => ({
+  buildTraceBlobResolutionDeps: vi.fn(),
+}));
 
 const fullProtections: Protections = {
   canSeeCosts: true,
@@ -110,6 +114,63 @@ function buildMockTraceService(options: {
 // ---------------------------------------------------------------------------
 
 describe("ExportService", () => {
+  describe("when the export has a compiled Trace Explorer filter", () => {
+    it("forwards the filter and export limit to the total-count query", async () => {
+      const traceService = buildMockTraceService({
+        batches: [[]],
+        totalHits: 0,
+      });
+      const service = new ExportService({ traceService });
+      const filterWhere = {
+        sql: "ts.TraceName = {traceName_0:String}",
+        params: { traceName_0: "checkout" },
+      };
+
+      await service.getTotalCount({
+        request: buildExportRequest(),
+        protections: fullProtections,
+        filterWhere,
+      });
+
+      expect(traceService.getAllTracesForProject).toHaveBeenCalledWith(
+        expect.anything(),
+        fullProtections,
+        expect.objectContaining({
+          filterWhere,
+          maxResults: MAX_EXPORT_TRACES,
+        }),
+      );
+    });
+
+    it("forwards the filter and export limit to every exported batch", async () => {
+      const traceService = buildMockTraceService({
+        batches: [[]],
+        totalHits: 0,
+      });
+      const service = new ExportService({ traceService });
+      const filterWhere = {
+        sql: "ts.TraceName = {traceName_0:String}",
+        params: { traceName_0: "checkout" },
+      };
+
+      for await (const _chunk of service.exportTraces({
+        request: buildExportRequest(),
+        protections: fullProtections,
+        filterWhere,
+      })) {
+        // 无匹配 trace 时不会进入循环。
+      }
+
+      expect(traceService.getAllTracesForProject).toHaveBeenCalledWith(
+        expect.anything(),
+        fullProtections,
+        expect.objectContaining({
+          filterWhere,
+          maxResults: MAX_EXPORT_TRACES,
+        }),
+      );
+    });
+  });
   describe("exportTraces()", () => {
     describe("when exporting summary CSV with a single batch", () => {
       it("yields one chunk with header and data rows", async () => {

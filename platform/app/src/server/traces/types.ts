@@ -39,6 +39,12 @@ export interface GetAllTracesForProjectOptions {
   downloadMode?: boolean;
   includeSpans?: boolean;
   /**
+   * 由服务端查询编译器生成的参数化条件。
+   */
+  filterWhere?: { sql: string; params: Record<string, unknown> };
+  /** 结果集最多保留的去重 trace 数量。 */
+  maxResults?: number;
+  /**
    * Resolve offloaded >64 KB IO from event_log to the FULL value (#4991).
    * Only the download/export path (a content-consuming read) opts in; the
    * list/search grid leaves this false so it keeps the ≤64 KB preview and

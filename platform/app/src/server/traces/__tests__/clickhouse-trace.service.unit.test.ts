@@ -259,6 +259,37 @@ describe("ClickHouseTraceService", () => {
       );
     });
 
+    it("applies compiled filters and the result limit to count and page queries", async () => {
+      setupStandardMocks(["trace-1"]);
+      const service = new ClickHouseTraceService({
+        project: { findUnique: mockPrismaFindUnique },
+      } as never);
+
+      await service.getAllTracesForProject(baseInput, protections, {
+        filterWhere: {
+          sql: "ts.TraceName = {traceName_0:String}",
+          params: { traceName_0: "checkout" },
+        },
+        maxResults: 10_000,
+      });
+
+      const [countCall, pageCall] = mockClickHouseQuery.mock.calls;
+      expect(countCall![0].query).toContain(
+        "(ts.TraceName = {traceName_0:String})",
+      );
+      expect(countCall![0].query).toContain("LIMIT {maxResults:UInt32}");
+      expect(countCall![0].query_params).toMatchObject({
+        traceName_0: "checkout",
+        maxResults: 10_000,
+      });
+      expect(pageCall![0].query).toContain(
+        "(ts.TraceName = {traceName_0:String})",
+      );
+      expect(pageCall![0].query_params).toMatchObject({
+        traceName_0: "checkout",
+      });
+    });
+
     describe("when traceIds is provided", () => {
       it("includes TraceId IN clause in the queries", async () => {
         setupStandardMocks(["trace-A"]);

@@ -12,6 +12,7 @@ export type ExportMode = z.infer<typeof exportModeSchema>;
  */
 export const exportFormatSchema = z.enum(["csv", "json"]);
 export type ExportFormat = z.infer<typeof exportFormatSchema>;
+export const MAX_EXPORT_TRACES = 10_000;
 
 /**
  * Request payload for initiating a trace export.
@@ -27,6 +28,7 @@ export const exportRequestSchema = z.object({
   filters: sharedFiltersInputSchema.shape.filters,
   startDate: z.number(),
   endDate: z.number(),
+  filterQuery: z.string().optional(),
   query: z.string().optional(),
   traceIds: z.array(z.string()).max(10_000).optional(),
 });

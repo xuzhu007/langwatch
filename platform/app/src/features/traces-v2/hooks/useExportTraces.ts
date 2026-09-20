@@ -252,7 +252,7 @@ export function useExportTraces({
         filters,
         startDate,
         endDate,
-        ...(query ? { query } : {}),
+        ...(query ? { filterQuery: query } : {}),
         ...(selectedTraceIds ? { traceIds: selectedTraceIds } : {}),
       };
 
