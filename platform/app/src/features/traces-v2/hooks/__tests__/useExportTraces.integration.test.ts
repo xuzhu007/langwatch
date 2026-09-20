@@ -97,6 +97,30 @@ describe("useExportTraces()", () => {
   });
 
   describe("when startExport is called", () => {
+    it("sends the current Trace Explorer query as filterQuery", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({ "X-Total-Traces": "0" }),
+        blob: vi.fn().mockResolvedValue(new Blob()),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { result } = renderHook(() =>
+        useExportTraces({
+          projectId: "proj-1",
+          query: "status:error",
+        }),
+      );
+
+      await act(async () => {
+        result.current.startExport({ mode: "summary", format: "csv" });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const request = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+      expect(request).toMatchObject({ filterQuery: "status:error" });
+      expect(request.query).toBeUndefined();
+    });
     it("closes the dialog", () => {
       // Mock fetch to return a resolved promise
       vi.stubGlobal(

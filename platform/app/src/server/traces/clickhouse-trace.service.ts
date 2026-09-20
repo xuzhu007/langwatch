@@ -1116,6 +1116,14 @@ export class ClickHouseTraceService {
               "Filters contain unsupported fields for ClickHouse",
             );
           }
+          const conditions = [
+            ...filterConditions,
+            ...(options.filterWhere ? [`(${options.filterWhere.sql})`] : []),
+          ];
+          const params = {
+            ...filterParams,
+            ...(options.filterWhere?.params ?? {}),
+          };
 
           // The scroll's snapshot point. Pinned once, on the page that starts
           // the scroll, then carried by the cursor so every later page resolves
@@ -1155,14 +1163,15 @@ export class ClickHouseTraceService {
               protections,
               startDate: input.startDate,
               endDate: effectiveEndDate,
-              filterConditions,
-              filterParams,
+              filterConditions: conditions,
+              filterParams: params,
               traceIds: input.traceIds,
               query: input.query,
               fetchInput,
               fetchOutput,
               dateField,
               scrollStart,
+              maxResults: options.maxResults,
             });
 
           // Spans are fetched when the caller wants them OR when it wants full
@@ -1954,6 +1963,7 @@ export class ClickHouseTraceService {
     fetchOutput = true,
     dateField = "occurred",
     scrollStart,
+    maxResults,
   }: {
     projectId: string;
     pageSize: number;
@@ -1978,6 +1988,7 @@ export class ClickHouseTraceService {
      * occurred axis, and on updated-axis cursors minted before it existed.
      */
     scrollStart?: number;
+    maxResults?: number;
   }): Promise<{ traces: Trace[]; totalHits: number; lastTrace: Trace | null }> {
     return await this.tracer.withActiveSpan(
       "ClickHouseTraceService.fetchTracesWithPagination",
@@ -2111,6 +2122,7 @@ export class ClickHouseTraceService {
           // cursor-scoped binding would leave {scrollStart} unbound there.
           // Only present when the SQL references it.
           ...(scrollStart !== undefined ? { scrollStart } : {}),
+          ...(maxResults !== undefined ? { maxResults } : {}),
         };
 
         const cursorParams = {
@@ -2122,7 +2134,23 @@ export class ClickHouseTraceService {
         // The ID query is lightweight (no heavy columns). occurred counts with
         // HyperLogLog (~2% error, fine for display); updated counts traces whose
         // global max(UpdatedAt) falls in the window (exact, via the aggregate).
-        const countQuery = isUpdatedAxis
+        const countQuery = maxResults !== undefined
+          ? `
+              SELECT count() AS total
+              FROM (
+                SELECT ts.TraceId
+                FROM trace_summaries ts
+                WHERE ts.TenantId = {tenantId:String}
+                  ${isUpdatedAxis ? latestVersionOnly : ""}
+                  ${isUpdatedAxis ? updatedWindow : occurredWindow}
+                  ${extraFilters}
+                  ${traceIdFilter}
+                  ${searchFilter}
+                GROUP BY ts.TraceId
+                LIMIT {maxResults:UInt32}
+              )
+            `
+          : isUpdatedAxis
           ? `
               SELECT count() AS total
               FROM (

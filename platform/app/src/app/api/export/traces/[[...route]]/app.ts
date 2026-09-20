@@ -17,6 +17,7 @@ import { getUserProtectionsForProject } from "~/server/api/utils";
 import { validator as zValidator } from "~/server/api/validation";
 import { getApp } from "~/server/app-layer/app";
 import { probeProjectPermission } from "~/server/app-layer/permissions/imperative";
+import { translateFilterToClickHouse } from "~/server/app-layer/traces/filter-to-clickhouse";
 import { getServerAuthSession } from "~/server/auth";
 import { prisma } from "~/server/db";
 import {
@@ -104,12 +105,22 @@ secured
       request.format === "csv"
         ? "text/csv; charset=utf-8"
         : "application/x-ndjson";
+    const filterWhere = request.filterQuery
+      ? (translateFilterToClickHouse(request.filterQuery, request.projectId, {
+          from: request.startDate,
+          to: request.endDate,
+        }) ?? undefined)
+      : undefined;
 
     let exportService: Awaited<ReturnType<typeof ExportService.create>>;
     let totalCount: number;
     try {
       exportService = await ExportService.create();
-      totalCount = await exportService.getTotalCount({ request, protections });
+      totalCount = await exportService.getTotalCount({
+        request,
+        protections,
+        filterWhere,
+      });
     } catch (error) {
       // A failure that already knows what it is — a query timeout, a time range
       // too wide, ClickHouse unavailable — says something more useful than
@@ -137,6 +148,7 @@ secured
           for await (const { chunk, progress } of exportService.exportTraces({
             request,
             protections,
+            filterWhere,
           })) {
             controller.enqueue(encoder.encode(chunk));
             void broadcast.broadcastToTenant(

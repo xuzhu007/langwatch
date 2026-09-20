@@ -15,6 +15,7 @@ import { enrichTracesWithEvaluations } from "~/server/traces/enrich-evaluations"
 import type { Protections } from "~/server/traces/protections";
 import type { TraceService } from "~/server/traces/trace.service";
 import { buildTraceBlobResolutionDeps } from "~/server/traces/trace-blob-resolution.deps";
+import type { GetAllTracesForProjectOptions } from "~/server/traces/types";
 import {
   CSV_NEWLINE,
   serializeTracesToFullCsv,
@@ -24,7 +25,11 @@ import {
   serializeTraceToFullJson,
   serializeTraceToSummaryJson,
 } from "./serializers/json-serializer";
-import type { ExportProgress, ExportRequest } from "./types";
+import {
+  type ExportProgress,
+  type ExportRequest,
+  MAX_EXPORT_TRACES,
+} from "./types";
 
 const BATCH_SIZE = 100;
 
@@ -76,9 +81,11 @@ export class ExportService {
   async getTotalCount({
     request,
     protections,
+    filterWhere,
   }: {
     request: ExportRequest;
     protections: Protections;
+    filterWhere?: GetAllTracesForProjectOptions["filterWhere"];
   }): Promise<number> {
     const result = await this.traceService.getAllTracesForProject(
       {
@@ -94,6 +101,8 @@ export class ExportService {
       {
         downloadMode: false,
         includeSpans: false,
+        filterWhere,
+        maxResults: MAX_EXPORT_TRACES,
         scrollId: null,
       },
     );
@@ -113,9 +122,11 @@ export class ExportService {
   async *exportTraces({
     request,
     protections,
+    filterWhere,
   }: {
     request: ExportRequest;
     protections: Protections;
+    filterWhere?: GetAllTracesForProjectOptions["filterWhere"];
   }): AsyncGenerator<{ chunk: string; progress: ExportProgress }> {
     logger.info(
       {
@@ -162,6 +173,8 @@ export class ExportService {
           // offloaded trace, silently. Resolve for every export mode; the batch
           // resolver keeps the extra event_log reads bounded.
           resolveBlobs: true,
+          filterWhere,
+          maxResults: MAX_EXPORT_TRACES,
           scrollId: scrollId ?? null,
         },
       );
@@ -214,7 +227,7 @@ export class ExportService {
       scrollId = result.scrollId;
 
       // Stop if no more data (no scrollId or empty batch)
-      if (!scrollId || traces.length === 0) {
+      if (!scrollId || traces.length === 0 || exported >= total) {
         break;
       }
     }
