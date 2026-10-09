@@ -59,6 +59,7 @@
     "README.md",
     "LICENSE.md",
     "pnpm-workspace.yaml",
+    "patches/",
     "pnpm-lock.yaml",
     "packages/server/package.json",
     "plugins/langwatch/package.json",
