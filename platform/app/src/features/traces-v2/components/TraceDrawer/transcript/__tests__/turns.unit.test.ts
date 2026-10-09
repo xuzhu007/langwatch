@@ -6,9 +6,9 @@
  * still the user speaking).
  */
 import { describe, expect, it } from "vitest";
-import { normalizeToolCalls } from "../parsing";
-import { groupMessagesIntoTurns, summarizeTurn } from "../turns";
-import type { ChatMessage } from "../types";
+import { normalizeToolCalls } from "~/shared/traces/transcript/parsing";
+import type { ChatMessage } from "~/shared/traces/transcript/types";
+import { groupMessagesIntoTurns } from "../turns";
 
 const openAIToolCall = {
   id: "call_1",
