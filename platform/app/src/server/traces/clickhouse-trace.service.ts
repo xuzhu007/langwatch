@@ -1131,20 +1131,12 @@ export class ClickHouseTraceService {
               "Filters contain unsupported fields for ClickHouse",
             );
           }
-          const conditions = [
-            ...filterConditions,
-            ...(options.filterWhere ? [`(${options.filterWhere.sql})`] : []),
-          ];
-          const params = {
-            ...filterParams,
-            ...(options.filterWhere?.params ?? {}),
-          };
-
           // A trace filter string, already compiled by the boundary that
           // accepted it. One more condition on the same alias, so it narrows
           // the legacy filters rather than replacing them.
           if (options.filterWhere) {
-            filterConditions.push(options.filterWhere.sql);
+            // 加括号：条件可能含顶层 OR，与其它条件 AND 拼接时需保持优先级。
+            filterConditions.push(`(${options.filterWhere.sql})`);
             Object.assign(filterParams, options.filterWhere.params);
           }
 
@@ -1186,8 +1178,8 @@ export class ClickHouseTraceService {
               protections,
               startDate: input.startDate,
               endDate: effectiveEndDate,
-              filterConditions: conditions,
-              filterParams: params,
+              filterConditions,
+              filterParams,
               traceIds: input.traceIds,
               query: input.query,
               fetchInput,

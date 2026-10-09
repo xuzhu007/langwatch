@@ -38,10 +38,6 @@ export type TraceWithGuardrail = Trace & {
 export interface GetAllTracesForProjectOptions {
   downloadMode?: boolean;
   includeSpans?: boolean;
-  /**
-   * 由服务端查询编译器生成的参数化条件。
-   */
-  filterWhere?: { sql: string; params: Record<string, unknown> };
   /** 结果集最多保留的去重 trace 数量。 */
   maxResults?: number;
   /**

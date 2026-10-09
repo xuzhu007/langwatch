@@ -55,10 +55,10 @@ describe("viewStore last-used lens persistence", () => {
 
   describe("when creating and duplicating lenses", () => {
     it("generates unique view KSUIDs", async () => {
-      const { useViewStore } = await freshStore();
+      const { useExplorerStore } = await freshStore();
 
-      const createdId = useViewStore.getState().createLens("Custom lens");
-      const duplicatedId = useViewStore.getState().duplicateLens(createdId);
+      const createdId = useExplorerStore.getState().createLens("Custom lens");
+      const duplicatedId = useExplorerStore.getState().duplicateLens(createdId);
 
       expect(createdId).toMatch(/^view_[A-Za-z0-9]{29}$/);
       expect(duplicatedId).toMatch(/^view_[A-Za-z0-9]{29}$/);
