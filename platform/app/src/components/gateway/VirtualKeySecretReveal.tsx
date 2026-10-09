@@ -14,8 +14,8 @@ import {
 import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Dialog } from "~/components/ui/dialog";
-import { copyToClipboard } from "~/utils/clipboard";
 import { useRegisterTourActions } from "~/features/guided-onboarding/tour/tourRegistry";
+import { copyToClipboard } from "~/utils/clipboard";
 import { VirtualKeyUsageSnippet } from "./VirtualKeyUsageSnippet";
 
 type VirtualKeySecretRevealProps = {

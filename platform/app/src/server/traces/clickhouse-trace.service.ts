@@ -2149,8 +2149,9 @@ export class ClickHouseTraceService {
         // The ID query is lightweight (no heavy columns). occurred counts with
         // HyperLogLog (~2% error, fine for display); updated counts traces whose
         // global max(UpdatedAt) falls in the window (exact, via the aggregate).
-        const countQuery = maxResults !== undefined
-          ? `
+        const countQuery =
+          maxResults !== undefined
+            ? `
               SELECT count() AS total
               FROM (
                 SELECT ts.TraceId
@@ -2165,8 +2166,8 @@ export class ClickHouseTraceService {
                 LIMIT {maxResults:UInt32}
               )
             `
-          : isUpdatedAxis
-          ? `
+            : isUpdatedAxis
+              ? `
               SELECT count() AS total
               FROM (
                 SELECT ts.TraceId
@@ -2180,7 +2181,7 @@ export class ClickHouseTraceService {
                 GROUP BY ts.TraceId
               )
             `
-          : `
+              : `
               SELECT uniq(ts.TraceId) as total
               FROM trace_summaries ts
               WHERE ts.TenantId = {tenantId:String}
