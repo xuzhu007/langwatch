@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toaster } from "~/components/ui/toaster";
 import { SLACK_APP_MANIFEST } from "~/features/automations/providers/slack/slackAppManifest";
+import { copyToClipboard } from "~/utils/clipboard";
 
 const COPIED_FOR_MS = 1500;
 
@@ -16,23 +17,19 @@ export function useCopySlackAppManifest() {
   );
 
   const copyManifest = () => {
-    // The Clipboard API is absent over plain HTTP, which self-hosted instances
-    // run, so a missing API reads the same as a denied write.
-    const clipboard = navigator.clipboard;
-    if (!clipboard) {
-      copyFailed();
-      return;
-    }
-    clipboard
-      .writeText(SLACK_APP_MANIFEST)
-      .then(() => {
-        setIsCopied(true);
-        copyResetTimer.current = setTimeout(
-          () => setIsCopied(false),
-          COPIED_FOR_MS,
-        );
-      })
-      .catch(copyFailed);
+    // fork 定制：内网自托管走纯 HTTP，Clipboard API 不可用，copyToClipboard
+    // 会降级到 execCommand("copy")；两条路都失败才提示手动复制。
+    void copyToClipboard(SLACK_APP_MANIFEST).then((copied) => {
+      if (!copied) {
+        copyFailed();
+        return;
+      }
+      setIsCopied(true);
+      copyResetTimer.current = setTimeout(
+        () => setIsCopied(false),
+        COPIED_FOR_MS,
+      );
+    });
   };
 
   return { isCopied, copyManifest };

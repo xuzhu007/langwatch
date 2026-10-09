@@ -1,14 +1,20 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockCheckLimit = vi.fn();
 const mockHandleMetrics = vi.fn();
 const mockResolve = vi.fn();
 const mockMarkUsed = vi.fn();
+const mockGetActivePlan = vi.fn();
+const mockNotifyPlanLimitReached = vi.fn();
 
 vi.mock("~/server/app-layer/app", () => ({
   // Consumers that degrade without Redis read through this one.
   tryGetApp: () => null,
   getApp: vi.fn(() => ({
+    usage: { checkLimit: mockCheckLimit },
+    planProvider: { getActivePlan: mockGetActivePlan },
+    usageLimits: { notifyPlanLimitReached: mockNotifyPlanLimitReached },
     traces: {
       metricCollection: { handleOtlpMetricRequest: mockHandleMetrics },
     },
@@ -97,11 +103,60 @@ describe("POST /api/otel/v1/metrics", () => {
       type: "legacyProjectKey",
       project: fakeProject,
     });
+    mockCheckLimit.mockResolvedValue({ exceeded: false });
+    mockGetActivePlan.mockResolvedValue({ name: "free" });
+    mockNotifyPlanLimitReached.mockResolvedValue(undefined);
     mockHandleMetrics.mockResolvedValue({
       outcome: "collected",
       acceptedDataPoints: 1,
       rejectedDataPoints: 0,
     });
+  });
+
+  it("enforces the project plan limit before accepting metrics", async () => {
+    mockCheckLimit.mockResolvedValue({
+      exceeded: true,
+      message: "monthly limit reached",
+      planName: "free",
+      count: 10,
+      maxMessagesPerMonth: 10,
+      usageUnit: "traces",
+    });
+
+    const response = await postMetrics();
+
+    expect(response.status).toBe(402);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: "ERR_PLAN_LIMIT",
+      message: "monthly limit reached",
+      currentMonthMessagesCount: 10,
+      maxMessagesPerMonth: 10,
+      activePlanName: "free",
+    });
+    expect(mockHandleMetrics).not.toHaveBeenCalled();
+  });
+
+  it("tells the plan limit notifier which cap was hit", async () => {
+    mockCheckLimit.mockResolvedValue({
+      exceeded: true,
+      message: "monthly limit reached",
+      planName: "free",
+      count: 12000,
+      maxMessagesPerMonth: 10000,
+      usageUnit: "events",
+    });
+
+    await postMetrics();
+
+    expect(mockNotifyPlanLimitReached).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planName: "free",
+        usageUnit: "events",
+        current: 12000,
+        max: 10000,
+      }),
+    );
   });
 
   it("returns OTLP partial success when some data points are rejected", async () => {

@@ -36,12 +36,12 @@ test.describe("Settings Plans Comparison", () => {
     await expect(growthPlan.getByText("Growth")).toBeVisible();
     await expect(enterprisePlan.getByText("Enterprise")).toBeVisible();
 
-    // 未显式配置时保持上游 Cloud 新组织的 Free 默认值。
-    const expectedCurrentPlan =
-      process.env.E2E_EXPECTED_CURRENT_PLAN === "enterprise"
-        ? enterprisePlan
-        : freePlan;
-    await expect(expectedCurrentPlan.getByText("Current")).toBeVisible();
+    // This deployment is self-hosted and unlicensed, so it is on none of the
+    // Cloud tiers. Marking Free as current would quote its two-seat,
+    // fifty-thousand-event limits at an operator who is capped by neither.
+    await expect(freePlan.getByText("Current")).toHaveCount(0);
+    await expect(growthPlan.getByText("Current")).toHaveCount(0);
+    await expect(enterprisePlan.getByText("Current")).toHaveCount(0);
 
     // Verify plan capabilities are shown side-by-side (billing toggle exists)
     await expect(page.getByTestId("billing-period-toggle")).toBeVisible();

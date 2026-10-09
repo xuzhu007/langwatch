@@ -5,13 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Captured at module scope so assertions can reach them from every it() block.
 const mockIngestNormalizedSpan = vi.fn();
 const mockReportEvaluation = vi.fn();
+const mockCheckLimit = vi.fn();
+const mockNotifyPlanLimitReached = vi.fn();
 
 vi.mock("~/server/app-layer/app", () => ({
   // Consumers that degrade without Redis read through this one.
   tryGetApp: () => null,
   getApp: vi.fn(() => ({
+    usage: { checkLimit: mockCheckLimit },
     traces: { collection: { ingestNormalizedSpan: mockIngestNormalizedSpan } },
     evaluations: { reportEvaluation: mockReportEvaluation },
+    planProvider: { getActivePlan: vi.fn(async () => ({ name: "free" })) },
+    usageLimits: { notifyPlanLimitReached: mockNotifyPlanLimitReached },
   })),
 }));
 
@@ -97,6 +102,7 @@ describe("POST /api/collector", () => {
       type: "legacyProjectKey",
       project: fakeProject,
     });
+    mockCheckLimit.mockResolvedValue({ exceeded: false });
     mockIngestNormalizedSpan.mockResolvedValue({ status: "collected" });
     mockReportEvaluation.mockResolvedValue(undefined);
   });
@@ -186,6 +192,59 @@ describe("POST /api/collector", () => {
         expect(res.status).toBe(500);
         const body = await res.json();
         expect(body.partialSuccess.errorMessage).toContain("boom");
+      });
+    });
+  });
+
+  describe("given a project over its plan limit", () => {
+    describe("when the payload is dispatched", () => {
+      it("rejects the batch with 402 and the plan-limit metadata", async () => {
+        mockCheckLimit.mockResolvedValue({
+          exceeded: true,
+          message: "monthly limit reached",
+          planName: "free",
+          count: 10,
+          maxMessagesPerMonth: 10,
+          usageUnit: "traces",
+        });
+
+        const res = await postCollector({
+          trace_id: "trace-1",
+          spans: [makeSpan(1)],
+        });
+
+        expect(res.status).toBe(402);
+        const body = await res.json();
+        expect(body).toMatchObject({
+          error: "ERR_PLAN_LIMIT",
+          message: "monthly limit reached",
+          currentMonthMessagesCount: 10,
+          maxMessagesPerMonth: 10,
+          activePlanName: "free",
+        });
+        expect(mockIngestNormalizedSpan).not.toHaveBeenCalled();
+      });
+
+      it("tells the plan limit notifier which cap was hit", async () => {
+        mockCheckLimit.mockResolvedValue({
+          exceeded: true,
+          message: "monthly limit reached",
+          planName: "free",
+          count: 12000,
+          maxMessagesPerMonth: 10000,
+          usageUnit: "traces",
+        });
+
+        await postCollector({ trace_id: "trace-1", spans: [makeSpan(1)] });
+
+        expect(mockNotifyPlanLimitReached).toHaveBeenCalledWith(
+          expect.objectContaining({
+            planName: "free",
+            usageUnit: "traces",
+            current: 12000,
+            max: 10000,
+          }),
+        );
       });
     });
   });
