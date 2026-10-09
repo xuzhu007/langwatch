@@ -1169,7 +1169,9 @@ describe("aggregation-builder", () => {
           excludeOrigins: ["langy"],
         });
 
-        expect(result.sql).toMatch(/AND NOT \(.*ts\.TopicId IN/s);
+        // fork 定制：取反下沉到 translateAllFilters 逐条件生成，形如
+        // `AND (NOT (ts.TopicId IN ...))`，而不是外层整体 `AND NOT (...)`。
+        expect(result.sql).toMatch(/NOT \(ts\.TopicId IN/);
         expect(result.sql).not.toMatch(
           /NOT \([^)]*\{excludeOrigins:Array\(String\)\}/,
         );
