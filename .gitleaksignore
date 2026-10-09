@@ -86,3 +86,7 @@ e881f8e5ed5e24094e9c55e3f8d390c9ff2f43e4:langwatch/packages/redaction/src/__test
 e881f8e5ed5e24094e9c55e3f8d390c9ff2f43e4:langwatch/packages/redaction/src/__tests__/sessionReport.unit.test.ts:github-pat:25
 e881f8e5ed5e24094e9c55e3f8d390c9ff2f43e4:mcp-server/src/__tests__/report-issue.integration.test.ts:generic-api-key:136
 e881f8e5ed5e24094e9c55e3f8d390c9ff2f43e4:typescript-sdk/src/cli/commands/__tests__/report.integration.test.ts:generic-api-key:142
+
+# 上游 v3.20.1（#8396 前后）的 LiteLLM 接入文档示例，Authorization 值是占位符
+# `sk-your-litellm-key`，不是凭据。
+e62171cfeb6f0448beb6b0f1b4a82858b6e9bad4:docs/integration/litellm-proxy.mdx:curl-auth-header:58

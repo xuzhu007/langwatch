@@ -31,6 +31,9 @@ ALLOWED_PREFIXES=(
   "assets/"
   "specs/"
   "sdks/python/examples/"
+  # 上游 #7659 加入的文档视频素材（hero/make-cards.sh 与 timelines/*.json 引用），
+  # 是渲染源而非 PR 截图；上游放在此目录，fork 同步时随之放行。
+  "docs/scripts/video/backgrounds/"
 )
 
 IMAGE_EXTENSIONS='\.(png|jpg|jpeg|gif|webp|bmp|tiff?|avif)$'

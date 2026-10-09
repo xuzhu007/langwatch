@@ -119,7 +119,7 @@ LANGWATCH_PULL_POLICY=never \
 `LANGWATCH_PULL_POLICY=never` is not optional here. The default is `always`, so
 tagging a local build as `langwatch/langwatch:latest` is not enough: every `up`
 re-pulls that tag from the registry and silently replaces the local image, which
-looks like a rebuild that changed nothing.
+looks like a rebuild that left the running app unchanged.
 
 Verify which build is actually running:
 
