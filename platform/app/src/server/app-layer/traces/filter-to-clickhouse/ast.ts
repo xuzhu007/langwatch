@@ -359,7 +359,9 @@ function translateNode({
           ctx,
           translateTag: translateTagWith,
         });
-      const op = logExpr.operator.operator === "OR" ? "OR" : "AND";
+      // 否定下推到子条件时，必须同时交换 AND/OR。
+      const isOr = logExpr.operator.operator === "OR";
+      const op = isOr !== negated ? "OR" : "AND";
       return `(${branch(logExpr.left)} ${op} ${branch(logExpr.right)})`;
     }
 
