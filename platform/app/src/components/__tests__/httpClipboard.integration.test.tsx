@@ -1,6 +1,12 @@
 /** @vitest-environment jsdom */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BackupCodesPanel } from "../me/twoFactor/BackupCodesPanel";
 import { CopyValueRows } from "../settings/CopyValueRows";
@@ -12,8 +18,14 @@ const toaster = vi.hoisted(() => ({
 }));
 vi.mock("../ui/toaster", () => ({ toaster }));
 
-const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+const clipboardDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "clipboard",
+);
+const execCommandDescriptor = Object.getOwnPropertyDescriptor(
+  document,
+  "execCommand",
+);
 const CODES = ["11111111", "22222222", "33333333"];
 const VALUE = "verification=review-token";
 
@@ -80,7 +92,9 @@ describe.each([
       expect(copiedText).toBe(text);
       expect(success).toHaveBeenCalledWith(
         expect.objectContaining(
-          component === "恢复码面板" ? { title: "Backup codes copied" } : { type: "success" },
+          component === "恢复码面板"
+            ? { title: "Backup codes copied" }
+            : { type: "success" },
         ),
       );
       expect(document.querySelector("textarea")).toBeNull();
