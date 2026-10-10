@@ -11,10 +11,17 @@
  */
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { instantEvalRunKey } from "~/server/app-layer/traces/query-language/instantEvalChips";
+import { useExplorerStore } from "../../stores/explorerStore";
 import { useExportTraces } from "../useExportTraces";
+import { useTraceListExport } from "../useTraceListExport";
 
 const { mockToasterCreate } = vi.hoisted(() => ({
   mockToasterCreate: vi.fn(),
+}));
+
+vi.mock("~/hooks/useOrganizationTeamProject", () => ({
+  useOrganizationTeamProject: () => ({ project: { id: "proj-1" } }),
 }));
 
 // Mock toaster
@@ -97,6 +104,44 @@ describe("useExportTraces()", () => {
   });
 
   describe("when startExport is called", () => {
+    /** @scenario "导出携带当前即时评估结果引用" */
+    it("携带当前条件对应的即时评估结果与时间范围", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({ "X-Total-Traces": "0" }),
+        blob: vi.fn().mockResolvedValue(new Blob()),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const window = { from: 1_000, to: 2_000 };
+      const key = instantEvalRunKey({
+        question: "有风险",
+        target: "traces",
+        otherQuery: "service:api",
+        window,
+      });
+      useExplorerStore.setState({
+        activeLensId: "all-traces",
+        debouncedQueryText: 'service:api AND eval.trace:"有风险"',
+        debouncedTimeRange: window,
+        evalRuns: { [key]: "run-1" },
+      });
+      const { result } = renderHook(() => useTraceListExport());
+
+      await act(async () => {
+        result.current.startExport({ mode: "summary", format: "csv" });
+      });
+
+      expect(
+        JSON.parse(fetchMock.mock.calls[0]![1].body as string),
+      ).toMatchObject({
+        filterQuery: 'service:api AND eval.trace:"有风险"',
+        startDate: window.from,
+        endDate: window.to,
+        evalRuns: {
+          [key]: { question: "有风险", target: "traces", runId: "run-1" },
+        },
+      });
+    });
     it("sends the current Trace Explorer query as filterQuery", async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
