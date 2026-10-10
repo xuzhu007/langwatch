@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execSync } from "child_process";
+import {
+  isDockerAvailable,
+  removeDockerContainer,
+  startDockerContainer,
+} from "./helpers/docker-setup";
 
 const IMAGE_NAME = "langwatch-mcp-server-test";
 const CONTAINER_NAME = "langwatch-mcp-server-test-container";
@@ -21,72 +25,27 @@ const MCP_POST_HEADERS = {
   Accept: "application/json, text/event-stream",
 };
 
-describe("Docker container", () => {
-  let containerRunning = false;
+describe.skipIf(!isDockerAvailable())("Docker container", () => {
 
   beforeAll(async () => {
     try {
-      // Build from repo root (mcp-server needs langevals/ for build)
-      const repoRoot = process.cwd().replace(/\/mcp-server.*$/, "");
-      execSync(
-        `docker build -t ${IMAGE_NAME} -f mcp/typescript/Dockerfile .`,
-        {
-          cwd: repoRoot,
-          stdio: "pipe",
-          timeout: 180_000,
-        }
-      );
-
-      // Stop any previous container
-      execSync(`docker rm -f ${CONTAINER_NAME} 2>/dev/null || true`, {
-        stdio: "pipe",
+      await startDockerContainer({
+        imageName: IMAGE_NAME,
+        containerName: CONTAINER_NAME,
+        hostPort: HOST_PORT,
       });
-
-      // Start the container WITHOUT LANGWATCH_API_KEY -- clients bring their own
-      execSync(
-        `docker run -d --name ${CONTAINER_NAME} -p ${HOST_PORT}:3000 ${IMAGE_NAME}`,
-        { stdio: "pipe" }
-      );
-
-      // Wait for the server to be ready
-      let retries = 0;
-      while (retries < 20) {
-        try {
-          const res = await fetch(`http://localhost:${HOST_PORT}/health`);
-          if (res.ok) {
-            containerRunning = true;
-            break;
-          }
-        } catch {
-          // not ready yet
-        }
-        await new Promise((r) => setTimeout(r, 500));
-        retries++;
-      }
-
-      if (!containerRunning) {
-        const logs = execSync(`docker logs ${CONTAINER_NAME}`, {
-          encoding: "utf8",
-        });
-        throw new Error(`Container failed to start. Logs:\n${logs}`);
-      }
     } catch (error) {
-      console.error("Docker setup failed:", error);
-      // Clean up on failure
-      execSync(`docker rm -f ${CONTAINER_NAME} 2>/dev/null || true`, {
-        stdio: "pipe",
-      });
+      removeDockerContainer(CONTAINER_NAME);
+      throw error;
     }
-  }, 180_000); // 3 min for build + start
+  }, 300_000);
 
   afterAll(() => {
-    execSync(`docker rm -f ${CONTAINER_NAME} 2>/dev/null || true`, {
-      stdio: "pipe",
-    });
+    removeDockerContainer(CONTAINER_NAME);
   });
 
+  // @scenario "镜像包含工作区补丁并正常启动"
   it("health endpoint responds without authentication", async () => {
-    if (!containerRunning) return;
 
     const res = await fetch(`http://localhost:${HOST_PORT}/health`);
     expect(res.status).toBe(200);
@@ -95,14 +54,12 @@ describe("Docker container", () => {
   });
 
   it("does not answer with a wildcard CORS origin", async () => {
-    if (!containerRunning) return;
 
     const res = await fetch(`http://localhost:${HOST_PORT}/health`);
     expect(res.headers.get("access-control-allow-origin")).not.toBe("*");
   });
 
   it("reflects an allowed origin and rejects an unlisted one", async () => {
-    if (!containerRunning) return;
 
     const allowed = await fetch(`http://localhost:${HOST_PORT}/health`, {
       headers: { Origin: "http://localhost:5173" },
@@ -119,7 +76,6 @@ describe("Docker container", () => {
   });
 
   it("rejects a bearer the LangWatch API does not recognise", async () => {
-    if (!containerRunning) return;
 
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
@@ -143,8 +99,7 @@ describe("Docker container", () => {
     expect(res.headers.get("mcp-session-id")).toBeNull();
   });
 
-  it("rejects a session id presented without a bearer token", async () => {
-    if (!containerRunning || !BEARER_TOKEN) return;
+  it.skipIf(!BEARER_TOKEN)("rejects a session id presented without a bearer token", async () => {
 
     const initRes = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
@@ -177,7 +132,6 @@ describe("Docker container", () => {
   });
 
   it("returns 401 on initialize without Bearer token", async () => {
-    if (!containerRunning) return;
 
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
@@ -199,8 +153,7 @@ describe("Docker container", () => {
     expect(body.error).toContain("Authorization");
   });
 
-  it("MCP initialize works with Bearer token", async () => {
-    if (!containerRunning || !BEARER_TOKEN) return;
+  it.skipIf(!BEARER_TOKEN)("MCP initialize works with Bearer token", async () => {
 
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
@@ -229,8 +182,7 @@ describe("Docker container", () => {
     expect(text).toContain("serverInfo");
   });
 
-  it("lists tools after initialization with Bearer token", async () => {
-    if (!containerRunning || !BEARER_TOKEN) return;
+  it.skipIf(!BEARER_TOKEN)("lists tools after initialization with Bearer token", async () => {
 
     // Initialize a session
     const initRes = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
@@ -288,8 +240,7 @@ describe("Docker container", () => {
     expect(toolsText).toContain("search_traces");
   });
 
-  it("legacy SSE endpoint responds with Bearer token", async () => {
-    if (!containerRunning || !BEARER_TOKEN) return;
+  it.skipIf(!BEARER_TOKEN)("legacy SSE endpoint responds with Bearer token", async () => {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -310,7 +261,6 @@ describe("Docker container", () => {
   });
 
   it("legacy SSE endpoint returns 401 without token", async () => {
-    if (!containerRunning) return;
 
     const res = await fetch(`http://localhost:${HOST_PORT}/sse`);
     expect(res.status).toBe(401);
