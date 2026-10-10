@@ -167,7 +167,9 @@ describe.each([
       expect(copiedText).toBe(text);
       expect(success).toHaveBeenCalledWith(
         expect.objectContaining(
-          component === "恢复码面板" ? { title: "Backup codes copied" } : { type: "success" },
+          component === "恢复码面板"
+            ? { title: "Backup codes copied" }
+            : { type: "success" },
         ),
       );
     });
