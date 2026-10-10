@@ -16,7 +16,10 @@ import {
 import { TokenResolver } from "../api-key/token-resolver";
 import { getApp } from "../app-layer/app";
 import { SPAN_MAX_PAST_MS } from "../app-layer/traces/trace-request-collection.service";
+import { PlanLimitExceededError } from "../app-layer/usage/errors";
+import type { UsageLimitResult } from "../app-layer/usage/usage.service";
 import { prisma } from "../db";
+import { isStorableSpanTimeMs } from "../event-sourcing/pipelines/trace-processing/utils/storableSpanTime";
 import { evaluationNameAutoslug } from "../tracer/collector/evaluationNameAutoslug";
 import { maybeAddIdsToContextList } from "../tracer/collector/rag";
 import type {
@@ -145,6 +148,64 @@ secured
         { projectId: project.id },
         "collector request being processed",
       );
+
+      // The lookup is wrapped in try/catch on its own — on failure we log and
+      // let the request through (same behaviour as before). The thrown limit
+      // error below lives outside that try block so it is never mistaken for
+      // a lookup failure.
+      let limitResult: UsageLimitResult;
+      try {
+        limitResult = await getApp().usage.checkLimit({
+          teamId: project.teamId,
+        });
+      } catch (error) {
+        logger.error(
+          { error, projectId: project.id },
+          "Error checking trace limit",
+        );
+        captureException(new Error("Error checking trace limit"), {
+          extra: { projectId: project.id, error },
+        });
+        limitResult = { exceeded: false };
+      }
+
+      if (limitResult.exceeded) {
+        try {
+          const activePlan = await getApp().planProvider.getActivePlan({
+            organizationId: project.team.organizationId,
+          });
+          await getApp().usageLimits.notifyPlanLimitReached({
+            organizationId: project.team.organizationId,
+            planName: activePlan.name ?? "free",
+            usageUnit: limitResult.usageUnit,
+            current: limitResult.count,
+            max: limitResult.maxMessagesPerMonth,
+          });
+        } catch (error) {
+          logger.error(
+            { error, projectId: project.id },
+            "Error sending plan limit notification",
+          );
+        }
+        logger.info(
+          {
+            projectId: project.id,
+            currentMonthMessagesCount: limitResult.count,
+            activePlanName: limitResult.planName,
+            maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
+          },
+          "Project has reached plan limit",
+        );
+
+        // 402, not 429: OTel SDKs and most HTTP clients retry a 429, and a
+        // plan limit is terminal for that payload, so a retryable status
+        // turns one rejection into an unbounded loop.
+        throw new PlanLimitExceededError(limitResult.message, {
+          currentMonthMessagesCount: limitResult.count,
+          maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
+          activePlanName: limitResult.planName,
+        });
+      }
 
       // We migrated those keys to inside metadata, but we still want to support them for retrocompatibility for a while
       if (!("metadata" in body) || !body.metadata) {
@@ -516,12 +577,25 @@ secured
       const startedAtCutoff = Date.now() - SPAN_MAX_PAST_MS;
       const freshSpans: Span[] = [];
       let droppedOldSpans = 0;
+      let droppedUnstorableSpans = 0;
       for (const span of spans) {
         if (
           span.timestamps.started_at &&
           span.timestamps.started_at < startedAtCutoff
         ) {
           droppedOldSpans++;
+          continue;
+        }
+        // The same predicate the OTLP door applies, on the same two fields:
+        // a time this path accepts becomes a `DateTime64(3)` column and a KSUID
+        // over its start seconds, and neither can hold a value past the storage
+        // ceiling. The 13-digit check above is not this check — it passes a
+        // zero `started_at` straight through, which files the span in 1970.
+        if (
+          !isStorableSpanTimeMs(span.timestamps.started_at) ||
+          !isStorableSpanTimeMs(span.timestamps.finished_at)
+        ) {
+          droppedUnstorableSpans++;
           continue;
         }
         freshSpans.push(span);
@@ -532,15 +606,26 @@ secured
           "dropped spans with start time more than 31 days in the past",
         );
       }
+      if (droppedUnstorableSpans > 0) {
+        logger.warn(
+          { projectId: project.id, traceId, droppedUnstorableSpans },
+          "dropped spans whose start or end time is not a valid timestamp",
+        );
+      }
 
-      let rejectedSpans = droppedOldSpans;
+      let rejectedSpans = droppedOldSpans + droppedUnstorableSpans;
       let dispatchFailures = 0;
-      let rejectionErrors: string[] =
-        droppedOldSpans > 0
-          ? [
-              `${droppedOldSpans} span(s) dropped: start time is more than 31 days in the past`,
-            ]
-          : [];
+      let rejectionErrors: string[] = [];
+      if (droppedOldSpans > 0) {
+        rejectionErrors.push(
+          `${droppedOldSpans} span(s) dropped: start time is more than 31 days in the past`,
+        );
+      }
+      if (droppedUnstorableSpans > 0) {
+        rejectionErrors.push(
+          `${droppedUnstorableSpans} span(s) dropped: started_at or finished_at is not a valid timestamp`,
+        );
+      }
       try {
         const resource = CollectorSpanUtils.buildResource({
           reservedTraceMetadata,

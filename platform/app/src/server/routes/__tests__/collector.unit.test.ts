@@ -5,13 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Captured at module scope so assertions can reach them from every it() block.
 const mockIngestNormalizedSpan = vi.fn();
 const mockReportEvaluation = vi.fn();
+const mockCheckLimit = vi.fn();
+const mockNotifyPlanLimitReached = vi.fn();
 
 vi.mock("~/server/app-layer/app", () => ({
   // Consumers that degrade without Redis read through this one.
   tryGetApp: () => null,
   getApp: vi.fn(() => ({
+    usage: { checkLimit: mockCheckLimit },
     traces: { collection: { ingestNormalizedSpan: mockIngestNormalizedSpan } },
     evaluations: { reportEvaluation: mockReportEvaluation },
+    planProvider: { getActivePlan: vi.fn(async () => ({ name: "free" })) },
+    usageLimits: { notifyPlanLimitReached: mockNotifyPlanLimitReached },
   })),
 }));
 
@@ -97,6 +102,7 @@ describe("POST /api/collector", () => {
       type: "legacyProjectKey",
       project: fakeProject,
     });
+    mockCheckLimit.mockResolvedValue({ exceeded: false });
     mockIngestNormalizedSpan.mockResolvedValue({ status: "collected" });
     mockReportEvaluation.mockResolvedValue(undefined);
   });
@@ -190,6 +196,59 @@ describe("POST /api/collector", () => {
     });
   });
 
+  describe("given a project over its plan limit", () => {
+    describe("when the payload is dispatched", () => {
+      it("rejects the batch with 402 and the plan-limit metadata", async () => {
+        mockCheckLimit.mockResolvedValue({
+          exceeded: true,
+          message: "monthly limit reached",
+          planName: "free",
+          count: 10,
+          maxMessagesPerMonth: 10,
+          usageUnit: "traces",
+        });
+
+        const res = await postCollector({
+          trace_id: "trace-1",
+          spans: [makeSpan(1)],
+        });
+
+        expect(res.status).toBe(402);
+        const body = await res.json();
+        expect(body).toMatchObject({
+          error: "ERR_PLAN_LIMIT",
+          message: "monthly limit reached",
+          currentMonthMessagesCount: 10,
+          maxMessagesPerMonth: 10,
+          activePlanName: "free",
+        });
+        expect(mockIngestNormalizedSpan).not.toHaveBeenCalled();
+      });
+
+      it("tells the plan limit notifier which cap was hit", async () => {
+        mockCheckLimit.mockResolvedValue({
+          exceeded: true,
+          message: "monthly limit reached",
+          planName: "free",
+          count: 12000,
+          maxMessagesPerMonth: 10000,
+          usageUnit: "traces",
+        });
+
+        await postCollector({ trace_id: "trace-1", spans: [makeSpan(1)] });
+
+        expect(mockNotifyPlanLimitReached).toHaveBeenCalledWith(
+          expect.objectContaining({
+            planName: "free",
+            usageUnit: "traces",
+            current: 12000,
+            max: 10000,
+          }),
+        );
+      });
+    });
+  });
+
   describe("given more than 200 spans", () => {
     describe("when the payload is dispatched", () => {
       it("returns 429 before ingesting anything", async () => {
@@ -267,6 +326,48 @@ describe("POST /api/collector", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.partialSuccess.rejectedSpans).toBe(1);
+        expect(mockIngestNormalizedSpan).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // The REST door applies the same storage predicate as the OTLP one, so a
+  // span it accepts can always be written. A zero start walks past the 13-digit
+  // check above and would otherwise be filed in 1970.
+  describe("given a span whose time cannot be stored", () => {
+    describe("when its start time is zero and a valid sibling arrives with it", () => {
+      /** @scenario "A span whose start time cannot be stored is rejected at ingestion" */
+      it("drops only that span, names the field, and still dispatches the sibling", async () => {
+        const res = await postCollector({
+          trace_id: "trace-1",
+          spans: [
+            makeSpan(1, { timestamps: { started_at: 0, finished_at: NOW } }),
+            makeSpan(2),
+          ],
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.partialSuccess.rejectedSpans).toBe(1);
+        expect(body.partialSuccess.errorMessage).toContain("started_at");
+        expect(mockIngestNormalizedSpan).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("when its end time is zero", () => {
+      /** @scenario "A span whose start time cannot be stored is rejected at ingestion" */
+      it("drops it, since the end time is written to the same kind of column", async () => {
+        const res = await postCollector({
+          trace_id: "trace-1",
+          spans: [
+            makeSpan(1, { timestamps: { started_at: NOW, finished_at: 0 } }),
+          ],
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.partialSuccess.rejectedSpans).toBe(1);
+        expect(body.partialSuccess.errorMessage).toContain("finished_at");
         expect(mockIngestNormalizedSpan).not.toHaveBeenCalled();
       });
     });

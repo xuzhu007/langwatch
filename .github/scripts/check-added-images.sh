@@ -22,13 +22,18 @@ set -euo pipefail
 BASE_REF="${1:?usage: check-added-images.sh <base-ref>}"
 
 # Where images legitimately live. Anything added outside these fails the check.
+# .github/readme/ holds the README cover art and the sources it is rendered from.
 ALLOWED_PREFIXES=(
+  ".github/readme/"
   "docs/images/"
   "docs/media/"
   "platform/app/public/"
   "assets/"
   "specs/"
   "sdks/python/examples/"
+  # 上游 #7659 加入的文档视频素材（hero/make-cards.sh 与 timelines/*.json 引用），
+  # 是渲染源而非 PR 截图；上游放在此目录，fork 同步时随之放行。
+  "docs/scripts/video/backgrounds/"
 )
 
 IMAGE_EXTENSIONS='\.(png|jpg|jpeg|gif|webp|bmp|tiff?|avif)$'

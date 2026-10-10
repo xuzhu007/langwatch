@@ -100,8 +100,12 @@ jobs:
       # It also fixes the draft case, which was silently wrong: a draft got
       # `shards: [1]` and still ran `--shard=1/4`, so it executed a quarter of
       # its files while reporting a pass over all of them.
-      unit-shards: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'upstream-sync')) && '[1,2,3,4]' || '[1]' }}
-      unit-shard-count: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'upstream-sync')) && '4' || '1' }}
+      # PR2's full 2,513-file run reached only 426/628 files on its slowest
+      # healthy shard before the four-minute floor. At that measured rate,
+      # eight shards put about 315 files and three minutes on each runner,
+      # preserving the floor's intended minute of headroom.
+      unit-shards: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'upstream-sync')) && '[1,2,3,4,5,6,7,8]' || '[1]' }}
+      unit-shard-count: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'upstream-sync')) && '8' || '1' }}
       # Six became four when the component lane took the files that never
       # needed a datastore. 540 of the 1017 integration files declare jsdom and
       # name no database, queue or cache; they now run on `test-component`
@@ -469,7 +473,7 @@ jobs:
         if: matrix.shard == 1
         run: pnpm --filter @langwatch/langyworker run typecheck
 
-      - name: Run unit tests (shard ${{ matrix.shard }}/4)
+      - name: Run unit tests (shard ${{ matrix.shard }}/${{ needs.changes.outputs.unit-shard-count }})
         id: unit-tests
         working-directory: platform/app
         run: |
@@ -494,10 +498,20 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
-            pnpm test:unit --run --changed origin/main --passWithNoTests \
-              --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
-              --dangerouslyIgnoreUnhandledErrors
+            # 叠加 PR 必须比较实际目标分支，不能把父分支升级误放进单片。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
+            # `vitest --changed` over an empty change set crashes natively on
+            # Linux, so skip it when vitest would select nothing anyway. If the
+            # helper itself fails, vitest runs as before.
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
+            if [ -z "$CHANGED" ]; then
+              echo "No files changed since $BASE_REF, no unit tests selected."
+            else
+              pnpm test:unit --run --changed "$BASE_REF" --passWithNoTests \
+                --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
+                --dangerouslyIgnoreUnhandledErrors
+            fi
           else
             # shellcheck disable=SC2086
             pnpm test:unit --run --shard=${{ matrix.shard }}/${{ needs.changes.outputs.unit-shard-count }} $COV $DUR \
@@ -631,10 +645,18 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
-            pnpm test:component --run --changed origin/main --passWithNoTests \
-              --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
-              --dangerouslyIgnoreUnhandledErrors
+            # 获取历史、检测变更和选择测试始终使用同一个 PR 目标分支。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
+            # Same empty change set guard as test-unit.
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
+            if [ -z "$CHANGED" ]; then
+              echo "No files changed since $BASE_REF, no component tests selected."
+            else
+              pnpm test:component --run --changed "$BASE_REF" --passWithNoTests \
+                --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
+                --dangerouslyIgnoreUnhandledErrors
+            fi
           else
             # shellcheck disable=SC2086
             pnpm test:component --run --shard=${{ matrix.shard }}/${{ needs.changes.outputs.component-shard-count }} $COV $DUR \
@@ -892,10 +914,18 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
-            pnpm test:integration --changed origin/main --passWithNoTests \
-              --reporter=default --reporter=json --reporter=./src/test-utils/shardFailureReporter.ts \
-              --outputFile=test-results.json
+            # 获取历史、检测变更和选择测试始终使用同一个 PR 目标分支。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
+            # Same empty change set guard as test-unit.
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
+            if [ -z "$CHANGED" ]; then
+              echo "No files changed since $BASE_REF, no integration tests selected."
+            else
+              pnpm test:integration --changed "$BASE_REF" --passWithNoTests \
+                --reporter=default --reporter=json --reporter=./src/test-utils/shardFailureReporter.ts \
+                --outputFile=test-results.json
+            fi
           else
             # shellcheck disable=SC2086
             pnpm test:integration --shard=${{ matrix.shard }}/${{ matrix.count }} $COV $DUR \
@@ -942,11 +972,7 @@ jobs:
 
   lint:
     needs: changes
-    # 上游同步会把官方代码树整体视为相对 fork base 的新增差分，reviewdog
-    # 因而会把上游既有格式基线误判为本 PR 新错误；普通 PR 仍执行原检查。
-    if: >
-      needs.changes.outputs.relevant == 'true'
-      && !contains(github.event.pull_request.labels.*.name, 'upstream-sync')
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     # Scoped to this job rather than the workflow, so nothing else gains write
     # access. `reporter: github-pr-review` posts inline review comments, which
@@ -1398,10 +1424,12 @@ jobs:
       # catch runtime boot failures (white screens from chunk-init errors).
       # Uses the runner's preinstalled Google Chrome (no browser download).
       - name: Boot smoke test
+        timeout-minutes: 8
         working-directory: platform/app
         env:
           SMOKE_BROWSER_CHANNEL: chrome
         run: |
+          node --test scripts/__tests__/smoke-boot.browser.test.mjs
           pnpm exec vite preview --port 4173 --outDir dist/client &
           PREVIEW_PID=$!
           trap 'kill $PREVIEW_PID 2>/dev/null || true' EXIT
@@ -1439,6 +1467,11 @@ jobs:
       - name: Test extract-failures.sh
         run: bash .github/scripts/__tests__/extract-failures.test.sh
 
+      - name: Test vitest-changed-files.sh
+        run: bash .github/scripts/__tests__/vitest-changed-files.test.sh
+      - name: 验证草稿测试使用实际目标分支
+        run: node --test --experimental-strip-types .github/scripts/draft-test-base.test.ts
+
       - name: Test start-clickhouse-with-storage-policy.sh
         run: bash .github/scripts/__tests__/start-clickhouse-with-storage-policy.test.sh
 
@@ -1450,6 +1483,9 @@ jobs:
 
       - name: Test notify-slack-release.sh
         run: bash .github/scripts/__tests__/notify-slack-release.test.sh
+
+      - name: Test check-added-images.sh
+        run: bash .github/scripts/__tests__/check-added-images.test.sh
 
       # Lives here rather than in deployment-impact-check.yml because that
       # workflow filters `on.paths` down to deployment surface, which

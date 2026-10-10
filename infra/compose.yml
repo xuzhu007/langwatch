@@ -8,7 +8,7 @@
 #
 # 用自建镜像：
 #   docker build -f infra/docker/Dockerfile -t langwatch-local:dev .
-#   LANGWATCH_IMAGE=langwatch-local:dev LANGWATCH_PULL_POLICY=never docker compose -f infra/compose.yml up -d
+#   LANGWATCH_IMAGE=langwatch-local:dev LANGWATCH_PULL_POLICY=never docker compose --project-directory . -f infra/compose.yml up -d
 #
 # 不设这两个变量时行为与以前完全一致（官方 latest + 每次拉取）。
 services:

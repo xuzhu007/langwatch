@@ -15,13 +15,13 @@ Docker Compose is the quickest way to try LangWatch locally. It runs the full st
 ```bash
 # Clone the repository
 git clone https://github.com/langwatch/langwatch.git
-cd platform/app
+cd langwatch
 
 # Copy the example environment file
 cp platform/app/.env.example platform/app/.env
 
 # Start all services
-docker compose up
+docker compose --project-directory . -f infra/compose.yml up
 ```
 
 LangWatch is available at **http://localhost:5560**.
@@ -53,46 +53,51 @@ Edit `platform/app/.env` to customize your deployment. Key variables:
 API_TOKEN_JWT_SECRET=your-jwt-secret
 CREDENTIALS_SECRET=your-encryption-key
 NEXTAUTH_SECRET=your-session-secret
+
+# Optional: an Enterprise license, either an activation code
+# (LW-XXXX-XXXX-XXXX-XXXX, needs outbound HTTPS to connect.langwatch.ai)
+# or a signed license key (works offline)
+LANGWATCH_LICENSE_KEY=
 ```
 
-See [Environment Variables](/self-hosting/configuration/environment-variables) for the full reference.
+See [Editions and licensing](/self-hosting/licensing#two-forms-of-license) for how each form is applied at startup. See [Environment Variables](/self-hosting/configuration/environment-variables) for the full reference.
 
 ## Common Operations
 
 ### Start in the background
 
 ```bash
-docker compose up -d
+docker compose --project-directory . -f infra/compose.yml up -d
 ```
 
 ### View logs
 
 ```bash
 # All services
-docker compose logs -f
+docker compose --project-directory . -f infra/compose.yml logs -f
 
 # Specific service
-docker compose logs -f app
+docker compose --project-directory . -f infra/compose.yml logs -f app
 ```
 
 ### Stop services
 
 ```bash
-docker compose down
+docker compose --project-directory . -f infra/compose.yml down
 ```
 
 ### Update to latest version
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose --project-directory . -f infra/compose.yml pull
+docker compose --project-directory . -f infra/compose.yml up -d
 ```
 
 ### Reset data
 
 ```bash
-docker compose down -v  # Removes volumes (all data)
-docker compose up
+docker compose --project-directory . -f infra/compose.yml down -v  # Removes volumes (all data)
+docker compose --project-directory . -f infra/compose.yml up
 ```
 
 ## Customization
@@ -108,18 +113,18 @@ docker build -f infra/docker/Dockerfile -t langwatch-local:dev .
 
 LANGWATCH_IMAGE=langwatch-local:dev \
 LANGWATCH_PULL_POLICY=never \
-  docker compose -f infra/compose.yml up -d
+  docker compose --project-directory . -f infra/compose.yml up -d
 ```
 
 `LANGWATCH_PULL_POLICY=never` is not optional here. The default is `always`, so
 tagging a local build as `langwatch/langwatch:latest` is not enough: every `up`
 re-pulls that tag from the registry and silently replaces the local image, which
-looks like a rebuild that changed nothing.
+looks like a rebuild that left the running app unchanged.
 
 Verify which build is actually running:
 
 ```bash
-docker compose -f infra/compose.yml images app
+docker compose --project-directory . -f infra/compose.yml images app
 ```
 
 ### Disable optional services
@@ -179,6 +184,7 @@ For production, migrate to the [Kubernetes Helm chart](/self-hosting/deployment/
 
 ## Next Steps
 
+- [First run](/self-hosting/first-run): Create the first account, add the license and connect your identity provider
 - [Docker Images](/self-hosting/deployment/docker-images): Learn about each container image
 - [Kubernetes (Helm)](/self-hosting/deployment/kubernetes-helm): Production deployment
 - [Environment Variables](/self-hosting/configuration/environment-variables): Full configuration reference

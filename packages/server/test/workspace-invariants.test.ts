@@ -301,6 +301,36 @@ describe("the repo is a single pnpm workspace", () => {
 			expect(root.files).toContain("pnpm-lock.yaml");
 		});
 
+		it("ships every patch file the workspace declares", () => {
+			// pnpm hashes each patchedDependencies file before it installs
+			// anything, so a patch the tarball leaves out stalls the end-user
+			// install of the frozen lockfile instead of failing it.
+			const root = readJson("package.json") as { files?: string[] };
+			const shipped = root.files ?? [];
+			const workspace = readFileSync(
+				join(repoRoot, "pnpm-workspace.yaml"),
+				"utf8",
+			);
+			const patchPaths = [
+				...workspace.matchAll(/^\s+"?[^"\n]+"?:\s*(patches\/\S+\.patch)\s*$/gm),
+			].map((match) => match[1] as string);
+
+			// Guards the guard: a declared block with no paths found means the
+			// scan is broken, not that nothing is patched.
+			if (/^patchedDependencies:/m.test(workspace)) {
+				expect(patchPaths.length).toBeGreaterThan(0);
+			}
+
+			for (const patchPath of patchPaths) {
+				const covered = shipped.some(
+					(f) =>
+						patchPath === f ||
+						patchPath.startsWith(f.endsWith("/") ? f : `${f}/`),
+				);
+				expect(covered, `no files[] entry ships ${patchPath}`).toBe(true);
+			}
+		});
+
 		/** @scenario Every project the lockfile mentions is resolvable */
 		it("ships a manifest for every workspace member", () => {
 			const root = readJson("package.json") as { files?: string[] };

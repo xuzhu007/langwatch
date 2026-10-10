@@ -637,13 +637,54 @@ const cases: Case[] = [
   },
   {
     name: "over-complex query (exceeds the node cap) fails closed",
-    // 11 tags → 21 AST nodes, over MAX_NODE_COUNT (20); each would match, so a
+    // 11 tags → 21 AST nodes, over MAX_FILTER_NODE_COUNT (20); each would match, so a
     // `false` result proves the cap forced fail-closed rather than a miss.
     query: Array.from({ length: 11 }, () => "origin:app").join(" AND "),
     trace: makeTrace({ attributes: { "langwatch.origin": "app" } }),
     expected: false,
   },
 ];
+
+describe("复合否定", () => {
+  describe("当整个条件组被否定时", () => {
+    /** @scenario "否定条件组遵守德摩根定律" */
+    it.each([
+      {
+        query: "NOT (origin:application OR origin:sample)",
+        equivalent: "(NOT origin:application AND NOT origin:sample)",
+        matches: ["langy"],
+      },
+      {
+        query: "NOT (origin:application AND origin:sample)",
+        equivalent: "(NOT origin:application OR NOT origin:sample)",
+        matches: ["application", "sample", "langy"],
+      },
+      {
+        query: "NOT (NOT (origin:application OR origin:sample))",
+        equivalent: "((origin:application OR origin:sample))",
+        matches: ["application", "sample"],
+      },
+      {
+        query: "NOT (origin:application OR NOT origin:sample)",
+        equivalent: "(NOT origin:application AND origin:sample)",
+        matches: ["sample"],
+      },
+    ])("$query", ({ query, equivalent, matches }) => {
+      const window = { from: 0, to: 1_000 };
+      expect(translateFilterToClickHouse(query, "project-1", window)).toEqual(
+        translateFilterToClickHouse(equivalent, "project-1", window),
+      );
+      for (const origin of ["application", "sample", "langy"]) {
+        expect(
+          evaluateQueryInMemory(
+            query,
+            makeTrace({ attributes: { "langwatch.origin": origin } }),
+          ),
+        ).toBe(matches.includes(origin));
+      }
+    });
+  });
+});
 
 describe("evaluateQueryInMemory", () => {
   it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, testCase) => {

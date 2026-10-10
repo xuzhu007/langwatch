@@ -8,10 +8,11 @@
  * - src/pages/api/trace/search.ts
  * - src/pages/api/thread/[id].ts
  */
+
+import type { AuthzPermission as Permission } from "@langwatch/authz";
 import type { Context } from "hono";
 import { z } from "zod";
 import { fromZodError, type ZodError } from "zod-validation-error";
-import type { Permission } from "~/server/api/rbac";
 import { getAllForProjectInput } from "~/server/api/routers/traces.schemas";
 import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
 import { getProtectionsForProject } from "~/server/api/utils";
@@ -23,6 +24,7 @@ import {
 import { TokenResolver } from "~/server/api-key/token-resolver";
 import { getApp } from "~/server/app-layer/app";
 import { prisma } from "~/server/db";
+import { legacyFiltersKeyedRefusal } from "~/server/filters/assertLegacyFiltersKeyed";
 import { formatSpansDigest } from "~/server/tracer/spanToReadableSpan";
 import type { Span, Trace } from "~/server/tracer/types";
 import { enrichTracesWithEvaluations } from "~/server/traces/enrich-evaluations";
@@ -260,6 +262,8 @@ secured.access(tracesViewAuth).post("/trace/search", async (c) => {
     const validationError = fromZodError(error as ZodError);
     return c.json({ error: validationError.message }, 400);
   }
+  const unkeyed = legacyFiltersKeyedRefusal(params.filters);
+  if (unkeyed) return c.json({ error: unkeyed }, 400);
 
   const format = params.format ?? (params.llmMode ? "digest" : "json");
 

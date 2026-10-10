@@ -1,14 +1,20 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockCheckLimit = vi.fn();
 const mockHandleLogs = vi.fn();
 const mockResolve = vi.fn();
 const mockMarkUsed = vi.fn();
+const mockGetActivePlan = vi.fn();
+const mockNotifyPlanLimitReached = vi.fn();
 
 vi.mock("~/server/app-layer/app", () => ({
   // Consumers that degrade without Redis read through this one.
   tryGetApp: () => null,
   getApp: vi.fn(() => ({
+    usage: { checkLimit: mockCheckLimit },
+    planProvider: { getActivePlan: mockGetActivePlan },
+    usageLimits: { notifyPlanLimitReached: mockNotifyPlanLimitReached },
     traces: { logCollection: { handleOtlpLogRequest: mockHandleLogs } },
   })),
 }));
@@ -90,6 +96,9 @@ describe("POST /api/otel/v1/logs", () => {
       type: "legacyProjectKey",
       project: fakeProject,
     });
+    mockCheckLimit.mockResolvedValue({ exceeded: false });
+    mockGetActivePlan.mockResolvedValue({ name: "free" });
+    mockNotifyPlanLimitReached.mockResolvedValue(undefined);
     mockHandleLogs.mockResolvedValue({
       outcome: "collected",
       acceptedLogRecords: 1,
@@ -155,6 +164,24 @@ describe("POST /api/otel/v1/logs", () => {
       expect(await response.json()).toEqual({
         error: "log ingestion is temporarily unavailable",
       });
+    });
+  });
+
+  describe("when the project is over its plan limit", () => {
+    it("rejects the batch before it reaches the collection service", async () => {
+      mockCheckLimit.mockResolvedValue({
+        exceeded: true,
+        message: "monthly limit reached",
+        planName: "free",
+        count: 10,
+        maxMessagesPerMonth: 10,
+        usageUnit: "traces",
+      });
+
+      const response = await postLogs();
+
+      expect(response.status).toBe(402);
+      expect(mockHandleLogs).not.toHaveBeenCalled();
     });
   });
 });

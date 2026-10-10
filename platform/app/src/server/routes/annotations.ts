@@ -7,17 +7,18 @@
  * - src/pages/api/annotations/trace/[trace].ts
  */
 
+import type { AuthzPermission as Permission } from "@langwatch/authz";
 import { ValidationError } from "@langwatch/handled-error";
 import { createLogger } from "@langwatch/observability";
 import type { Context } from "hono";
 import { nanoid } from "nanoid";
+import { AnnotationService } from "~/server/annotations/annotation.service";
 import {
   ANNOTATION_ANCHOR_SCOPES,
   type AnnotationAnchorScope,
   annotationAnchorScopeSchema,
   annotationAnchorScopeWhere,
 } from "~/server/annotations/annotationAnchor";
-import type { Permission } from "~/server/api/rbac";
 import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
 import {
   apiKeyCeilingDenialResponse,
@@ -195,8 +196,9 @@ secured.access(annotationsManageAuth).delete("/annotations/:id", async (c) => {
 
   try {
     const annotationId = c.req.param("id");
-    await prisma.annotation.delete({
-      where: { id: annotationId, projectId: project.id },
+    await AnnotationService.create({ prisma }).delete({
+      id: annotationId,
+      projectId: project.id,
     });
     markUsed();
     return c.json({ status: "success", message: "Annotation deleted." });
@@ -363,15 +365,16 @@ secured
         );
       }
 
-      const addAnnotation = await prisma.annotation.create({
-        data: {
-          id: nanoid(),
-          comment,
-          projectId: project.id,
-          isThumbsUp,
-          traceId: trace,
-          email,
-        },
+      const addAnnotation = await AnnotationService.create({ prisma }).create({
+        id: nanoid(),
+        projectId: project.id,
+        traceId: trace,
+        userId: null,
+        email,
+        comment,
+        isThumbsUp,
+        scoreOptions: null,
+        expectedOutput: null,
       });
 
       markUsed();

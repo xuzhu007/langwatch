@@ -7,11 +7,8 @@ import {
   type TagToken,
   type UnaryOperatorToken,
 } from "liqe";
-import {
-  MAX_NODE_COUNT,
-  normalizeQuery,
-  translateFilterToClickHouse,
-} from "./ast";
+import { MAX_FILTER_NODE_COUNT } from "../query-language/queries";
+import { normalizeQuery, translateFilterToClickHouse } from "./ast";
 import { FIELD_DEF_BY_NAME } from "./build-handlers";
 import {
   type FieldNeeds,
@@ -37,7 +34,7 @@ const logger = createLogger("langwatch:traces:filter-evaluate");
  * compiler's node walk so the two agree.
  *
  * Fail-closed: the whole query returns `false` — never a false `true` — on any
- * parse error, unknown field, over-complex query (the exact MAX_NODE_COUNT /
+ * parse error, unknown field, over-complex query (the exact MAX_FILTER_NODE_COUNT /
  * MAX_PARAM_COUNT caps), or any tag that can't be positively evaluated at
  * dispatch time ({@link UNSUPPORTED}). An empty query has no constraints, so it
  * matches every trace (`true`), mirroring the compiler returning no WHERE clause.
@@ -47,7 +44,7 @@ export function evaluateQueryInMemory(
   trace: InMemoryTrace,
 ): boolean {
   // Reuse the compiler as the validation gate — it enforces the exact
-  // MAX_NODE_COUNT / MAX_PARAM_COUNT caps, rejects invalid syntax, and throws
+  // MAX_FILTER_NODE_COUNT / MAX_PARAM_COUNT caps, rejects invalid syntax, and throws
   // FilterFieldUnknownError for unknown fields. Anything it rejects fails closed.
   let compiled: { sql: string; params: Record<string, unknown> } | null;
   try {
@@ -105,7 +102,7 @@ function evaluateNode(
   state: WalkState,
 ): boolean | Unsupported {
   state.nodeCount++;
-  if (state.nodeCount > MAX_NODE_COUNT) return UNSUPPORTED;
+  if (state.nodeCount > MAX_FILTER_NODE_COUNT) return UNSUPPORTED;
 
   switch (node.type) {
     case "EmptyExpression":
@@ -122,13 +119,13 @@ function evaluateNode(
 
     case "LogicalExpression": {
       const logExpr = node as LogicalExpressionToken;
-      // Negation threads down unchanged and the operator stays as-is — the
-      // exact shape `translateNode` compiles, so both sides always agree.
+      // 与 SQL 编译器一致：否定下推时同时交换 AND/OR。
       const left = evaluateNode(logExpr.left, negated, trace, state);
       if (left === UNSUPPORTED) return UNSUPPORTED;
       const right = evaluateNode(logExpr.right, negated, trace, state);
       if (right === UNSUPPORTED) return UNSUPPORTED;
-      return logExpr.operator.operator === "OR" ? left || right : left && right;
+      const isOr = logExpr.operator.operator === "OR";
+      return isOr !== negated ? left || right : left && right;
     }
 
     case "UnaryOperator": {

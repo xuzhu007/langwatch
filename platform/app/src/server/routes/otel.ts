@@ -31,6 +31,8 @@ import {
 } from "~/server/api-key/auth-middleware";
 import { TokenResolver } from "~/server/api-key/token-resolver";
 import { getApp } from "~/server/app-layer/app";
+import { PlanLimitExceededError } from "~/server/app-layer/usage/errors";
+import type { UsageLimitResult } from "~/server/app-layer/usage/usage.service";
 import { prisma } from "~/server/db";
 import { DEFAULT_PII_REDACTION_LEVEL } from "~/server/event-sourcing/pipelines/trace-processing/schemas/commands";
 import {
@@ -77,7 +79,7 @@ const otelIngestAuth = handlerManagedAuth({
 
 const secured = createServiceApp({ basePath: "/api/otel/v1" });
 
-// ── shared auth ──────────────────────────────────────────────────────
+// ── shared auth + limit check ────────────────────────────────────────
 
 const tokenResolver = TokenResolver.create(prisma);
 
@@ -244,6 +246,88 @@ function logCorrectedPath({
     { projectId, originalPath, canonicalPath: c.req.path },
     "OTLP exporter posted to a non-canonical path; served from the canonical route",
   );
+}
+
+/**
+ * Checks usage limits for the project and throws PlanLimitExceededError (402)
+ * if exceeded. Logs `Project has reached plan limit` with `customerTraceIds`
+ * so a customer-supplied trace_id can be matched to the rejection. The lookup
+ * itself is wrapped in try/catch — on lookup failure we log and let the
+ * request through (same behaviour as before); the thrown limit error lives
+ * outside that try block so it is never mistaken for a lookup failure.
+ */
+async function enforcePlanLimit({
+  project,
+  customerTraceIds,
+  logger,
+}: {
+  project: { id: string; teamId: string; team: { organizationId: string } };
+  customerTraceIds: string[];
+  logger: ReturnType<typeof createLogger>;
+}): Promise<void> {
+  let limitResult: UsageLimitResult;
+  try {
+    limitResult = await getApp().usage.checkLimit({
+      teamId: project.teamId,
+    });
+  } catch (error) {
+    logger.error(
+      { error, projectId: project.id, customerTraceIds },
+      "Error checking trace limit",
+    );
+    captureException(error as Error, {
+      extra: { projectId: project.id },
+    });
+    return;
+  }
+
+  if (!limitResult.exceeded) return;
+
+  try {
+    const activePlan = await getApp().planProvider.getActivePlan({
+      organizationId: project.team.organizationId,
+    });
+    getApp()
+      .usageLimits.notifyPlanLimitReached({
+        organizationId: project.team.organizationId,
+        planName: activePlan.name ?? "free",
+        usageUnit: limitResult.usageUnit,
+        current: limitResult.count,
+        max: limitResult.maxMessagesPerMonth,
+      })
+      .catch((error: unknown) => {
+        logger.error(
+          { error, projectId: project.id },
+          "Error sending plan limit notification",
+        );
+      });
+  } catch (error) {
+    logger.error(
+      { error, projectId: project.id },
+      "Error getting active plan information",
+    );
+  }
+
+  logger.info(
+    {
+      projectId: project.id,
+      currentMonthMessagesCount: limitResult.count,
+      activePlanName: limitResult.planName,
+      maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
+      customerTraceIds,
+    },
+    "Project has reached plan limit",
+  );
+
+  // 402, not 429: the OTel SDKs treat 429 as retryable and will re-post the
+  // same batch until their elapsed-time budget runs out. A plan limit is
+  // terminal for that payload, so a retryable status turns one rejection
+  // into an unbounded loop against a customer who cannot succeed.
+  throw new PlanLimitExceededError(limitResult.message, {
+    currentMonthMessagesCount: limitResult.count,
+    maxMessagesPerMonth: limitResult.maxMessagesPerMonth,
+    activePlanName: limitResult.planName,
+  });
 }
 
 /**
@@ -477,6 +561,12 @@ secured
           );
         }
 
+        await enforcePlanLimit({
+          project,
+          customerTraceIds,
+          logger: loggerTraces,
+        });
+
         const emptyPartialSuccess = { rejectedSpans: 0, errorMessage: "" };
 
         if (body.byteLength === 0) {
@@ -566,6 +656,12 @@ secured
 
         const { project, resolved } = authResult;
         span.setAttribute("langwatch.project.id", project.id);
+
+        await enforcePlanLimit({
+          project,
+          customerTraceIds: [],
+          logger: loggerLogs,
+        });
 
         const body = await readOtlpBody(c.req.raw);
         const parsed = parseOtlpLogs(body, c.req.header("content-type"));
@@ -658,6 +754,12 @@ secured
 
         const { project, resolved } = authResult;
         span.setAttribute("langwatch.project.id", project.id);
+
+        await enforcePlanLimit({
+          project,
+          customerTraceIds: [],
+          logger: loggerMetrics,
+        });
 
         const body = await readOtlpBody(c.req.raw);
         const parsed = parseOtlpMetrics(body, c.req.header("content-type"));

@@ -12,9 +12,9 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { Check, Copy, Eye, EyeOff } from "lucide-react";
-import { useState } from "react";
-
+import { useMemo, useState } from "react";
 import { Dialog } from "~/components/ui/dialog";
+import { useRegisterTourActions } from "~/features/guided-onboarding/tour/tourRegistry";
 import { copyToClipboard } from "~/utils/clipboard";
 import { VirtualKeyUsageSnippet } from "./VirtualKeyUsageSnippet";
 
@@ -50,6 +50,13 @@ export function VirtualKeySecretReveal({
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  // The guided tour's last gateway step shows the secret rather than the
+  // mask. Spec: specs/features/onboarding/guided-tour.feature
+  const tourActions = useMemo(
+    () => ({ revealVirtualKeySecret: () => setRevealed(true) }),
+    [],
+  );
+  useRegisterTourActions(tourActions);
 
   const handleCopy = async () => {
     await copyToClipboard(secret);
@@ -125,6 +132,7 @@ export function VirtualKeySecretReveal({
                 Secret
               </Text>
               <HStack
+                data-tour="vk-secret"
                 border="1px solid"
                 borderColor="border.subtle"
                 borderRadius="md"
