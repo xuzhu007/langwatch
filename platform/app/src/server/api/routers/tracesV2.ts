@@ -24,7 +24,6 @@ import {
 const logger = createLogger("langwatch:api:traces-v2");
 
 import { getInstantEvalRunService } from "~/server/app-layer/instant-evals/run";
-import { INSTANT_EVAL_TARGETS } from "~/server/app-layer/instant-evals/shorthand";
 import {
   buildCodingAgentTranscript,
   type CodingAgentTranscript,
@@ -43,6 +42,7 @@ import {
   DERIVED_OUTPUT_ATTR_PREFIX,
 } from "~/server/app-layer/traces/log-content-derivation";
 import { deriveUnmappedCostSuggestion } from "~/server/app-layer/traces/model-cost-span-preview.service";
+import { evalRunsSchema } from "~/server/app-layer/traces/query-language/evalRunsSchema";
 import type { InstantEvalRunReference } from "~/server/app-layer/traces/query-language/instantEvalChips";
 import type {
   SpanSummaryPage,
@@ -151,27 +151,6 @@ function occurredAtFromInput(input: {
     ? { occurredAtMs: input.occurredAtMs }
     : {};
 }
-
-/**
- * The Instant Eval runs the Explorer registered for the query's `eval`
- * chips: one entry per chip key, naming the question, the unit judged and
- * the run. Checked against the project before the compiler reads them.
- * Spec: specs/traces-v2/instant-eval-search.feature.
- */
-const evalRunsSchema = z
-  .record(
-    z.string().min(1).max(64),
-    z.object({
-      question: z.string().min(1).max(2_000),
-      target: z.enum(INSTANT_EVAL_TARGETS),
-      runId: z.string().min(1).max(200),
-    }),
-  )
-  .refine((runs) => Object.keys(runs).length <= 8, {
-    message: "At most eight Instant Eval runs may be registered on one query.",
-  })
-  .optional();
-
 /** The registered runs resolved against the project, or none. */
 async function resolveEvalRuns(input: {
   projectId: string;

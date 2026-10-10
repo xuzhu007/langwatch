@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sharedFiltersInputSchema } from "~/server/analytics/types";
+import { evalRunsSchema } from "~/server/app-layer/traces/query-language/evalRunsSchema";
 
 /**
  * Export mode: "summary" yields one row per trace; "full" yields one row per span.
@@ -29,6 +30,7 @@ export const exportRequestSchema = z.object({
   startDate: z.number(),
   endDate: z.number(),
   filterQuery: z.string().optional(),
+  evalRuns: evalRunsSchema,
   query: z.string().optional(),
   traceIds: z.array(z.string()).max(10_000).optional(),
 });
