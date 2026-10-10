@@ -1,5 +1,6 @@
 import { Box, HStack, IconButton, Text, VStack } from "@chakra-ui/react";
 import { Copy } from "lucide-react";
+import { copyToClipboard } from "~/utils/clipboard";
 import { toaster } from "../ui/toaster";
 
 /**
@@ -57,8 +58,8 @@ function CopyValueRow({
   value: string;
   first: boolean;
 }) {
-  const copy = () => {
-    if (!navigator.clipboard) {
+  const copy = async () => {
+    if (!(await copyToClipboard(value))) {
       toaster.create({
         title: `Your browser does not support clipboard access, please copy the ${label} manually`,
         type: "error",
@@ -66,12 +67,10 @@ function CopyValueRow({
       });
       return;
     }
-    void navigator.clipboard.writeText(value).then(() => {
-      toaster.create({
-        title: `${label} copied to your clipboard`,
-        type: "success",
-        duration: 2000,
-      });
+    toaster.create({
+      title: `${label} copied to your clipboard`,
+      type: "success",
+      duration: 2000,
     });
   };
 
@@ -114,7 +113,7 @@ function CopyValueRow({
         flexShrink={0}
         onClick={(event) => {
           event.stopPropagation();
-          copy();
+          void copy();
         }}
       >
         <Copy size={14} />
