@@ -119,13 +119,13 @@ function evaluateNode(
 
     case "LogicalExpression": {
       const logExpr = node as LogicalExpressionToken;
-      // Negation threads down unchanged and the operator stays as-is — the
-      // exact shape `translateNode` compiles, so both sides always agree.
+      // 与 SQL 编译器一致：否定下推时同时交换 AND/OR。
       const left = evaluateNode(logExpr.left, negated, trace, state);
       if (left === UNSUPPORTED) return UNSUPPORTED;
       const right = evaluateNode(logExpr.right, negated, trace, state);
       if (right === UNSUPPORTED) return UNSUPPORTED;
-      return logExpr.operator.operator === "OR" ? left || right : left && right;
+      const isOr = logExpr.operator.operator === "OR";
+      return isOr !== negated ? left || right : left && right;
     }
 
     case "UnaryOperator": {
