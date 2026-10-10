@@ -130,7 +130,7 @@ import {
 } from "../../../ee/billing/services/webhookService";
 import { createStripeClient } from "../../../ee/billing/stripe/stripeClient";
 import { meters } from "../../../ee/billing/stripe/stripePriceCatalog";
-import { FREE_PLAN } from "../../../ee/licensing/constants";
+import { FREE_PLAN, UNLIMITED_PLAN } from "../../../ee/licensing/constants";
 import { createLicenseRegistryService } from "../../../ee/licensing/registry/composition";
 import { StorageMeterService } from "../data-retention/metering/storageMeter.service";
 import { PinnedTraceRepository } from "../data-retention/pinning/pinnedTrace.repository";
@@ -375,7 +375,6 @@ import { RunConfigurationsService } from "./simulations/run-configurations/run-c
 import { SimulationRunService } from "./simulations/simulation-run.service";
 import { createCompositePlanProvider } from "./subscription/composite-plan-provider";
 import { PlanProviderService } from "./subscription/plan-provider";
-import { createSelfHostedPlanProvider } from "./subscription/self-hosted-plan-provider";
 import type { SubscriptionService } from "./subscription/subscription.service";
 import { SuiteRunService } from "./suites/suite-run.service";
 import { createSystemMigrationRedrive } from "./system-migrations/runtime";
@@ -753,18 +752,16 @@ export function initializeDefaultApp(options?: {
           },
         }),
       )
-    : PlanProviderService.create(
-        createSelfHostedPlanProvider({
-          licensePlanProvider: {
-            // Self-hosted asks a different question than the composite provider
-            // above: with no subscription underneath, a license past its end
-            // date has to keep metering the seats it sold instead of stepping
-            // aside. See LicenseHandler.getSelfHostedPlan.
-            getActivePlan: ({ organizationId }) =>
-              getLicenseHandler().getSelfHostedPlan(organizationId),
-          },
+    : PlanProviderService.create({
+        // 内网自托管沿用 fork main 的固定套餐，不按许可证收紧额度。
+        getActivePlan: async () => ({
+          ...UNLIMITED_PLAN,
+          type: "ENTERPRISE" as const,
+          name: "Enterprise (Self-Hosted)",
+          free: false,
+          planSource: "license" as const,
         }),
-      );
+      });
 
   let subscription: SubscriptionService | undefined;
   let usageReportingService: StripeUsageReportingService | undefined;
