@@ -111,11 +111,12 @@ secured
         ? "text/csv; charset=utf-8"
         : "application/x-ndjson";
     // 与列表复用同一项目范围校验，只读取已存在的运行，不触发付费评估。
+    const { evalRuns: requestedEvalRuns = {} } = request;
     const evalRuns =
-      request.evalRuns && Object.keys(request.evalRuns).length > 0
+      Object.keys(requestedEvalRuns).length > 0
         ? await getInstantEvalRunService().resolveForExplorer({
             projectId: request.projectId,
-            evalRuns: request.evalRuns,
+            evalRuns: requestedEvalRuns,
           })
         : undefined;
     const filterWhere = withHiddenOrigins(
