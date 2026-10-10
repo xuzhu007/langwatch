@@ -7,6 +7,7 @@ import {
   VStack,
 } from "@chakra-ui/react";
 import { toaster } from "~/components/ui/toaster";
+import { copyToClipboard } from "~/utils/clipboard";
 
 /**
  * The backup codes, the once they are shown.
@@ -32,10 +33,9 @@ export function BackupCodesPanel({
   doneLabel?: string;
 }) {
   const copyAll = async () => {
-    try {
-      await navigator.clipboard.writeText(codes.join("\n"));
+    if (await copyToClipboard(codes.join("\n"))) {
       toaster.success({ title: "Backup codes copied" });
-    } catch {
+    } else {
       toaster.error({
         title: "Those codes were not copied",
         description: "Select them and copy them by hand instead.",

@@ -498,15 +498,17 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
+            # 叠加 PR 必须比较实际目标分支，不能把父分支升级误放进单片。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
             # `vitest --changed` over an empty change set crashes natively on
             # Linux, so skip it when vitest would select nothing anyway. If the
             # helper itself fails, vitest runs as before.
-            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh origin/main) || CHANGED="(git failed)"
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
             if [ -z "$CHANGED" ]; then
-              echo "No files changed since origin/main, no unit tests selected."
+              echo "No files changed since $BASE_REF, no unit tests selected."
             else
-              pnpm test:unit --run --changed origin/main --passWithNoTests \
+              pnpm test:unit --run --changed "$BASE_REF" --passWithNoTests \
                 --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
                 --dangerouslyIgnoreUnhandledErrors
             fi
@@ -643,13 +645,15 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
+            # 获取历史、检测变更和选择测试始终使用同一个 PR 目标分支。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
             # Same empty change set guard as test-unit.
-            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh origin/main) || CHANGED="(git failed)"
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
             if [ -z "$CHANGED" ]; then
-              echo "No files changed since origin/main, no component tests selected."
+              echo "No files changed since $BASE_REF, no component tests selected."
             else
-              pnpm test:component --run --changed origin/main --passWithNoTests \
+              pnpm test:component --run --changed "$BASE_REF" --passWithNoTests \
                 --reporter=default --reporter=./src/test-utils/shardFailureReporter.ts \
                 --dangerouslyIgnoreUnhandledErrors
             fi
@@ -910,13 +914,15 @@ jobs:
           if [ "${{ needs.changes.outputs.heavy }}" != "true" ]; then
             # checkout 默认为浅克隆；--changed 需要 PR merge ref 的完整祖先，
             # 否则 Vitest 会把变更误判为无受影响测试。
-            git fetch --no-tags --unshallow origin "$GITHUB_REF" +refs/heads/main:refs/remotes/origin/main
+            # 获取历史、检测变更和选择测试始终使用同一个 PR 目标分支。
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            git fetch --no-tags --unshallow origin "$GITHUB_REF" "+refs/heads/$GITHUB_BASE_REF:refs/remotes/$BASE_REF"
             # Same empty change set guard as test-unit.
-            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh origin/main) || CHANGED="(git failed)"
+            CHANGED=$(bash ../../.github/scripts/vitest-changed-files.sh "$BASE_REF") || CHANGED="(git failed)"
             if [ -z "$CHANGED" ]; then
-              echo "No files changed since origin/main, no integration tests selected."
+              echo "No files changed since $BASE_REF, no integration tests selected."
             else
-              pnpm test:integration --changed origin/main --passWithNoTests \
+              pnpm test:integration --changed "$BASE_REF" --passWithNoTests \
                 --reporter=default --reporter=json --reporter=./src/test-utils/shardFailureReporter.ts \
                 --outputFile=test-results.json
             fi
@@ -1463,6 +1469,8 @@ jobs:
 
       - name: Test vitest-changed-files.sh
         run: bash .github/scripts/__tests__/vitest-changed-files.test.sh
+      - name: 验证草稿测试使用实际目标分支
+        run: node --test --experimental-strip-types .github/scripts/draft-test-base.test.ts
 
       - name: Test start-clickhouse-with-storage-policy.sh
         run: bash .github/scripts/__tests__/start-clickhouse-with-storage-policy.test.sh

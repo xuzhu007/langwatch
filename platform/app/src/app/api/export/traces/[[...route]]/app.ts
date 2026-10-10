@@ -16,8 +16,13 @@ import { createServiceApp, handlerManagedAuth } from "~/server/api/security";
 import { getUserProtectionsForProject } from "~/server/api/utils";
 import { validator as zValidator } from "~/server/api/validation";
 import { getApp } from "~/server/app-layer/app";
+import { getInstantEvalRunService } from "~/server/app-layer/instant-evals/run";
 import { probeProjectPermission } from "~/server/app-layer/permissions/imperative";
-import { translateFilterToClickHouse } from "~/server/app-layer/traces/filter-to-clickhouse";
+import { translateFilterWithEvalRuns } from "~/server/app-layer/traces/filter-to-clickhouse";
+import {
+  explorerHiddenOrigins,
+  withHiddenOrigins,
+} from "~/server/app-layer/traces/hidden-origins";
 import { getServerAuthSession } from "~/server/auth";
 import { prisma } from "~/server/db";
 import {
@@ -105,12 +110,24 @@ secured
       request.format === "csv"
         ? "text/csv; charset=utf-8"
         : "application/x-ndjson";
-    const filterWhere = request.filterQuery
-      ? (translateFilterToClickHouse(request.filterQuery, request.projectId, {
-          from: request.startDate,
-          to: request.endDate,
-        }) ?? undefined)
-      : undefined;
+    // 与列表复用同一项目范围校验，只读取已存在的运行，不触发付费评估。
+    const { evalRuns: requestedEvalRuns = {} } = request;
+    const evalRuns =
+      Object.keys(requestedEvalRuns).length > 0
+        ? await getInstantEvalRunService().resolveForExplorer({
+            projectId: request.projectId,
+            evalRuns: requestedEvalRuns,
+          })
+        : undefined;
+    const filterWhere = withHiddenOrigins(
+      translateFilterWithEvalRuns({
+        queryText: request.filterQuery ?? "",
+        tenantId: request.projectId,
+        timeRange: { from: request.startDate, to: request.endDate },
+        evalRuns,
+      }) ?? undefined,
+      explorerHiddenOrigins(request.filterQuery),
+    );
 
     let exportService: Awaited<ReturnType<typeof ExportService.create>>;
     let totalCount: number;

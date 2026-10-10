@@ -6,6 +6,7 @@ import type {
   ExportFormat,
   ExportMode,
   ExportProgress,
+  ExportRequest,
 } from "~/server/export/types";
 import { api } from "~/utils/api";
 
@@ -24,6 +25,8 @@ interface UseExportTracesOptions {
   endDate?: number;
   /** Free-text search query */
   query?: string;
+  /** 当前筛选条件对应的即时评估结果引用，不触发重新评估。 */
+  evalRuns?: ExportRequest["evalRuns"];
 }
 
 interface UseExportTracesReturn {
@@ -152,6 +155,7 @@ export function useExportTraces({
   startDate,
   endDate,
   query,
+  evalRuns,
 }: UseExportTracesOptions): UseExportTracesReturn {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -253,6 +257,7 @@ export function useExportTraces({
         startDate,
         endDate,
         ...(query ? { filterQuery: query } : {}),
+        evalRuns,
         ...(selectedTraceIds ? { traceIds: selectedTraceIds } : {}),
       };
 
@@ -348,7 +353,7 @@ export function useExportTraces({
         }, 1500);
       });
     },
-    [projectId, filters, startDate, endDate, query, selectedTraceIds],
+    [projectId, filters, startDate, endDate, query, evalRuns, selectedTraceIds],
   );
 
   return {
