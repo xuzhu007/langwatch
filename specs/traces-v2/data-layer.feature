@@ -17,7 +17,7 @@ Rule: Trace list data fetching
   Scenario: Initial page load fetches trace list
     When the Observe page loads
     Then `useTraceListQuery` fires `api.tracesV2.list.useQuery`
-    And the query uses the default time range (last 30 days, presetId="30d")
+    And the query uses the default time range (last 7 days, presetId="7d"; fork default, upstream is 30 days)
     And the query passes `sort` from `viewStore.sort` (default `{ columnId: "time", direction: "desc" }`)
     And the query passes page=1, pageSize=50 from `filterStore`
     And the query passes the debounced query text (or undefined when empty)

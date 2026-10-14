@@ -74,7 +74,7 @@ describe("useURLSync applying a same-route push while already mounted", () => {
       /** @scenario Following the link while I am already looking at traces */
       it("applies the pushed query and window instead of leaving the store untouched", () => {
         render(<Harness />);
-        expect(barState()).toEqual({ queryText: "", presetId: "30d" });
+        expect(barState()).toEqual({ queryText: "", presetId: "7d" });
 
         act(() => pushHash!("#all-traces?q=%22checkout%22&preset=24h"));
 
@@ -185,7 +185,7 @@ describe("useURLSync writing the merged store", () => {
             });
             const range = setTimeRange({
               state: lens.state,
-              payload: { preset: "7d" },
+              payload: { preset: "30d" },
             });
             const filter = setFilter({
               state: range.state,
@@ -203,7 +203,7 @@ describe("useURLSync writing the merged store", () => {
             fragment.slice(fragment.indexOf("?") + 1),
           );
           expect(params.get("q")).toBe("model:gpt-5-mini");
-          expect(params.get("preset")).toBe("7d");
+          expect(params.get("preset")).toBe("30d");
         } finally {
           vi.useRealTimers();
         }

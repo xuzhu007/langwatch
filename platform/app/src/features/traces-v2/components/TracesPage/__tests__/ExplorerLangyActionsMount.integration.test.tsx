@@ -138,7 +138,7 @@ describe("given the Trace Explorer is open", () => {
         isCountSettled: true,
         pageTraceIds: ["trace-a", "trace-b"],
       });
-      expect(read.timeRange.presetId).toBe("30d");
+      expect(read.timeRange.presetId).toBe("7d");
     });
 
     it("answers no count rather than the previous search's while the list has not answered", async () => {

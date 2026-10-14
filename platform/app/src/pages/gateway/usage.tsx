@@ -41,6 +41,7 @@ import { useOrganizationTeamProject } from "~/hooks/useOrganizationTeamProject";
 import { useRollingWindow } from "~/hooks/useRollingWindow";
 import { api } from "~/utils/api";
 import { useRouter } from "~/utils/compat/next-router";
+import { withUtf8Bom } from "~/utils/csvBom";
 import { neutralizeRows } from "~/utils/csvFormulaGuard";
 
 const PRESETS: Array<{ label: string; days: number | "mtd" }> = [
@@ -214,7 +215,10 @@ function GatewayUsagePage() {
     // there is no single `fields` list to pass and every row is guarded in
     // place. Virtual key and model names are typed by whoever created them.
     const csv = Parse.unparse(neutralizeRows(rows));
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    // Fork: the BOM is what makes Excel read the file as UTF-8.
+    const blob = new Blob([withUtf8Bom(csv)], {
+      type: "text/csv;charset=utf-8;",
+    });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

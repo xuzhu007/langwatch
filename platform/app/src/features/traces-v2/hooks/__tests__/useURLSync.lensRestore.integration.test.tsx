@@ -51,8 +51,8 @@ vi.mock("../../stores/explorerStore", () => ({
       timeRange: {
         from: 0,
         to: 1,
-        label: "Last 30 days",
-        presetId: "30d",
+        label: "Last 7 days",
+        presetId: "7d",
       },
       evalRuns: {},
       applyQueryText: vi.fn(),

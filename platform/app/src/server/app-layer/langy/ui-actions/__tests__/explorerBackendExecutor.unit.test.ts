@@ -78,11 +78,11 @@ describe("given no page claims an explorer action", () => {
     /** @scenario "With no Explorer open a time range action answers a link with that window" */
     it("answers a link carrying the preset", async () => {
       const result = (await run("explorer.setTimeRange", {
-        preset: "7d",
+        preset: "30d",
       })) as { href: string; presetId: string };
 
-      expect(result.presetId).toBe("7d");
-      expect(fragmentOf(result.href).params.get("preset")).toBe("7d");
+      expect(result.presetId).toBe("30d");
+      expect(fragmentOf(result.href).params.get("preset")).toBe("30d");
     });
   });
 
@@ -109,7 +109,7 @@ describe("given no page claims an explorer action", () => {
       expect(result.source).toBe("saved");
       expect(result.note).toContain("not what is on the user's screen");
       expect(result.lens.id).toBe("all-traces");
-      expect(result.timeRange.presetId).toBe("30d");
+      expect(result.timeRange.presetId).toBe("7d");
       expect(result.timeRange.to).toBe(NOW);
       expect(result.totalHits).toBeNull();
       expect(result.href).toBe("/acme/traces#all-traces");

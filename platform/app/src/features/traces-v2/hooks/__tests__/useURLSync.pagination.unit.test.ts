@@ -48,9 +48,9 @@ const pagination = () => {
 };
 
 /** Move the bar off the default window, the way the range picker would. */
-function selectSevenDayRange(): void {
-  const preset = getPresetById("7d");
-  if (!preset) throw new Error("the 7d preset went missing");
+function selectThirtyDayRange(): void {
+  const preset = getPresetById("30d");
+  if (!preset) throw new Error("the 30d preset went missing");
   const { from, to } = preset.compute();
   useExplorerStore
     .getState()
@@ -183,17 +183,18 @@ describe("useURLSync pagination across browser history navigation", () => {
     });
 
     describe("when Back lands on an entry from before the time range was changed", () => {
+      /** @scenario 不带时间参数的 Explorer 历史记录恢复为最近 7 天 */
       it("restores the window that entry denotes instead of applying half of it", () => {
         // The full drawer sequence: open + close the drawer (its entries
-        // carry the empty body), then move the range to Last 7 days — which
+        // carry the empty body), then move the range to Last 30 days — which
         // only rewrites the CURRENT entry — then page forward and press Back.
         // The entry we land on denotes the default window, so restoring the
         // pagination without restoring the window leaves the user on a range
         // no history entry ever held.
         renderURLSync();
         act(() => {
-          window.history.replaceState(null, "", "/#all-traces?preset=7d");
-          selectSevenDayRange();
+          window.history.replaceState(null, "", "/#all-traces?preset=30d");
+          selectThirtyDayRange();
           seedThirdPage();
         });
 
@@ -202,7 +203,7 @@ describe("useURLSync pagination across browser history navigation", () => {
           popState();
         });
 
-        expect(useExplorerStore.getState().timeRange.presetId).toBe("30d");
+        expect(useExplorerStore.getState().timeRange.presetId).toBe("7d");
         expect(pagination()).toEqual({ page: 1, pageCursors: { 1: null } });
       });
     });

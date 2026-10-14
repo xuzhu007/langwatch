@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
+import { formatISOTimestamp } from "../../utils/formatters";
 import { timeColumnSizing, useTimeFormatStore } from "../timeFormatStore";
 
 const STORAGE_KEY = "langwatch:traces-v2:time-format:v1";
@@ -28,10 +29,11 @@ describe("timeFormatStore", () => {
 });
 
 describe("timeColumnSizing", () => {
-  // A full ISO 8601 stamp is `2026-06-02T13:14:15.123Z` — 24 monospace
-  // chars. Lock the rule that the ISO footprint is meaningfully wider than
-  // the relative one so the timestamp can't clip when the user toggles.
-  const ISO_SAMPLE = new Date(0).toISOString();
+  // A full ISO 8601 stamp with its local offset is
+  // `2026-06-02T21:14:15.123+08:00` — 29 monospace chars. Lock the rule that
+  // the ISO footprint is meaningfully wider than the relative one so the
+  // timestamp can't clip when the user toggles.
+  const ISO_SAMPLE = formatISOTimestamp(0);
 
   describe("given the relative format", () => {
     it("returns the compact footprint", () => {

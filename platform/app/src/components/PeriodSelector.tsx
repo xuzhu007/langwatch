@@ -96,7 +96,7 @@ const defaultPresetForDays = (defaultNDays: number): RelativePresetKey => {
 
 export type PeriodMode = "relative" | "absolute";
 
-export const usePeriodSelector = (defaultNDays = 30) => {
+export const usePeriodSelector = (defaultNDays = 7) => {
   const router = useRouter();
 
   // Recompute on every render so relative windows stay anchored to "now".

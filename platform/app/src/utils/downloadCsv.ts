@@ -1,4 +1,5 @@
 import Parse from "papaparse";
+import { withUtf8Bom } from "./csvBom";
 import { neutralizeFormula, neutralizeRows } from "./csvFormulaGuard";
 
 /**
@@ -25,7 +26,10 @@ export function downloadCsv({
     fields: fields.map(neutralizeFormula),
     data: neutralizeRows(rows),
   });
-  const url = window.URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  // Fork: the BOM is what makes Excel read the file as UTF-8.
+  const url = window.URL.createObjectURL(
+    new Blob([withUtf8Bom(csv)], { type: "text/csv" }),
+  );
 
   const link = document.createElement("a");
   link.href = url;

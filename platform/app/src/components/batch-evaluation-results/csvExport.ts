@@ -12,6 +12,7 @@
 import numeral from "numeral";
 import Parse from "papaparse";
 
+import { withUtf8Bom } from "~/utils/csvBom";
 import { neutralizeFormula, neutralizeRows } from "~/utils/csvFormulaGuard";
 import type {
   BatchComparisonColumn,
@@ -363,7 +364,10 @@ export const downloadCsv = (
   experimentName: string,
 ): void => {
   const csvContent = generateCsvContent(data);
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  // Fork: the BOM is what makes Excel read the file as UTF-8.
+  const blob = new Blob([withUtf8Bom(csvContent)], {
+    type: "text/csv;charset=utf-8;",
+  });
   const url = window.URL.createObjectURL(blob);
 
   const formattedDate = new Date(data.createdAt).toISOString().split("T")[0];

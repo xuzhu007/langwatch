@@ -53,6 +53,27 @@ describe("usePeriodSelector()", () => {
     });
   });
 
+  describe("when no time range has been selected and the page names no default", () => {
+    /** @scenario Analytics 等页面未选择时间时默认最近 7 天 */
+    it("defaults to the last 7 days including today", () => {
+      const { result } = renderHook(() => usePeriodSelector());
+
+      expect(result.current.daysDifference).toBe(7);
+      expect(result.current.isDefault).toBe(true);
+      expect(result.current.mode).toBe("relative");
+    });
+  });
+
+  describe("when no time range has been selected and the page names 30 days", () => {
+    /** @scenario 显式指定 30 天的页面仍默认最近 30 天 */
+    it("keeps the last 30 days including today", () => {
+      const { result } = renderHook(() => usePeriodSelector(30));
+
+      expect(result.current.daysDifference).toBe(30);
+      expect(result.current.isDefault).toBe(true);
+    });
+  });
+
   describe("when a relative period preset is in the URL", () => {
     it("computes a 15-minute window anchored to now for period=15m", () => {
       mockQuery = { period: "15m" };

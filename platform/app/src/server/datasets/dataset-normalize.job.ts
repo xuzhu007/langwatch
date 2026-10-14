@@ -29,6 +29,7 @@
 import readline from "node:readline";
 import type { Readable } from "node:stream";
 import Papa from "papaparse";
+import { stripUtf8Bom } from "~/utils/csvBom";
 import type { DatasetRepository } from "./dataset.repository";
 import { StreamingChunkWriter } from "./dataset-chunk-writer";
 import type { DatasetStorage } from "./dataset-storage";
@@ -151,6 +152,19 @@ const streamToString = async (stream: Readable): Promise<string> => {
     );
   }
   return parts.join("");
+};
+
+/**
+ * The CSV header row as strings (fork: without a leading BOM).
+ *
+ * A streamed parse keeps the BOM that Excel's "CSV UTF-8" and this app's own
+ * exports open with on the first header, which would then match neither the
+ * confirmed sourceHeader nor the column name the user chose.
+ */
+const csvHeaderCells = (values: unknown[]): string[] => {
+  const cells = values.map((value) => (value == null ? "" : String(value)));
+  if (cells.length > 0) cells[0] = stripUtf8Bom(cells[0]!);
+  return cells;
 };
 
 /**
@@ -374,9 +388,7 @@ const parseInto = async (params: {
           const values = row.data;
           // The first row is the header: dedupe repeats + reserved-rename once.
           if (csvHeaders === null) {
-            const raw = values.map((value) =>
-              value == null ? "" : String(value),
-            );
+            const raw = csvHeaderCells(values);
             csvHeaders = renameReservedColumns(dedupeHeaders(raw));
             headers = csvHeaders;
             buildTargetMap(headers);

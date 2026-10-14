@@ -1,4 +1,5 @@
 import type { Tokens } from "@chakra-ui/react";
+import { format } from "date-fns";
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
@@ -42,13 +43,16 @@ export function formatVerboseRelative(timestamp: number): string {
 }
 
 /**
- * Full ISO 8601 timestamp in UTC, e.g. `2026-06-02T13:14:15.123Z`. Used by
- * the TIMESTAMP column for users who want to copy-paste a precise wall-
- * clock into log queries / external tools without translating from a
- * relative string.
+ * Full ISO 8601 timestamp in the viewer's local zone with its UTC offset,
+ * e.g. `2026-06-02T21:14:15.123+08:00`. Used by the TIMESTAMP column for
+ * users who want to copy-paste a precise wall-clock into log queries /
+ * external tools without translating from a relative string.
+ *
+ * Fork: upstream renders UTC (`toISOString()`), which reads 8 hours behind
+ * for a team in Asia/Shanghai. The offset keeps the instant unambiguous.
  */
 export function formatISOTimestamp(timestamp: number): string {
-  return new Date(timestamp).toISOString();
+  return format(timestamp, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx");
 }
 
 /**
@@ -67,7 +71,9 @@ export function formatLocalWithZone(timestamp: number): string {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      hour12: false,
+      // `hour12: false` resolves to h24 in some engines and renders
+      // midnight as "24:00:00"; h23 is the 00–23 clock this format wants.
+      hourCycle: "h23",
       timeZoneName: "short",
     });
     // Intl returns "06/02/2026, 15:14:15 CEST" — reformat to the ISO-ish

@@ -30,7 +30,7 @@ import {
 } from "../utils/urlState";
 
 const DEFAULT_LENS_ID = "all-traces";
-const DEFAULT_PRESET_ID = "30d";
+const DEFAULT_PRESET_ID = "7d";
 
 /** A fully resolved bar state — every axis concrete, never "leave as is". */
 interface BarState {

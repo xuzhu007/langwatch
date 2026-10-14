@@ -7,7 +7,7 @@ import {
   type TraceOverlayView,
   useTraceEditStore,
 } from "../../../stores/traceEditStore";
-import { formatAbsoluteTime } from "../../../utils/formatters";
+import { formatLocalWithZone } from "../../../utils/formatters";
 import { SegmentedToggle } from "../SegmentedToggle";
 import { TraceEditDiffDialog } from "../TraceEditDiffDialog";
 
@@ -48,7 +48,7 @@ export function EditedOriginalToggle() {
         />
         {author && (
           <Tooltip
-            content={formatAbsoluteTime(
+            content={formatLocalWithZone(
               new Date(correction.updatedAt).getTime(),
             )}
             positioning={{ placement: "bottom" }}

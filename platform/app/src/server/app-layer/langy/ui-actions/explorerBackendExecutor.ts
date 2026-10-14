@@ -27,7 +27,7 @@ import { LangyUiHandlerFailedError, LangyUiNoBrowserError } from "./errors";
  */
 
 const DEFAULT_LENS_ID = "all-traces";
-const DEFAULT_PRESET_ID = "30d";
+const DEFAULT_PRESET_ID = "7d";
 
 /** What a read answered from defaults says about itself. */
 export const SAVED_READ_NOTE =
@@ -40,14 +40,14 @@ export function defaultExplorerState(): ExplorerState {
   const preset = getPresetById(DEFAULT_PRESET_ID);
   const now = Date.now();
   const window = preset?.compute() ?? {
-    from: now - 30 * 24 * 3_600_000,
+    from: now - 7 * 24 * 3_600_000,
     to: now,
   };
   return {
     queryText: "",
     timeRange: {
       ...window,
-      label: preset?.label ?? "Last 30 days",
+      label: preset?.label ?? "Last 7 days",
       presetId: DEFAULT_PRESET_ID,
     },
     activeLensId: DEFAULT_LENS_ID,
@@ -86,7 +86,7 @@ function savedRead({ projectSlug }: { projectSlug: string }) {
   return {
     source: "saved" as const,
     // Read by the agent: without it a saved read looks like a page that shows
-    // no filter and 30 days, and the agent reports that as the user's screen.
+    // no filter and 7 days, and the agent reports that as the user's screen.
     note: SAVED_READ_NOTE,
     query: state.queryText,
     timeRange: {

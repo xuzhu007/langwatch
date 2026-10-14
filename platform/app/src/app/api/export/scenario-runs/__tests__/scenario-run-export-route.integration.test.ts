@@ -223,6 +223,17 @@ describe("POST /api/export/scenario-runs/download", () => {
       expect(csv).toContain("Refund Request");
     });
 
+    /** @scenario Scenario runs 导出的 CSV 解压后以 BOM 开头 */
+    it("starts the inflated file with the UTF-8 BOM (fork)", async () => {
+      const response = await download();
+
+      const inflated = response.body!.pipeThrough(
+        new DecompressionStream("gzip"),
+      );
+      const bytes = new Uint8Array(await new Response(inflated).arrayBuffer());
+      expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    });
+
     /** @scenario The file downloads with a descriptive name */
     it("names the file after the project, the date and the mode", async () => {
       const response = await download({

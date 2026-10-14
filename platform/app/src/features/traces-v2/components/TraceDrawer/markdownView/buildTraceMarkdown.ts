@@ -5,7 +5,7 @@ import type {
 } from "~/server/api/routers/tracesV2.schemas";
 import type { DerivedTraceEvent } from "~/server/event-sourcing/pipelines/trace-processing/projections/services/trace-events.derivation";
 import { formatDuration } from "~/shared/format/time";
-import { formatCost } from "../../../utils/formatters";
+import { formatCost, formatISOTimestamp } from "../../../utils/formatters";
 import type { MarkdownConfig } from "./types";
 
 const AI_SPAN_TYPES = new Set(["llm", "agent", "rag", "tool", "evaluation"]);
@@ -637,7 +637,7 @@ export function buildTraceMarkdown(
   // markdown and stay structured for token-efficient extraction.
   const detail: string[] = [];
   detail.push(`**Trace ID** \`${trace.traceId}\``);
-  detail.push(`**Started** ${new Date(trace.timestamp).toISOString()}`);
+  detail.push(`**Started** ${formatISOTimestamp(trace.timestamp)}`);
   if (trace.totalTokens > 0) {
     detail.push(
       `**Tokens** ${trace.inputTokens ?? 0} in / ${trace.outputTokens ?? 0} out (${trace.totalTokens} total${trace.tokensEstimated ? ", estimated" : ""})`,

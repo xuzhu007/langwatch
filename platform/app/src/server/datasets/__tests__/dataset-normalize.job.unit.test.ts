@@ -119,6 +119,49 @@ describe("createDatasetNormalizeHandler()", () => {
     });
   });
 
+  describe("when a CSV starts with a UTF-8 BOM (fork)", () => {
+    // Excel's "CSV UTF-8" and this app's own CSV exports both open with a BOM.
+    // A streamed parse keeps it on the first header, where it would match
+    // neither the confirmed sourceHeader nor the column name the user chose.
+    /** @scenario 带 BOM 的 CSV 上传为数据集时首列名不带 BOM */
+    it("drops the mark from the first header so the confirmed columns still bind", async () => {
+      const { storage, writeChunks } = makeStorage({
+        streamStaged: vi
+          .fn()
+          .mockResolvedValue(
+            Readable.from([Buffer.from("\uFEFFqty,name\n5,x\n12,y\n", "utf8")]),
+          ),
+      });
+      const repo = makeRepo({
+        id: "d1",
+        status: "processing",
+        columnTypes: [
+          { name: "quantity", type: "number", sourceHeader: "qty" },
+          { name: "name", type: "string", sourceHeader: "name" },
+        ],
+      });
+
+      const handler = createDatasetNormalizeHandler({
+        repository: repo as any,
+        getStorage: async () => storage as any,
+      });
+      await handler({ ...basePayload, filename: "data.csv" });
+
+      const entries = writeChunks.mock.calls
+        .flatMap((call: any) => call[0].records)
+        .map((record: any) => record.entry as Record<string, unknown>);
+      expect(entries).toEqual([
+        { quantity: 5, name: "x" },
+        { quantity: 12, name: "y" },
+      ]);
+      const update = repo.update.mock.calls[0]![0];
+      expect(update.data.columnTypes).toEqual([
+        { name: "quantity", type: "number" },
+        { name: "name", type: "string" },
+      ]);
+    });
+  });
+
   describe("when a streamed CSV has two columns sharing a value", () => {
     // @regression — under pause/resume backpressure, header:true made papaparse
     // re-run its duplicate-header dedup against each DATA row, suffixing the

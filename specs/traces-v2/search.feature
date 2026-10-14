@@ -15,10 +15,11 @@ Rule: Time range selector
     Given the user is authenticated with "traces:view" permission
     And the project has traces spanning the last 30 days
 
-  Scenario: Default time range is last 30 days
+  # Fork: the default is 7 days (upstream: 30), see fork-default-time-range.feature
+  Scenario: Default time range is last 7 days
     When the Observe page loads
-    Then the time range selector displays "30d"
-    And the trace table shows only traces from the last 30 days
+    Then the time range selector displays "7d"
+    And the trace table shows only traces from the last 7 days
 
   Scenario: Selecting a preset time range
     When the user opens the time range selector
