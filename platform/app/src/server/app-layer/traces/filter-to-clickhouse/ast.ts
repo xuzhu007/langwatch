@@ -1,16 +1,16 @@
-import {
-  type LiqeQuery,
-  type LogicalExpressionToken,
-  type ParenthesizedExpressionToken,
-  parse,
-  type TagToken,
-  type UnaryOperatorToken,
+import type {
+  LiqeQuery,
+  LogicalExpressionToken,
+  ParenthesizedExpressionToken,
+  TagToken,
+  UnaryOperatorToken,
 } from "liqe";
 import {
   FilterFieldUnknownError,
   FilterParseError,
   FilterTooComplexError,
 } from "../errors";
+import { parseLiqe } from "../query-language/parse";
 import { MAX_FILTER_NODE_COUNT } from "../query-language/queries";
 import { FIELD_DEF_BY_NAME, KNOWN_FIELDS } from "./build-handlers";
 import type { ResolvedInstantEvalRun } from "./instant-eval-field";
@@ -132,7 +132,7 @@ export function translateFilterAst({
 
   let ast: LiqeQuery;
   try {
-    ast = parse(trimmed);
+    ast = parseLiqe(trimmed);
   } catch {
     throw new FilterParseError("Invalid filter syntax");
   }
@@ -175,7 +175,7 @@ export function extractFreeTextTerms(queryText: string): string[] {
 
   let ast: LiqeQuery;
   try {
-    ast = parse(trimmed);
+    ast = parseLiqe(trimmed);
   } catch {
     return [];
   }
@@ -212,7 +212,7 @@ export function queryNamesField(queryText: string, fieldName: string): boolean {
 
   let ast: LiqeQuery;
   try {
-    ast = parse(trimmed);
+    ast = parseLiqe(trimmed);
   } catch {
     return false;
   }
