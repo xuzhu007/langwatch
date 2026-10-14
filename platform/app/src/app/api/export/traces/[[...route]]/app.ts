@@ -32,6 +32,7 @@ import {
 import { ExportService } from "~/server/export/export.service";
 import { exportRequestSchema } from "~/server/export/types";
 import type { NextRequest } from "~/types/next-stubs";
+import { withUtf8BomStream } from "~/utils/csvBom";
 
 const logger = createLogger("langwatch:api:export-traces");
 
@@ -162,11 +163,15 @@ secured
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          for await (const { chunk, progress } of exportService.exportTraces({
+          const batches = exportService.exportTraces({
             request,
             protections,
             filterWhere,
-          })) {
+          });
+          // Fork: a CSV opens with the UTF-8 BOM so Excel reads it as UTF-8.
+          for await (const { chunk, progress } of request.format === "csv"
+            ? withUtf8BomStream(batches)
+            : batches) {
             controller.enqueue(encoder.encode(chunk));
             void broadcast.broadcastToTenant(
               request.projectId,

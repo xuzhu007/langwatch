@@ -8,7 +8,7 @@
  * Spec: specs/ai-gateway/virtual-keys.feature
  */
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -195,6 +195,37 @@ describe("Usage page view-all-traces button", () => {
       expect(
         screen.queryByTestId("usage-view-all-traces"),
       ).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("Usage page CSV export (fork)", () => {
+  let lastBlob: Blob | undefined;
+
+  beforeEach(() => {
+    Object.defineProperty(window, "scrollTo", {
+      value: vi.fn(),
+      writable: true,
+    });
+    lastBlob = undefined;
+    window.URL.createObjectURL = vi.fn((blob: Blob) => {
+      lastBlob = blob;
+      return "blob:test";
+    });
+    window.URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => cleanup());
+
+  describe("when the reader exports the organization's usage", () => {
+    /** @scenario Gateway 用量导出的 CSV 以 BOM 开头 */
+    it("starts the file with the UTF-8 BOM", async () => {
+      renderUsagePage("/gateway/usage?days=30");
+
+      fireEvent.click(screen.getByRole("button", { name: /Export CSV/ }));
+
+      const bytes = new Uint8Array(await lastBlob!.arrayBuffer());
+      expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      expect(await lastBlob!.text()).toContain("gpt-5-mini");
     });
   });
 });

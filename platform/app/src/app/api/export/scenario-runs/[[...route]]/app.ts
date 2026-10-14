@@ -33,6 +33,7 @@ import {
   scenarioRunExportRequestSchema,
 } from "~/server/export/scenario-runs/types";
 import { KSUID_RESOURCES } from "~/utils/constants";
+import { withUtf8BomStream } from "~/utils/csvBom";
 
 const logger = createLogger("langwatch:api:export-scenario-runs");
 
@@ -195,9 +196,11 @@ function buildExportStream({
       "export_progress",
     );
 
-  const runs = service
-    .exportRuns({ request, signal, total: totalCount })
-    [Symbol.asyncIterator]();
+  // Fork: the CSV opens with the UTF-8 BOM so Excel reads it as UTF-8. It goes
+  // in before gzip, which the browser undoes before writing the file.
+  const runs = withUtf8BomStream(
+    service.exportRuns({ request, signal, total: totalCount }),
+  )[Symbol.asyncIterator]();
 
   // One page per pull() rather than the whole sweep in start().
   //
