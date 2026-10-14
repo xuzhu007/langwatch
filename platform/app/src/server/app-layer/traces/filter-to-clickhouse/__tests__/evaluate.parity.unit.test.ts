@@ -686,6 +686,42 @@ describe("复合否定", () => {
   });
 });
 
+describe("未加引号的值中包含冒号", () => {
+  describe("当用户不加引号搜索带冒号的标签时", () => {
+    /** @scenario "带冒号的未加引号值与加引号写法筛选结果一致" */
+    it("与加引号写法翻译出相同的 ClickHouse 查询", () => {
+      const window = { from: 0, to: 1_000 };
+      expect(
+        translateFilterToClickHouse(
+          "label:team:xiaohai-product-support-entry",
+          "project-1",
+          window,
+        ),
+      ).toEqual(
+        translateFilterToClickHouse(
+          'label:"team:xiaohai-product-support-entry"',
+          "project-1",
+          window,
+        ),
+      );
+    });
+
+    /** @scenario "带冒号的未加引号值与加引号写法筛选结果一致" */
+    it.each([
+      { labels: '["team:xiaohai-product-support-entry","prod"]', match: true },
+      { labels: '["team:other","prod"]', match: false },
+      { labels: '["team"]', match: false },
+    ])("内存匹配标签 $labels 结果为 $match", ({ labels, match }) => {
+      expect(
+        evaluateQueryInMemory(
+          "label:team:xiaohai-product-support-entry",
+          makeTrace({ attributes: { "langwatch.labels": labels } }),
+        ),
+      ).toBe(match);
+    });
+  });
+});
+
 describe("evaluateQueryInMemory", () => {
   it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, testCase) => {
     expect(evaluateQueryInMemory(testCase.query, testCase.trace)).toBe(

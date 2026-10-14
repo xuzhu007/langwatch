@@ -195,7 +195,7 @@ export function parse(query: string): LiqeQuery {
     throw hit.error;
   }
   try {
-    const ast = liqeParse(trimmed);
+    const ast = parseLiqe(trimmed);
     cacheSet(trimmed, { ok: true, ast });
     return ast;
   } catch (e) {
@@ -208,6 +208,74 @@ export function parse(query: string): LiqeQuery {
     cacheSet(trimmed, { ok: false, error });
     throw error;
   }
+}
+
+/**
+ * 值中冒号的占位符。私有区字符落在 liqe 未加引号值允许的 `\u0080-\uFFFF`
+ * 区间内，且和 `:` 一样只占一个 UTF-16 码元，替换后 AST 坐标与原文一致。
+ */
+const VALUE_COLON_PLACEHOLDER = "\uE000";
+
+/** 一个条件：引号串整体算一段（可未闭合），空白和括号是分隔符。 */
+const CLAUSE_RE = /(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|[^\s()"'])+/g;
+
+/**
+ * 不含引号的 `field:value`。值以 `[` `{` `/` `>` `<` `=` 开头时是范围、正则
+ * 或比较写法，交给 liqe 自己处理。
+ */
+const UNQUOTED_TAG_RE = /^([^:"']+:)([^"'[{/<>=][^"']*)$/;
+
+/**
+ * liqe 只把第一个冒号当字段分隔符，未加引号的值里再出现 `:` 就报
+ * `Syntax error`，例如 `label:team:xiaohai-product-support-entry`。标签等
+ * 取值本身常带冒号，所以把每个条件字段之后的冒号换成占位符。
+ */
+function maskValueColons(text: string): string {
+  return text.replace(CLAUSE_RE, (clause) =>
+    clause.replace(
+      UNQUOTED_TAG_RE,
+      (_match, field: string, value: string) =>
+        `${field}${value.replaceAll(":", VALUE_COLON_PLACEHOLDER)}`,
+    ),
+  );
+}
+
+function unmaskValueColons(node: LiqeQuery): void {
+  switch (node.type) {
+    case "Tag": {
+      const expression = node.expression;
+      if ("value" in expression && typeof expression.value === "string") {
+        expression.value = expression.value.replaceAll(
+          VALUE_COLON_PLACEHOLDER,
+          ":",
+        );
+      }
+      return;
+    }
+    case "LogicalExpression":
+      unmaskValueColons(node.left);
+      unmaskValueColons(node.right);
+      return;
+    case "UnaryOperator":
+      unmaskValueColons(node.operand);
+      return;
+    case "ParenthesizedExpression":
+      unmaskValueColons(node.expression);
+      return;
+  }
+}
+
+/**
+ * liqe 的 `parse`，额外允许未加引号的值中出现冒号。前端搜索栏与后端
+ * ClickHouse 翻译都经由这里解析，保证两边对同一查询的理解一致。
+ */
+export function parseLiqe(text: string): LiqeQuery {
+  if (text.includes(VALUE_COLON_PLACEHOLDER)) return liqeParse(text);
+  const masked = maskValueColons(text);
+  if (masked === text) return liqeParse(text);
+  const ast = liqeParse(masked);
+  unmaskValueColons(ast);
+  return ast;
 }
 
 export function isEmptyAST(ast: LiqeQuery): boolean {

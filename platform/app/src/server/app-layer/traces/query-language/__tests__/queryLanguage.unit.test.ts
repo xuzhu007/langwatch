@@ -1,3 +1,8 @@
+import {
+  type LogicalExpressionToken,
+  parse as liqeParse,
+  type TagToken,
+} from "liqe";
 import { describe, expect, it } from "vitest";
 import {
   addSameFieldOrValue,
@@ -122,6 +127,79 @@ describe("parse with stray sigils", () => {
   describe("given a partially-typed sigil that the user never accepted", () => {
     it("parses successfully after stripping the trigger", () => {
       expect(() => parse("status:error AND @mod")).not.toThrow();
+    });
+  });
+});
+
+describe("parse 未加引号的值中包含冒号", () => {
+  const query = "label:team:xiaohai-product-support-entry";
+
+  describe("当值中带有冒号时", () => {
+    /** @scenario "未加引号的值中的冒号被视为值的一部分" */
+    it("把第一个冒号之后的内容整体作为值", () => {
+      const ast = parse(query) as TagToken;
+      expect(ast.type).toBe("Tag");
+      expect(ast.field).toMatchObject({ name: "label" });
+      expect(ast.expression).toMatchObject({
+        type: "LiteralExpression",
+        quoted: false,
+        value: "team:xiaohai-product-support-entry",
+      });
+    });
+
+    /** @scenario "未加引号的值中的冒号被视为值的一部分" */
+    it("筛选标签的位置覆盖原文中的整个条件", () => {
+      const text = `status:error AND ${query}`;
+      const ast = parse(text) as LogicalExpressionToken;
+      const tag = ast.right as TagToken;
+      expect(tag.location).toEqual(locationOf(text, query));
+      expect(
+        removeNodeAtLocation({ currentQuery: text, ...tag.location }),
+      ).toBe("status:error");
+    });
+
+    it("序列化后再解析得到相同的值", () => {
+      expect(getFacetValues(parse(serialize(parse(query))), "label")).toEqual({
+        include: ["team:xiaohai-product-support-entry"],
+        exclude: [],
+      });
+    });
+  });
+
+  describe("当与布尔运算、分组和通配符组合时", () => {
+    /** @scenario "带冒号的值可与布尔运算、分组和通配符组合" */
+    it("每个标签条件的值都保留冒号", () => {
+      const ast = parse(
+        "(label:team:a OR label:team:b*) AND NOT status:error AND -label:x:y:z",
+      );
+      expect(getFacetValues(ast, "label")).toEqual({
+        include: ["team:a", "team:b*"],
+        exclude: ["x:y:z"],
+      });
+      expect(getFacetValues(ast, "status")).toEqual({
+        include: [],
+        exclude: ["error"],
+      });
+    });
+
+    /** @scenario "带冒号的值可与布尔运算、分组和通配符组合" */
+    it.each([
+      'label:"team:a"',
+      "label:'team:a'",
+      'label:"a b:c" AND model:gpt-5-mini',
+      "cost:[0.01 TO 1.00]",
+      "duration:>100",
+      "trace.attribute.http.method:GET",
+      "refund",
+    ])("引号、范围和比较写法 `%s` 的解析结果不变", (text) => {
+      expect(JSON.stringify(parse(text))).toBe(JSON.stringify(liqeParse(text)));
+    });
+  });
+
+  describe("当输入本身含有占位字符时", () => {
+    it("原样保留该字符", () => {
+      const ast = parse("label:a\uE000b") as TagToken;
+      expect(ast.expression).toMatchObject({ value: "a\uE000b" });
     });
   });
 });

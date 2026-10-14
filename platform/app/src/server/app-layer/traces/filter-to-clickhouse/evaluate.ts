@@ -1,12 +1,12 @@
 import { createLogger } from "@langwatch/observability";
-import {
-  type LiqeQuery,
-  type LogicalExpressionToken,
-  type ParenthesizedExpressionToken,
-  parse,
-  type TagToken,
-  type UnaryOperatorToken,
+import type {
+  LiqeQuery,
+  LogicalExpressionToken,
+  ParenthesizedExpressionToken,
+  TagToken,
+  UnaryOperatorToken,
 } from "liqe";
+import { parseLiqe } from "../query-language/parse";
 import { MAX_FILTER_NODE_COUNT } from "../query-language/queries";
 import { normalizeQuery, translateFilterToClickHouse } from "./ast";
 import { FIELD_DEF_BY_NAME } from "./build-handlers";
@@ -60,7 +60,7 @@ export function evaluateQueryInMemory(
 
   let ast: LiqeQuery;
   try {
-    ast = parse(normalizeQuery(queryText));
+    ast = parseLiqe(normalizeQuery(queryText));
   } catch {
     return false;
   }
@@ -299,7 +299,7 @@ export function queryNeeds(queryText: string): Set<FieldNeeds> {
   const needs = new Set<FieldNeeds>();
   let ast: LiqeQuery;
   try {
-    ast = parse(normalizeQuery(queryText));
+    ast = parseLiqe(normalizeQuery(queryText));
   } catch {
     return needs;
   }
