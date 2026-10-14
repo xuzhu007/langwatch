@@ -36,11 +36,11 @@ const traceColumnDefs = {
   timestamp: traceCol.accessor("timestamp", {
     id: "timestamp",
     header: "Timestamp",
-    // ISO 8601 — "2026-06-02T13:14:15.123Z" is 24 chars in monospace.
-    // ~210px holds it without ellipsis at typical font sizes; floor
-    // matches.
-    size: 220,
-    minSize: 210,
+    // ISO 8601 with the local offset — "2026-06-02T21:14:15.123+08:00"
+    // is 29 chars in monospace. ~250px holds it without ellipsis at
+    // typical font sizes; floor matches.
+    size: 260,
+    minSize: 250,
   }),
   trace: traceCol.accessor("name", {
     id: "trace",

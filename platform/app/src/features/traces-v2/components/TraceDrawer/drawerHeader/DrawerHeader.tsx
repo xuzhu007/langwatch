@@ -49,8 +49,8 @@ import { useExplorerStore } from "../../../stores/explorerStore";
 import { useFocusSectionStore } from "../../../stores/focusSectionStore";
 import { rankedErrorSpans } from "../../../utils/errorSpans";
 import {
-  formatAbsoluteTime,
   formatCost,
+  formatLocalWithZone,
   formatRelativeTimeAgo,
   formatTokens,
   STATUS_COLORS,
@@ -1358,7 +1358,7 @@ export const DrawerHeader = memo(function DrawerHeader({
                       {formatRelativeTimeAgo(trace.timestamp)}
                     </Text>
                     <Text textStyle="xs" color="fg.muted">
-                      {formatAbsoluteTime(trace.timestamp)}
+                      {formatLocalWithZone(trace.timestamp)}
                     </Text>
                   </VStack>
                 }
@@ -1371,7 +1371,7 @@ export const DrawerHeader = memo(function DrawerHeader({
                   {/* Compact "16d ago" — keeps the unit attached to the
                       number for tight surfaces while still carrying the
                       natural-language "ago" hint. The tooltip resolves
-                      the absolute UTC timestamp and is interactive so
+                      the absolute local timestamp and is interactive so
                       the user can hover over it and select / copy the
                       date without it disappearing. */}
                   {formatRelativeTimeAgo(trace.timestamp)}
