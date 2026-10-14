@@ -26,8 +26,8 @@ const CHIP = `eval:"${QUESTION}"`;
 const TIME_RANGE = {
   from: 0,
   to: 1,
-  label: "Last 30 days",
-  presetId: "30d",
+  label: "Last 7 days",
+  presetId: "7d",
 } as const;
 
 /** The key the chip computes under the lens's own filter and this window. */
@@ -35,7 +35,7 @@ const RUN_KEY = instantEvalRunKey({
   question: QUESTION,
   target: "traces",
   otherQuery: "",
-  window: { from: 0, to: 1, presetId: "30d" },
+  window: { from: 0, to: 1, presetId: "7d" },
 });
 
 const setEvalRunsMock = vi.fn();

@@ -261,15 +261,15 @@ const EMPTY_AST: LiqeQuery = {
   location: { start: 0, end: 0 },
 };
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 function defaultTimeRange(): TimeRange {
   const now = Date.now();
   return {
-    from: now - THIRTY_DAYS_MS,
+    from: now - SEVEN_DAYS_MS,
     to: now,
-    label: "Last 30 days",
-    presetId: "30d",
+    label: "Last 7 days",
+    presetId: "7d",
   };
 }
 
