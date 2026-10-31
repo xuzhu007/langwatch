@@ -1,9 +1,10 @@
-FROM node:24-alpine
+FROM node:24.22.1-alpine
+ENV npm_config_package_import_method=copy UV_USE_IO_URING=0 npm_config_network_concurrency=4 npm_config_fetch_retries=5 npm_config_fetch_timeout=300000
 
 # node-pty requires native compilation tools
 RUN apk add --no-cache python3 make g++
 
-RUN corepack enable && corepack prepare pnpm@10 --activate
+RUN corepack enable && corepack prepare pnpm@12.6.0 --activate
 
 WORKDIR /app
 
@@ -13,36 +14,16 @@ WORKDIR /app
 # workspace definition live at the root and the install runs from there,
 # narrowed to this package and its workspace dependencies.
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
-COPY patches/ ./patches/
-COPY mcp/typescript/package.json ./mcp/typescript/
-COPY packages/handled-error ./packages/handled-error
-# Manifests only. `--frozen-lockfile` checks the lockfile against every
-# workspace member it can see, so each member needs at least its package.json.
-COPY platform/app/package.json ./platform/app/
-COPY packages/redaction/package.json ./packages/redaction/
-COPY packages/ssrf/package.json ./packages/ssrf/
-COPY packages/api/package.json ./packages/api/
-COPY packages/authz/package.json ./packages/authz/
-COPY packages/authz-server/package.json ./packages/authz-server/
-COPY packages/system-migrations/package.json ./packages/system-migrations/
-COPY packages/automations/package.json ./packages/automations/
-COPY packages/observability/package.json ./packages/observability/
-COPY packages/react-rum/package.json ./packages/react-rum/
-COPY packages/langy/package.json ./packages/langy/
-COPY packages/server/package.json ./packages/server/
-COPY sdks/typescript/package.json ./sdks/typescript/
-COPY skills/package.json ./skills/
-COPY tests/agentic-e2e/package.json ./tests/agentic-e2e/
+# Include the workspace dependency sources, including evaluator contracts and patches.
+COPY patches ./patches
+COPY packages ./packages
+COPY modules ./modules
+COPY enterprise ./enterprise
+COPY vendor ./vendor
+COPY sdks/typescript ./sdks/typescript
+COPY mcp/typescript ./mcp/typescript
+COPY services/langevals ./services/langevals
 RUN pnpm install --frozen-lockfile --filter "@langwatch/mcp-server..."
-
-# The redaction and ssrf sources the MCP server imports, copied after the
-# install so a source edit does not invalidate the dependency layer.
-COPY packages/redaction ./packages/redaction
-COPY packages/ssrf ./packages/ssrf
-
-WORKDIR /app
-COPY mcp/typescript/ ./mcp/typescript/
-COPY services/langevals/ ./services/langevals/
 
 EXPOSE 3000
 
@@ -50,10 +31,10 @@ WORKDIR /app/mcp/typescript
 
 # The HTTP server is network reachable, so it does not run as root. The node
 # image ships this unprivileged user; everything under /app is read-only at
-# runtime and tsx compiles into the system temp directory.
+# runtime; node transforms the types in memory.
 USER node
 # The HTTP server binds loopback by default. A container has to bind every
 # interface to be reachable from outside itself, so that is opted into here.
 # Publish the port only to a network you trust, and pass --allowedOrigin for
 # any browser origin that needs to reach it.
-CMD ["node", "--import", "tsx/esm", "src/index.ts", "--http", "--port", "3000", "--host", "0.0.0.0"]
+CMD ["node", "--experimental-transform-types", "src/index.ts", "--http", "--port", "3000", "--host", "0.0.0.0"]

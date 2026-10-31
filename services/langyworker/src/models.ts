@@ -1,23 +1,15 @@
 /**
- * Turns the manager-written model config into a generated pi `models.json`
- * under the wrapper's private agent dir. Two rules keep secrets off disk:
- * the base URL (a loopback gateway URL, not secret) is resolved from the env
- * at boot and written literally; the API key is written as pi's env REFERENCE
- * syntax (`"$OPENAI_API_KEY"`), resolved by pi at request time.
- *
- * The entry starts from pi's OWN catalog when the model is known there for the
- * same API dialect: the catalog carries per-model request-shape knowledge the
- * manager's config does not (Claude 5's `compat.forceAdaptiveThinking`, the
- * thinking-level map, the real context window), and losing it broke every
- * turn on those models. The manager's explicit fields win over the catalog;
- * the id keeps its provider prefix (the gateway routes on it), and the
- * catalog's own endpoint and provider identity never ride along.
+ * Turns manager-written model config into pi's `models.json`. The API key
+ * uses pi's env REFERENCE syntax, never touching disk. Starts from pi's OWN
+ * catalog when known, for request-shape knowledge the manager lacks.
  */
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+
 import type { LangyWorkerModelConfig } from "./config.js";
 
 export const PROVIDER_ID = "langwatch-gateway";
@@ -34,12 +26,9 @@ type CatalogModelEntry = Record<string, unknown> & {
 };
 
 /**
- * pi catalogs by the gateway's provider prefix. Only the prefixes whose API
- * lane can actually match are mapped: `openai_codex/*` runs our
- * openai-responses lane while pi catalogs those models under its own
- * codex-specific dialect, so its entries never apply (the api guard below
- * would skip them anyway), and the chat-completions prefixes have no
- * per-model compat worth inheriting.
+ * pi catalogs by the gateway's provider prefix. Only prefixes whose API lane
+ * can match are mapped - `openai_codex/*` runs openai-responses while pi
+ * catalogs those under its own codex dialect, so those entries never apply.
  */
 const CATALOG_BY_PREFIX: Record<string, Record<string, CatalogModelEntry | undefined>> = {
   anthropic: ANTHROPIC_MODELS as unknown as Record<string, CatalogModelEntry>,
@@ -56,17 +45,31 @@ function catalogEntryFor(model: LangyWorkerModelConfig): CatalogModelEntry | und
   return entry;
 }
 
+const CLAUDE_VERSION_PATTERN = /^claude-(?:opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-|$)/;
+
+/** Claude 4.6 and later answer the legacy `thinking.type: "enabled"` shape with a 400. */
+function isAdaptiveThinkingClaude(modelId: string): boolean {
+  const match = CLAUDE_VERSION_PATTERN.exec(modelId.slice(modelId.indexOf("/") + 1));
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = match[2] === undefined ? 0 : Number(match[2]);
+  return major > 4 || (major === 4 && minor >= 6);
+}
+
+/** A Claude newer than pi's catalog gets the request shape its catalog siblings carry. */
+function uncataloguedCompat(model: LangyWorkerModelConfig): Record<string, unknown> | undefined {
+  if (model.api !== "anthropic-messages" || !isAdaptiveThinkingClaude(model.id)) return undefined;
+  return { forceAdaptiveThinking: true, ...model.compat };
+}
+
 function buildModelEntry(model: LangyWorkerModelConfig): Record<string, unknown> {
   const {
     baseUrlEnv: _baseUrlEnv,
     apiKeyEnv: _apiKeyEnv,
-    // The model config passes unknown keys through (config.ts) so a new compat
-    // finding needs no wrapper change. Routing and credential keys are the
-    // exception and are dropped: a model-level baseUrl or provider would send
-    // pi straight at the provider instead of through the mediated gateway, and
-    // a literal apiKey would put the secret in models.json when the provider
-    // block references it by env name. The catalog is already stripped of the
-    // same three below; the config gets the same treatment.
+    // Unknown keys pass through (config.ts) so a new compat finding needs no
+    // wrapper change. Routing/credential keys are the exception and are dropped:
+    // a model-level baseUrl/provider would bypass the mediated gateway, and a
+    // literal apiKey would put the secret in models.json instead of by env name.
     baseUrl: _configBaseUrl,
     provider: _configProvider,
     apiKey: _configApiKey,
@@ -77,7 +80,10 @@ function buildModelEntry(model: LangyWorkerModelConfig): Record<string, unknown>
     apiKey?: unknown;
   };
   const catalog = catalogEntryFor(model);
-  if (!catalog) return configEntry;
+  if (!catalog) {
+    const compat = uncataloguedCompat(model);
+    return compat ? { ...configEntry, compat } : configEntry;
+  }
   const {
     // Ours stay authoritative: the provider-prefixed id is what the gateway
     // routes on, and the catalog's endpoint/provider identity would point pi

@@ -1,0 +1,103 @@
+import { type PlanInfo, UNLIMITED_PLAN } from "@langwatch/enterprise-licensing-contract";
+import { describe, expect, it } from "vitest";
+
+import { LicensingEntitlementSourceService } from "../services/licensing-entitlement-source.service.ts";
+
+const ORGANIZATION_ID = "org-123";
+
+/** An Enterprise plan as it comes back from a signed license today. */
+const enterpriseLicensePlan = (overrides: Partial<PlanInfo> = {}): PlanInfo => ({
+  planSource: "license",
+  type: "ENTERPRISE",
+  name: "Enterprise",
+  free: false,
+  overrideAddingLimitations: false,
+  maxMembers: 100,
+  maxMembersLite: 50,
+  maxMessagesPerMonth: 10_000_000,
+  canPublish: true,
+  usageUnit: "traces",
+  prices: { USD: 0, EUR: 0 },
+  ...overrides,
+});
+
+const providerReturning = (plan: PlanInfo) =>
+  LicensingEntitlementSourceService.create({
+    licensing: {
+      getActivePlan: async () => plan,
+      getSelfHostedPlan: async () => plan,
+    },
+    mode: "self-hosted",
+  });
+
+/** The plan a licence source grants; it always grants one, so no grant fails the test. */
+const resolve = async (plan: PlanInfo): Promise<PlanInfo> => {
+  const grant = await providerReturning(plan).resolve({ organizationId: ORGANIZATION_ID });
+  if (!grant.granted) throw new Error("a licence source always grants a plan");
+  return grant.plan;
+};
+
+describe("LicensingEntitlementSourceService in self-hosted mode", () => {
+  describe("given the organization holds an Enterprise license with finite limits", () => {
+    /** @scenario The seat count a license sells is enforced */
+    it("keeps the fork unlimited seat counts", async () => {
+      const plan = await resolve(enterpriseLicensePlan({ maxMembers: 10, maxMembersLite: 5 }));
+
+      expect(plan).toMatchObject({
+        maxMembers: UNLIMITED_PLAN.maxMembers,
+        maxMembersLite: UNLIMITED_PLAN.maxMembersLite,
+      });
+    });
+
+    /** @scenario The seat guard stays armed on a licensed deployment */
+    it("keeps the fork unlimited creation policy", async () => {
+      const plan = await resolve(enterpriseLicensePlan({ maxMembers: 10 }));
+
+      expect(plan.overrideAddingLimitations).toBe(true);
+    });
+
+    /** @scenario Plan identity survives the floor */
+    it("keeps the plan identity and paid status from the license", async () => {
+      // Identity is never floored: the deployment really is on Enterprise.
+      const plan = await resolve(enterpriseLicensePlan());
+
+      expect(plan).toMatchObject({
+        type: "ENTERPRISE",
+        name: "Enterprise (Self-Hosted)",
+        free: false,
+        planSource: "license",
+      });
+    });
+  });
+
+  describe("given the license withholds publishing", () => {
+    /** @scenario A license that withholds publishing does not remove it */
+    it("keeps publishing available", async () => {
+      const plan = await resolve(enterpriseLicensePlan({ canPublish: false }));
+
+      expect(plan.canPublish).toBe(true);
+    });
+  });
+
+  describe("given the license encodes a finite message volume", () => {
+    /** @scenario A license encoding a finite message volume resolves to the uncapped baseline */
+    it("raises it to the baseline, since self-hosted volume is never metered", async () => {
+      const plan = await resolve(enterpriseLicensePlan({ maxMessagesPerMonth: 10_000_000 }));
+
+      expect(plan.maxMessagesPerMonth).toBeGreaterThanOrEqual(UNLIMITED_PLAN.maxMessagesPerMonth);
+    });
+  });
+
+  describe("given the deployment has no license stored", () => {
+    /** @scenario A deployment with no license still resolves to the baseline */
+    it("resolves to the fork self-hosted Enterprise plan", async () => {
+      const plan = await resolve(UNLIMITED_PLAN);
+
+      expect(plan).toMatchObject({
+        type: "ENTERPRISE",
+        maxMembers: UNLIMITED_PLAN.maxMembers,
+        planSource: "license",
+      });
+    });
+  });
+});

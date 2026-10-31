@@ -1,0 +1,62 @@
+/** Translate model IDs for LiteLLM: dot-to-dash + alias expansion (also in langwatch_nlp). */
+
+/**
+ * Model aliases that need expansion to their full dated versions.
+ * LiteLLM requires the full dated version for certain models.
+ */
+const MODEL_ALIASES: Record<string, string> = {
+  "anthropic/claude-sonnet-4": "anthropic/claude-sonnet-4-20250514",
+  "anthropic/claude-opus-4": "anthropic/claude-opus-4-20250514",
+  "anthropic/claude-3.5-haiku": "anthropic/claude-3-5-haiku-20241022",
+  "anthropic/claude-3.5-sonnet": "anthropic/claude-3-5-sonnet-20240620",
+};
+
+/**
+ * Providers that need dot-to-dash translation for their model IDs.
+ * Anthropic uses dots in llmModels.json but LiteLLM expects dashes. Custom
+ * providers are excluded, since their ids are arbitrary customer strings.
+ */
+const PROVIDERS_NEEDING_TRANSLATION = ["anthropic"];
+
+/**
+ * Extracts the provider from a model ID string.
+ * @param modelId - Full model ID (e.g., "anthropic/claude-3.5-sonnet")
+ * @returns Provider name or empty string if no prefix
+ */
+function getProvider(modelId: string): string {
+  const slashIndex = modelId.indexOf("/");
+  if (slashIndex === -1) {
+    return "";
+  }
+  return modelId.slice(0, slashIndex).toLowerCase();
+}
+
+function isBareAnthropicModel(modelId: string): boolean {
+  return !modelId.includes("/") && modelId.toLowerCase().startsWith("claude-");
+}
+
+/** Anthropic aliases translate to dated model IDs; custom model names retain their dots. */
+export function translateModelIdForLitellm(modelId: string): string {
+  if (!modelId) {
+    return modelId;
+  }
+
+  // First, check for exact alias matches that need expansion
+  if (MODEL_ALIASES[modelId]) {
+    return MODEL_ALIASES[modelId];
+  }
+
+  const provider = getProvider(modelId);
+
+  // Only translate providers that need it
+  const needsTranslation =
+    PROVIDERS_NEEDING_TRANSLATION.includes(provider) ||
+    (provider === "" && isBareAnthropicModel(modelId));
+
+  if (!needsTranslation) {
+    return modelId;
+  }
+
+  // Replace dots with dashes in the entire model ID
+  return modelId.replace(/\./g, "-");
+}

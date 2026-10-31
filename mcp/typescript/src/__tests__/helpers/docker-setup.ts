@@ -28,16 +28,16 @@ export async function startDockerContainer({
   hostPort: number;
 }): Promise<void> {
   const repoRoot = fileURLToPath(new URL("../../../../../", import.meta.url));
-  execFileSync(
-    "docker",
-    ["build", "-t", imageName, "-f", "mcp/typescript/Dockerfile", "."],
-    { cwd: repoRoot, stdio: "pipe", timeout: 240_000 }
-  );
+  execFileSync("docker", ["build", "-t", imageName, "-f", "mcp/typescript/Dockerfile", "."], {
+    cwd: repoRoot,
+    stdio: "pipe",
+    timeout: 240_000,
+  });
   removeDockerContainer(containerName);
   execFileSync(
     "docker",
     ["run", "-d", "--name", containerName, "-p", `${hostPort}:3000`, imageName],
-    { stdio: "pipe" }
+    { stdio: "pipe" },
   );
 
   for (let retries = 0; retries < 20; retries++) {

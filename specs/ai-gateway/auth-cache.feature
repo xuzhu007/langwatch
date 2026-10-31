@@ -170,7 +170,15 @@ Feature: Gateway auth cache — hot path is zero RTT after first hit
       Then the gateway evicts the cached entry
       And the request is rejected with error.type "auth_upstream_unavailable"
       And no further soft-bump is applied
-      And the failure is logged with level=error (operator must investigate)
+      And the eviction is logged at info, as the cache's ordinary lifecycle
+      And the rejection is logged by the request as a platform fault (operator must investigate)
+
+    @unit
+    Scenario: an entry evicted at lookup for running out its lifetime logs at info
+      Given the cache holds an entry past its hard cap, or past the key's expiration date
+      When I send a request with that VK
+      Then the gateway evicts the cached entry
+      And the eviction is logged at info, not error
 
     @unit @unimplemented
     Scenario: successful refresh resets soft expiry to fresh JWT exp
@@ -197,10 +205,63 @@ Feature: Gateway auth cache — hot path is zero RTT after first hit
       Then the entry is evicted from the cache
       And the next request with that VK calls /resolve-key fresh and is rejected
 
+  Rule: A budget update refreshes the cached bundle without holding a request
+    Every debit emits BUDGET_UPDATED, and a project with a blocking budget emits
+    one per request. Evicting on it put a resolve-key and a config fetch (about
+    60 ms locally) in front of most requests of a busy project. The cached
+    bundle keeps serving instead, and the next request through the key starts
+    one background refresh. Requests that arrive while it runs are judged on the
+    spend the bundle already had, which stays inside the documented overshoot.
+    BUDGET_CREATED and BUDGET_DELETED still evict.
+
+    @unit @regression
+    Scenario: a debit's budget update does not hold the next request
+      Given the cache holds a key of project "proj-1"
+      And the change feed reports a budget update for "proj-1"
+      And the control plane is slow to answer
+      When I send a request with that VK
+      Then it is served from the cached bundle without waiting on the control plane
+      And one background refresh of the key starts
+
+    @unit
+    Scenario: the background refresh replaces the bundle with the new spend
+      Given a budget update started a background refresh of a key
+      When the control plane answers it with the new spend
+      Then the cached bundle carries the new spend
+      And the next request asks the control plane nothing
+
+    @unit
+    Scenario: a key the refresh finds past its limit is refused on the next request
+      Given a key with a blocking project budget
+      And a debit pushed the project past its limit
+      When the change feed reports the budget update
+      Then the request that starts the refresh is judged on the spend it had
+      And the request after the refresh lands is refused with budget_exceeded
+
+    @unit
+    Scenario: a budget update that lands while the refresh is running is not lost
+      Given a background refresh of a key is waiting on the control plane
+      When another budget update for its project arrives
+      Then the bundle the refresh stores is marked for another refresh
+
+    @unit
+    Scenario: a budget update without a project marks the organization's keys
+      Given the cache holds keys of two organizations
+      When the change feed reports a budget update with no project for one of them
+      Then that organization's keys are marked for refresh and none are evicted
+      And the other organization's keys are untouched
+
+    @unit
+    Scenario: a budget refresh the control plane cannot answer keeps the key serving
+      Given a budget update started a background refresh of a key
+      When the control plane cannot answer it
+      Then the cached bundle keeps serving
+      And the refresh is retried after a pause rather than on every request
+
   Rule: A change-feed eviction keeps the last known config as an outage fallback
-    Every debit emits BUDGET_UPDATED, so a busy project's keys are evicted by
-    the change feed every few minutes and the next request pays a cold config
-    fetch. When that fetch times out or the control plane answers 5xx, the key
+    A budget create or delete, a routing or cache-rule change and a provider
+    change evict cached keys, and the next request pays a cold config fetch.
+    When that fetch times out or the control plane answers 5xx, the key
     it was serving a minute ago must not start answering auth_upstream_unavailable.
     The evicted entry is kept aside and served again, for at most one hour after
     its config was last confirmed by the control plane. A definitive answer about
@@ -661,3 +722,19 @@ Feature: Gateway auth cache — hot path is zero RTT after first hit
       When I inspect the cache keyset
       Then the key is the 64-char hex SHA-256 of the raw VK
       And the raw VK value is not stored anywhere in the cache entries
+
+  Rule: A provider change reaches every key of its organization
+
+    # A new provider, or one enabled or granted a wider scope, is in no cached
+    # bundle yet, so matching the event on the provider id alone evicts nothing.
+    # A key resolved before the change would keep answering
+    # model_provider_not_bound for the new provider (for example Langy's
+    # managed key after OpenAI is added next to Bedrock) until revalidation.
+
+    @unit
+    Scenario: A provider added to the organization reaches keys already cached
+      Given a key of organization "acme" cached while it had only a Bedrock provider
+      And a key of another organization is cached
+      When the change feed reports a new model provider for "acme"
+      Then the "acme" key is evicted so its next request sees the new provider
+      And the other organization's key stays cached
