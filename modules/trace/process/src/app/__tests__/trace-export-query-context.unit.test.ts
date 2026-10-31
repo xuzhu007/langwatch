@@ -27,7 +27,7 @@ const request: TraceExportDownloadInput["request"] = {
 function harness(resolved: ResolvedInstantEvalRun[] = []) {
   const getAllTracesForProject = vi.fn<
     TraceAppDependencies["traces"]["read"]["getAllTracesForProject"]
-  >(async () => ({ groups: [], totalHits: 0, traceChecks: {}, scrollId: null }));
+  >(async () => ({ groups: [], totalHits: 0, traceChecks: {} }));
   const findRegisteredRuns = vi.fn(async () => resolved);
   const app = createTraceAppHarness({
     authorizeRead: async () => ownProof({ projectId }),

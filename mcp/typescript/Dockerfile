@@ -4,7 +4,7 @@ ENV npm_config_package_import_method=copy UV_USE_IO_URING=0 npm_config_network_c
 # node-pty requires native compilation tools
 RUN apk add --no-cache python3 make g++
 
-RUN corepack enable && corepack prepare pnpm@12.6.0 --activate
+RUN npm install -g pnpm@12.6.0 && npm cache clean --force
 
 WORKDIR /app
 
