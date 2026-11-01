@@ -84,6 +84,8 @@ describe("AnalyticsModule.filterOptions", () => {
 
       expect(translateLegacyFilters).toHaveBeenCalledWith({
         filters: { "traces.error": ["true"] },
+        negateFilters: void 0,
+        window: { startDate: 1, endDate: 2 },
       });
     });
 

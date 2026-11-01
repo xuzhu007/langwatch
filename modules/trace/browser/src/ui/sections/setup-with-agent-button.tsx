@@ -1,5 +1,5 @@
 import { useOrganizationTeamProject } from "@langwatch/browser-host/use-organization-team-project";
-import { copyToClipboard } from "@langwatch/design-system/clipboard";
+import { writeClipboardText } from "@langwatch/design-system/clipboard";
 import { Menu } from "@langwatch/design-system/menu";
 import { Box, Button, chakra, HStack, Text } from "@langwatch/design-system/primitives";
 import { toaster } from "@langwatch/design-system/toaster";
@@ -11,6 +11,7 @@ import { useLangyStore } from "../../behavior/langy/langy.store.ts";
 import { useCanAskLangy } from "../../behavior/langy/use-can-ask-langy.ts";
 import { useSetupSkillPrompt as useSetupSkillPromptQuery } from "../../behavior/reads/use-project-reads.ts";
 import { withCredentials } from "../../model/skills/setup-prompt.ts";
+import { showErrorToast } from "./errors/index.ts";
 
 /**
  * The set-up-with-AI control every feature page's empty state carries (spec:
@@ -199,11 +200,16 @@ export function AgentActionsMenu({
   // confirmation rendered inside it would land in a menu that is already
   // gone. The toast also gives the clipboard-rejection path somewhere to go.
   const copyPrompt = () => {
-    void copyToClipboard(skillPrompt ?? copy.prompt ?? skillSetupPrompt(copy.skill)).then(
-      (copied) =>
+    void writeClipboardText(skillPrompt ?? copy.prompt ?? skillSetupPrompt(copy.skill)).then(
+      () =>
         toaster.create({
-          type: copied ? "success" : "error",
-          title: copied ? copy.copiedTitle : "Couldn't copy the prompt",
+          type: "success",
+          title: copy.copiedTitle,
+        }),
+      () =>
+        showErrorToast({
+          fallbackTitle: "Couldn't copy the prompt",
+          description: "Clipboard access is restricted. This can happen on non-HTTPS domains.",
         }),
     );
   };

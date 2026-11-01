@@ -6,6 +6,7 @@
  * @see specs/traces-v2/trace-table.feature
  */
 import { renderWithDesignSystem } from "@langwatch/design-system/testing";
+import { Temporal } from "@langwatch/time";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type React from "react";
@@ -14,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useExplorerStore } from "../../../../../../../../behavior/explorer.store.ts";
 import type { TraceListItem } from "../../../../../../../../behavior/explorer/types/trace.ts";
 import { useTimeFormatStore } from "../../../../../../../../features/explorer/behavior/time-format.store.ts";
-import { formatISOTimestamp } from "../../../../../../../../model/display-formatters.ts";
 import { useDensityTokens } from "../../../../../hooks/use-density-tokens.ts";
 import { buildTracePlaceholderRows } from "../../../../skeleton-placeholders.ts";
 import { TraceStatisticsProvider } from "../../../../trace-statistics-context.tsx";
@@ -100,7 +100,10 @@ beforeEach(() => {
   openDrawer.mockReset();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("the time columns", () => {
   describe("given a trace that occurred two minutes ago", () => {
@@ -123,12 +126,13 @@ describe("the time columns", () => {
 
   describe("given the Timestamp column", () => {
     /** @scenario Timestamp column shows ISO 8601 */
-    it("shows the full ISO 8601 stamp of the trace", () => {
+    it("shows the full ISO 8601 stamp in the reader's time zone", () => {
+      vi.spyOn(Temporal.Now, "timeZoneId").mockReturnValue("Asia/Shanghai");
       const timestamp = Date.UTC(2026, 5, 2, 13, 14, 15, 123);
       const { container } = renderCell({ def: TimestampCell, item: row({ timestamp }) });
 
-      expect(container.textContent).toBe("2026-06-02T13:14:15.123Z");
-      expect(container.textContent).toBe(formatISOTimestamp(timestamp));
+      expect(container.textContent).toBe("2026-06-02T21:14:15.123+08:00");
+      expect(Date.parse(container.textContent ?? "")).toBe(timestamp);
     });
   });
 });

@@ -7,8 +7,8 @@ const BYTE_ORDER_MARK = "﻿";
 
 /**
  * Turns a header row plus its data rows into a CSV file and hands it to the browser as a
- * download. `byteOrderMark` is for a file a person opens in a spreadsheet; leave it out for a
- * file a program reads back, which would take the mark as part of the first header.
+ * download. The UTF-8 byte order mark defaults on for spreadsheets; pass `byteOrderMark: false`
+ * for a reader that would take the mark as part of the first header.
  */
 export function downloadCsv({
   fields,

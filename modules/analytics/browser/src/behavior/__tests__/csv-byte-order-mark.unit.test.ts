@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
- * The shared CSV writer marks a file as UTF-8 for a spreadsheet only when its caller asks, so
- * every other export keeps the bytes it had.
+ * The shared CSV writer marks downloads as UTF-8 for spreadsheets by default,
+ * while callers can explicitly request plain CSV bytes.
  * @see modules/analytics/specs/dashboard-widget-export.feature
  */
 
@@ -34,16 +34,23 @@ const PLAIN = [...new TextEncoder().encode("Model\r\nmodèle")];
 
 describe("downloadCsv", () => {
   describe("when the caller asks for a byte order mark", () => {
-    /** @scenario "A file is written with a byte order mark only when the caller asks" */
+    /** @scenario "CSV downloads include a byte order mark unless the caller opts out" */
     it("starts the file with the UTF-8 mark, then the same bytes", async () => {
       expect(await writtenBytes({ byteOrderMark: true })).toEqual([0xef, 0xbb, 0xbf, ...PLAIN]);
     });
   });
 
-  describe("when the caller does not ask", () => {
-    /** @scenario "A file is written with a byte order mark only when the caller asks" */
-    it("writes the bytes it wrote before", async () => {
-      expect(await writtenBytes({})).toEqual(PLAIN);
+  describe("when the caller keeps the default", () => {
+    /** @scenario "CSV downloads include a byte order mark unless the caller opts out" */
+    it("starts the file with the UTF-8 mark", async () => {
+      expect(await writtenBytes({})).toEqual([0xef, 0xbb, 0xbf, ...PLAIN]);
+    });
+  });
+
+  describe("when the caller disables the byte order mark", () => {
+    /** @scenario "CSV downloads include a byte order mark unless the caller opts out" */
+    it("writes plain CSV bytes", async () => {
+      expect(await writtenBytes({ byteOrderMark: false })).toEqual(PLAIN);
     });
   });
 });

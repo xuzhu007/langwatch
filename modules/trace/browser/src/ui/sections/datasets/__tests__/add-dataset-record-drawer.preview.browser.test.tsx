@@ -33,9 +33,31 @@ const harness = vi.hoisted(() => {
     total_cost: { source: "metrics.total_cost" },
     annotations: { source: "annotations" },
   };
+  const traceQuery = {
+    data: [
+      {
+        trace_id: "trace-1",
+        project_id: "project-1",
+        metadata: {},
+        timestamps: { started_at: 1_700_000_000_000, inserted_at: 1, updated_at: 1 },
+        input: { value: "third message" },
+        output: { value: "The prompt was rewritten three times until the tone was right" },
+        metrics: { total_cost: 0.00013099999999999999 },
+        spans: [],
+      },
+    ],
+    isLoading: false,
+    isError: false,
+    refetch: () => Promise.resolve(),
+  };
   return {
-    columnTypes,
-    mapping,
+    dataset: {
+      id: "dataset-1",
+      name: "offline evals",
+      columnTypes,
+      mapping: { traceMapping: { mapping, expansions: [] } },
+    },
+    traceQuery,
     router: {
       get query() {
         const query: Record<string, string> = {};
@@ -89,24 +111,13 @@ vi.mock("../../../../behavior/use-annotations-by-trace-ids.ts", () => ({
 vi.mock("../../../../behavior/trace-api.ts", () => ({
   api: {
     useUtils: () => ({ dataset: { getAll: { invalidate: vi.fn() } } }),
+    useQueries: (
+      build: (client: {
+        traces: { getTracesWithSpans: () => typeof harness.traceQuery };
+      }) => unknown[],
+    ) => build({ traces: { getTracesWithSpans: () => harness.traceQuery } }),
     annotationScore: { getAllActive: { useQuery: () => ({ data: [] }) } },
     traces: {
-      getTracesWithSpans: {
-        useQuery: () => ({
-          data: [
-            {
-              trace_id: "9091eb0e1b016a6fc9e0baf6c585e55d5",
-              project_id: "project-1",
-              metadata: {},
-              timestamps: { started_at: 1_700_000_000_000, inserted_at: 1, updated_at: 1 },
-              input: { value: "third message" },
-              output: { value: "The prompt was rewritten three times until the tone was right" },
-              metrics: { total_cost: 0.00013099999999999999 },
-              spans: [],
-            },
-          ],
-        }),
-      },
       getTracesWithSpansByThreadIds: { useQuery: () => ({ data: undefined }) },
       getFormattedSpansDigest: { useQuery: () => ({ data: undefined }) },
       getSampleTracesDataset: { useQuery: () => ({ data: [] }) },
@@ -124,14 +135,15 @@ vi.mock("@langwatch/dataset-client", () => ({
     dataset: {
       getAll: {
         useQuery: () => ({
-          data: [
-            {
-              id: "dataset-1",
-              name: "offline evals",
-              columnTypes: harness.columnTypes,
-              mapping: { traceMapping: { mapping: harness.mapping, expansions: [] } },
-            },
-          ],
+          data: [harness.dataset],
+          isLoading: false,
+          isError: false,
+          refetch: () => Promise.resolve(),
+        }),
+      },
+      getById: {
+        useQuery: () => ({
+          data: harness.dataset,
           isLoading: false,
           isError: false,
           refetch: () => Promise.resolve(),
@@ -193,7 +205,7 @@ async function openPreview() {
   renderWithDesignSystem(
     <>
       <OpenFromSelection />
-      <AddDatasetRecordDrawer />
+      <AddDatasetRecordDrawer selectedTraceIds={["trace-1"]} />
     </>,
   );
   await screen.findByTestId("dataset-preview-table");

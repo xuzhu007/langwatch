@@ -104,7 +104,9 @@ Feature: Export a dashboard widget to CSV
       Then the file downloads and the reader is told a query hit the 10,000-row limit, so rows may be missing
 
     @unit
-    Scenario: A file is written with a byte order mark only when the caller asks
+    Scenario: CSV downloads include a byte order mark unless the caller opts out
       Given the shared CSV download writer
-      When a caller asks for a byte order mark
-      Then the file starts with one, and a caller that does not ask gets the bytes it got before
+      When a caller downloads a file without overriding the byte order mark
+      Then the file starts with a UTF-8 byte order mark for spreadsheet compatibility
+      And an explicit request for a byte order mark also writes one
+      And a caller that disables the byte order mark gets the plain CSV bytes
