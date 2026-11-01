@@ -436,7 +436,7 @@ interface Output {
 
 // analytics.dataForFilter
 type Input = z.infer<typeof analyticsDataForFilterInputSchema>; // ../contract/src/analytics.trpc.ts:44
-// Output: analyticsFilterOptionsResultSchema, ../contract/src/analytics.timeseries.ts:278
+// Output: analyticsFilterOptionsResultSchema, ../contract/src/analytics.timeseries.ts:279
 interface Output {
   options: {
     field: string;
@@ -447,7 +447,7 @@ interface Output {
 
 // analytics.topUsedDocuments
 type Input = z.infer<typeof sharedFiltersInputSchema>; // ../contract/src/analytics.input-schemas.ts:85
-// Output: analyticsTopDocumentsResultSchema, ../contract/src/analytics.timeseries.ts:254
+// Output: analyticsTopDocumentsResultSchema, ../contract/src/analytics.timeseries.ts:255
 interface Output {
   topDocuments: {
     documentId: string;
@@ -460,11 +460,11 @@ interface Output {
 
 // analytics.feedbacks
 type Input = z.infer<typeof sharedFiltersInputSchema>; // ../contract/src/analytics.input-schemas.ts:85
-type Output = z.infer<typeof analyticsFeedbacksResultSchema>; // ../contract/src/analytics.timeseries.ts:168
+type Output = z.infer<typeof analyticsFeedbacksResultSchema>; // ../contract/src/analytics.timeseries.ts:169
 
 // analytics.feedbacksPage
 type Input = z.infer<typeof analyticsFeedbacksPageInputSchema>; // ../contract/src/analytics.trpc.ts:54
-type Output = z.infer<typeof analyticsFeedbacksPageResultSchema>; // ../contract/src/analytics.timeseries.ts:230
+type Output = z.infer<typeof analyticsFeedbacksPageResultSchema>; // ../contract/src/analytics.timeseries.ts:231
 ```
 
 ## Sockets
@@ -486,8 +486,8 @@ Declared at `src/eventing/analytics-lwql-reconvergence.pipeline.ts:53`.
 
 | Kind   | Leaf                          | Environment variable                      | Declared at                              |
 | ------ | ----------------------------- | ----------------------------------------- | ---------------------------------------- |
-| secret | `lwqlClickHousePassword`      | `LWQL_CLICKHOUSE_PASSWORD`                | `src/app/analytics.app.ts:401`           |
-| secret | `lwqlPostgresReaderPassword`  | `LWQL_POSTGRES_READER_PASSWORD`           | `src/app/analytics.app.ts:402`           |
+| secret | `lwqlClickHousePassword`      | `LWQL_CLICKHOUSE_PASSWORD`                | `src/app/analytics.app.ts:402`           |
+| secret | `lwqlPostgresReaderPassword`  | `LWQL_POSTGRES_READER_PASSWORD`           | `src/app/analytics.app.ts:403`           |
 | config | `langwatchQl.url`             | `LWQL_CLICKHOUSE_URL`                     | `../contract/src/analytics.config.ts:11` |
 | config | `langwatchQl.username`        | `LWQL_CLICKHOUSE_USER`                    | `../contract/src/analytics.config.ts:12` |
 | config | `langwatchQl.database`        | `LWQL_DATABASE`                           | `../contract/src/analytics.config.ts:13` |

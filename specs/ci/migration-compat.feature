@@ -48,10 +48,20 @@ Feature: Migration compatibility gates
   @unit
   Scenario: A base without the live api suite is judged by its image instead
     Given the base commit predates the live api fixture
+    And the repository is langwatch/langwatch
     When the compatibility job runs on a pull request
     Then it emits a warning that the base suites cannot run and skips them
     And it runs the previous release's published image and an image of main's head on head's migrated schema
     And the job passes only if both images pass the HTTP smoke
+
+  @unit
+  Scenario: A fork uses its actual base image for rollback compatibility
+    Given the repository is a fork whose deployed migration names differ from the upstream release
+    And the base commit predates the live api fixture
+    When the compatibility job runs on a pull request
+    Then it runs an image of the fork's base commit on head's migrated schema
+    And it does not run the unrelated upstream release image
+    And the job passes only if the fork's base image passes the HTTP smoke
 
   @unit
   Scenario: The image of main's head is pulled when published, else built

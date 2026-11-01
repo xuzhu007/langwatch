@@ -182,6 +182,7 @@ func TestCompatWorkflowUnsetsCIForTheBaseSuites(t *testing.T) {
 }
 
 // @scenario "A base without the live api suite is judged by its image instead"
+// @scenario "A fork uses its actual base image for rollback compatibility"
 func TestCompatWorkflowJudgesAnUnjudgeableBaseByItsImage(t *testing.T) {
 	workflow, _ := loadWorkflow(t, "migration-compat.yml")
 	steps := workflow.Jobs["n-minus-one"].Steps
@@ -194,18 +195,20 @@ func TestCompatWorkflowJudgesAnUnjudgeableBaseByItsImage(t *testing.T) {
 			t.Errorf("step %q runs on an unjudgeable base (if = %q)", name, got)
 		}
 	}
-	for name, want := range map[string]string{
-		"Read the previous release":                                      "packages/upgrade/releases | sed",
-		"The previous release's image passes the smoke on head's schema": "run-old-image.sh previous",
-		"Resolve main head's image":                                      "main-head-image.sh base",
-		"Main head's image passes the smoke on head's schema":            "run-old-image.sh main-head",
+	const imageFallback = "steps.layout.outputs.judged == 'false'"
+	const upstreamFallback = imageFallback + " && github.repository == 'langwatch/langwatch'"
+	for name, want := range map[string]struct{ run, condition string }{
+		"Read the previous release":                                      {"packages/upgrade/releases | sed", upstreamFallback},
+		"The previous release's image passes the smoke on head's schema": {"run-old-image.sh previous", upstreamFallback},
+		"Resolve main head's image":                                      {"main-head-image.sh base", imageFallback},
+		"Main head's image passes the smoke on head's schema":            {"run-old-image.sh main-head", imageFallback},
 	} {
 		step := stepNamed(t, steps, name)
-		if step.If != "steps.layout.outputs.judged == 'false'" {
-			t.Errorf("step %q does not run on an unjudgeable base (if = %q)", name, step.If)
+		if step.If != want.condition {
+			t.Errorf("step %q selects the wrong image fallback (if = %q, want %q)", name, step.If, want.condition)
 		}
-		if !strings.Contains(step.Run, want) {
-			t.Errorf("step %q lacks %q:\n%s", name, want, step.Run)
+		if !strings.Contains(step.Run, want.run) {
+			t.Errorf("step %q lacks %q:\n%s", name, want.run, step.Run)
 		}
 	}
 }

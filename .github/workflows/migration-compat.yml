@@ -148,7 +148,7 @@ jobs:
             fi
           done
           if [ ! -f "${tests}/api-live.fixture.ts" ] || [ "${#suites[@]}" -eq 0 ]; then
-            echo "::warning title=migration-compat::base ${BASE_SHA} has no live api suite, so the previous release's and main head's images are judged by the HTTP smoke instead"
+            echo "::warning title=migration-compat::base ${BASE_SHA} has no live api suite, so its image is judged by the HTTP smoke instead"
             echo "judged=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -218,7 +218,7 @@ jobs:
       # head's schema, then the smoke writes and reads through its public wire.
       - name: Read the previous release
         id: previous
-        if: steps.layout.outputs.judged == 'false'
+        if: steps.layout.outputs.judged == 'false' && github.repository == 'langwatch/langwatch'
         run: |
           set -euo pipefail
           release="$(ls head/packages/upgrade/releases | sed -n 's/^\([0-9]*\.[0-9]*\.[0-9]*\)\.json$/\1/p' | sort -V | tail -n 1)"
@@ -230,12 +230,14 @@ jobs:
           docker pull -q "langwatch/langwatch:${release}"
 
       - name: The previous release's image passes the smoke on head's schema
-        if: steps.layout.outputs.judged == 'false'
+        if: steps.layout.outputs.judged == 'false' && github.repository == 'langwatch/langwatch'
         env:
           CLICKHOUSE_URL: ${{ env.CLICKHOUSE_BASE_URL }}/test_analytics_migrated_schema
           RELEASE: ${{ steps.previous.outputs.release }}
         run: bash head/dev/scripts/migration-compat-smoke/run-old-image.sh previous "langwatch/langwatch:${RELEASE}"
 
+      # A fork's deployed migration names may differ from Docker Hub's release.
+      # Always judge the actual base commit; the upstream release is additional coverage upstream.
       - name: Resolve main head's image
         id: main_head
         if: steps.layout.outputs.judged == 'false'

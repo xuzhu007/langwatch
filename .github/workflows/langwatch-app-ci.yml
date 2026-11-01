@@ -727,7 +727,7 @@ jobs:
       # The migration-safety suites read the released cutoff from the newest
       # langwatch@v* tag and fail without one; this shallow clone has no tags.
       - name: Fetch release tags
-        run: git fetch --no-tags --depth=1 --filter=blob:none origin '+refs/tags/langwatch@v*:refs/tags/langwatch@v*'
+        run: git fetch --no-tags --depth=1 --filter=blob:none https://github.com/langwatch/langwatch.git '+refs/tags/langwatch@v*:refs/tags/langwatch@v*'
 
       - uses: ./.github/actions/setup-pnpm-node
         with:
@@ -887,6 +887,10 @@ jobs:
             !/docs/media/
             !/docs/images/
           sparse-checkout-cone-mode: false
+
+      # Forks do not inherit upstream release tags, which the migration policy tests need.
+      - name: Fetch release tags
+        run: git fetch --no-tags --depth=1 --filter=blob:none https://github.com/langwatch/langwatch.git '+refs/tags/langwatch@v*:refs/tags/langwatch@v*'
 
       # Oxlint's type-aware pass resolves every governed file's imports, so it
       # needs every workspace project installed, not only the applications'.
