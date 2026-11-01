@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
 import {
   isDockerAvailable,
   removeDockerContainer,
@@ -26,7 +27,6 @@ const MCP_POST_HEADERS = {
 };
 
 describe.skipIf(!isDockerAvailable())("Docker container", () => {
-
   beforeAll(async () => {
     try {
       await startDockerContainer({
@@ -46,7 +46,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
 
   // @scenario "镜像包含工作区补丁并正常启动"
   it("health endpoint responds without authentication", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/health`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -54,20 +53,16 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it("does not answer with a wildcard CORS origin", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/health`);
     expect(res.headers.get("access-control-allow-origin")).not.toBe("*");
   });
 
   it("reflects an allowed origin and rejects an unlisted one", async () => {
-
     const allowed = await fetch(`http://localhost:${HOST_PORT}/health`, {
       headers: { Origin: "http://localhost:5173" },
     });
     expect(allowed.status).toBe(200);
-    expect(allowed.headers.get("access-control-allow-origin")).toBe(
-      "http://localhost:5173"
-    );
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
 
     const rejected = await fetch(`http://localhost:${HOST_PORT}/health`, {
       headers: { Origin: "https://attacker.example" },
@@ -76,7 +71,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it("rejects a bearer the LangWatch API does not recognise", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
       headers: {
@@ -100,7 +94,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it.skipIf(!BEARER_TOKEN)("rejects a session id presented without a bearer token", async () => {
-
     const initRes = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
       headers: {
@@ -132,7 +125,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it("returns 401 on initialize without Bearer token", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
       headers: MCP_POST_HEADERS,
@@ -154,7 +146,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it.skipIf(!BEARER_TOKEN)("MCP initialize works with Bearer token", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
       headers: {
@@ -183,7 +174,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it.skipIf(!BEARER_TOKEN)("lists tools after initialization with Bearer token", async () => {
-
     // Initialize a session
     const initRes = await fetch(`http://localhost:${HOST_PORT}/mcp`, {
       method: "POST",
@@ -241,7 +231,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it.skipIf(!BEARER_TOKEN)("legacy SSE endpoint responds with Bearer token", async () => {
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
@@ -261,7 +250,6 @@ describe.skipIf(!isDockerAvailable())("Docker container", () => {
   });
 
   it("legacy SSE endpoint returns 401 without token", async () => {
-
     const res = await fetch(`http://localhost:${HOST_PORT}/sse`);
     expect(res.status).toBe(401);
   });

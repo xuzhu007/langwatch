@@ -1,0 +1,200 @@
+import type { ChatMessage } from "@langwatch/trace-contract/transcript";
+import { normalizeToolCalls } from "@langwatch/trace-contract/transcript";
+/**
+ * @vitest-environment node
+ * Grouping chat messages into conversation turns. Media-only messages are user.
+ */
+import { describe, expect, it } from "vitest";
+
+import { groupMessagesIntoTurns, summarizeTurn } from "../turns.ts";
+
+const openAIToolCall = {
+  id: "call_1",
+  type: "function",
+  function: { name: "get_weather", arguments: '{"city":"hz"}' },
+};
+
+describe("normalizeToolCalls", () => {
+  it("保留标准 OpenAI 数组形状", () => {
+    expect(normalizeToolCalls([openAIToolCall])).toEqual([openAIToolCall]);
+  });
+
+  it("解析字符串化 JSON 的 tool_calls（埋点/网关 stringify 上报）", () => {
+    expect(normalizeToolCalls(JSON.stringify([openAIToolCall]))).toEqual([openAIToolCall]);
+  });
+
+  it("把单个 tool_call 对象包成数组", () => {
+    expect(normalizeToolCalls(openAIToolCall)).toEqual([openAIToolCall]);
+  });
+
+  it("归一化扁平 {name, arguments} 形状", () => {
+    expect(normalizeToolCalls([{ name: "search", arguments: '{"q":"x"}' }])).toEqual([
+      {
+        function: { name: "search", arguments: '{"q":"x"}' },
+        id: "",
+        type: "function",
+      },
+    ]);
+  });
+
+  it("arguments 为对象时字符串化，保证下游 JSON.parse 可用", () => {
+    const calls = normalizeToolCalls([{ function: { name: "search", arguments: { q: "x" } } }]);
+    expect(calls?.[0]?.function.arguments).toBe('{"q":"x"}');
+  });
+
+  it("丢弃无法辨认的项，全部丢弃时返回 undefined", () => {
+    expect(normalizeToolCalls(42)).toBeUndefined();
+    expect(normalizeToolCalls("not json")).toBeUndefined();
+    expect(normalizeToolCalls([null, 1, {}])).toBeUndefined();
+    expect(normalizeToolCalls(undefined)).toBeUndefined();
+    expect(normalizeToolCalls(null)).toBeUndefined();
+  });
+});
+
+const kindsOf = (messages: ChatMessage[]) =>
+  groupMessagesIntoTurns(messages).map((turn) => turn.kind);
+
+describe("groupMessagesIntoTurns", () => {
+  it("tool_calls 为字符串化 JSON 时不再抛 not iterable（回归）", () => {
+    // wrong-typed input: deployed SDKs have sent tool_calls as JSON strings or numbers.
+    const messages = [
+      { role: "user", content: "查下杭州天气" },
+      {
+        role: "assistant",
+        content: null,
+        // 线上崩溃形状：tool_calls 是 JSON 字符串而非数组
+        tool_calls: JSON.stringify([openAIToolCall]),
+      },
+    ] as unknown as ChatMessage[];
+
+    const turns = groupMessagesIntoTurns(messages);
+
+    expect(turns).toHaveLength(2);
+    const assistant = turns[1]!;
+    expect(assistant.kind).toBe("assistant");
+    expect(assistant).toMatchObject({ kind: "assistant", toolCalls: [openAIToolCall] });
+    expect(summarizeTurn(assistant)).toBe("Tool · get_weather");
+  });
+
+  it("tool_calls 为垃圾值时按无 tool_calls 处理", () => {
+    // wrong-typed input: deployed SDKs have sent tool_calls as JSON strings or numbers.
+    const messages = [
+      { role: "assistant", content: "ok", tool_calls: 42 },
+    ] as unknown as ChatMessage[];
+
+    const turns = groupMessagesIntoTurns(messages);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: "assistant", toolCalls: [] });
+  });
+
+  it("标准数组形状行为不变", () => {
+    const messages: ChatMessage[] = [
+      { role: "assistant", content: null, tool_calls: [openAIToolCall] },
+    ];
+
+    const turns = groupMessagesIntoTurns(messages);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: "assistant", toolCalls: [openAIToolCall] });
+  });
+  describe("given a user message whose only content is an image", () => {
+    /** @scenario A message carrying only media is still the user speaking */
+    it("keeps it a user turn", () => {
+      const turns = groupMessagesIntoTurns([
+        { role: "system", content: "You are the pizza delivery guy" },
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "/api/files/p1/i1" } }],
+        },
+      ]);
+
+      expect(turns.map((turn) => turn.kind)).toEqual(["system", "user"]);
+      expect(turns[1]?.blocks).toEqual([
+        { kind: "media", part: expect.objectContaining({ type: "image" }) },
+      ]);
+    });
+  });
+
+  describe("given a user message whose only content is a recording", () => {
+    it("keeps it a user turn", () => {
+      expect(
+        kindsOf([
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_audio",
+                input_audio: { url: "/api/files/p1/a1", mimeType: "audio/wav" },
+              },
+            ],
+          },
+          { role: "assistant", content: "I heard you" },
+        ]),
+      ).toEqual(["user", "assistant"]);
+    });
+  });
+
+  describe("given a user message carrying an image next to its text", () => {
+    it("keeps it a single user turn", () => {
+      const turns = groupMessagesIntoTurns([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image_url", image_url: { url: "/api/files/p1/i1" } },
+          ],
+        },
+      ]);
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.kind).toBe("user");
+      expect(turns[0]?.blocks).toHaveLength(2);
+    });
+  });
+
+  describe("given a tool result echoed back through the user role", () => {
+    /** @scenario A tool result echoed through the user role still folds into the assistant chain */
+    it("folds it into the preceding assistant turn", () => {
+      const turns = groupMessagesIntoTurns([
+        { role: "user", content: "list the files" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "t1", name: "ls", input: { path: "." } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "a.txt" }],
+        },
+      ]);
+
+      expect(turns.map((turn) => turn.kind)).toEqual(["user", "assistant"]);
+      expect(turns[1]?.blocks.map((block) => block.kind)).toEqual(["tool_use", "tool_result"]);
+    });
+  });
+
+  describe("given reasoning mislabelled under the user role", () => {
+    it("still folds into the assistant chain", () => {
+      expect(
+        kindsOf([
+          { role: "assistant", content: "thinking about it" },
+          {
+            role: "user",
+            content: [{ type: "thinking", thinking: "still working" }],
+          },
+        ]),
+      ).toEqual(["assistant"]);
+    });
+  });
+
+  describe("given two user messages in a row", () => {
+    it("keeps them as two beats", () => {
+      expect(
+        kindsOf([
+          { role: "user", content: "hello" },
+          { role: "user", content: "are you there?" },
+        ]),
+      ).toEqual(["user", "user"]);
+    });
+  });
+});

@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { isDockerAvailable, startDockerContainer } from "./helpers/docker-setup";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -39,7 +41,7 @@ describe("当容器验证准备运行时", () => {
     const buildCall = vi.mocked(execFileSync).mock.calls[0]!;
     const cwd = buildCall[2]!.cwd as string;
     expect(existsSync(`${cwd}/mcp/typescript/Dockerfile`)).toBe(true);
-    expect(existsSync(`${cwd}/patches/@langwatch__ksuid@2.0.2.patch`)).toBe(true);
+    expect(existsSync(`${cwd}/packages/ksuid/src/node.ts`)).toBe(true);
     expect(buildCall[1]).toEqual([
       "build",
       "-t",
@@ -75,10 +77,7 @@ describe("当容器验证准备运行时", () => {
     vi.useFakeTimers();
     vi.mocked(fetch).mockRejectedValue(new Error("连接被拒绝"));
     vi.mocked(execFileSync).mockReturnValue("启动错误日志");
-    const assertion = expect(startDockerContainer(options)).rejects.toThrow(
-      "启动错误日志"
-    );
-    await vi.runAllTimersAsync();
-    await assertion;
+    const starting = startDockerContainer(options);
+    await Promise.all([expect(starting).rejects.toThrow("启动错误日志"), vi.runAllTimersAsync()]);
   });
 });

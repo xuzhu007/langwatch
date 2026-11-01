@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
@@ -18,141 +10,118 @@ const workflow = readFileSync(
   "utf8",
 );
 
-function draftStep(lane: string): string {
+function scriptFor(id: string, values: Record<string, string>): string {
   const lines = workflow.split("\n");
-  const id = lines.indexOf(`        id: ${lane}-tests`);
-  assert.ok(id >= 0, `缺少 ${lane} 测试步骤`);
-  const start = lines.indexOf("        run: |", id);
-  assert.ok(start > id, `缺少 ${lane} 测试脚本`);
+  const step = lines.indexOf(`        id: ${id}`);
+  assert.ok(step >= 0, `Missing workflow step ${id}`);
+  const start = lines.indexOf("        run: |", step);
+  assert.ok(start > step);
   const body: string[] = [];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() && !line.startsWith("          ")) break;
     body.push(line.slice(10));
   }
-  const values: Record<string, string> = {
-    "needs.changes.outputs.heavy": "false",
-    "needs.changes.outputs.coverage": "false",
-    "needs.changes.outputs.durations": "false",
-    "needs.changes.outputs.unit-shard-count": "1",
-    "needs.changes.outputs.component-shard-count": "1",
-    "matrix.shard": "1",
-    "matrix.count": "1",
-  };
   return body.join("\n").replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_, key: string) => {
-    assert.ok(Object.hasOwn(values, key), `未知工作流表达式：${key}`);
+    assert.ok(Object.hasOwn(values, key), `Unknown workflow expression ${key}`);
     return values[key]!;
   });
 }
 
-function runDraft({
-  t,
-  lane,
-  base,
-  changed = true,
-  exitCode = 0,
-}: {
-  t: TestContext;
-  lane: string;
-  base: string;
-  changed?: boolean;
-  exitCode?: number;
-}) {
-  const root = mkdtempSync(join(tmpdir(), "draft-test-base-"));
+function runScope(t: TestContext, base: string, nxExit = 0) {
+  const root = mkdtempSync(join(tmpdir(), "langwatch-ci-base-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, "platform/app"), { recursive: true });
-  mkdirSync(join(root, ".github/scripts"), { recursive: true });
   mkdirSync(join(root, "bin"));
-  copyFileSync(
-    new URL("./vitest-changed-files.sh", import.meta.url),
-    join(root, ".github/scripts/vitest-changed-files.sh"),
-  );
-  // 执行真实工作流脚本和变更检测脚本，仅替换外部 Git 与测试进程。
   writeFileSync(
     join(root, "bin/git"),
     `#!${process.execPath}
 const fs = require("node:fs");
 const args = process.argv.slice(2);
-if (args[0] === "fetch") {
-  fs.writeFileSync(process.env.FETCH_LOG, JSON.stringify(args));
-} else if (args[0] === "rev-parse") {
-  console.log(process.env.FIXTURE_ROOT);
-} else if (args[0] === "diff" && args[1] === "--name-only") {
-  if (args[2] === "origin/" + process.env.GITHUB_BASE_REF + "...HEAD") {
-    if (process.env.HAS_CHANGES === "true") console.log("platform/app/current.ts");
-  } else {
-    console.log("platform/app/parent-upgrade.ts");
-  }
-}
+fs.appendFileSync(process.env.CALLS, JSON.stringify(["git", ...args])+"\\n");
+if (args[0] === "diff") console.log("modules/trace/browser/src/example.ts");
 `,
     { mode: 0o755 },
   );
   writeFileSync(
     join(root, "bin/pnpm"),
     `#!${process.execPath}
-require("node:fs").writeFileSync(process.env.TEST_LOG, JSON.stringify(process.argv.slice(2)));
-process.exit(Number(process.env.TEST_EXIT_CODE));
+const fs = require("node:fs");
+fs.appendFileSync(process.env.CALLS, JSON.stringify(["pnpm", ...process.argv.slice(2)])+"\\n");
+if (Number(process.env.NX_EXIT)) process.exit(Number(process.env.NX_EXIT));
+console.log(JSON.stringify(["@langwatch/ui"]));
 `,
     { mode: 0o755 },
   );
-  const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", draftStep(lane)], {
-    cwd: join(root, "platform/app"),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      PATH: `${join(root, "bin")}:${process.env.PATH}`,
-      GITHUB_REF: "refs/pull/59/merge",
-      GITHUB_BASE_REF: base,
-      FIXTURE_ROOT: root,
-      FETCH_LOG: join(root, "fetch.json"),
-      TEST_LOG: join(root, "test.json"),
-      HAS_CHANGES: String(changed),
-      TEST_EXIT_CODE: String(exitCode),
+  const result = spawnSync(
+    "bash",
+    [
+      "-e",
+      "-c",
+      scriptFor("pick", {
+        "github.event_name": "pull_request",
+        "github.event.pull_request.base.sha": base,
+      }),
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${join(root, "bin")}:${process.env.PATH}`,
+        CALLS: join(root, "calls"),
+        GITHUB_OUTPUT: join(root, "output"),
+        GITHUB_STEP_SUMMARY: join(root, "summary"),
+        APPLY: "true",
+        ALL: '["platform-api","worker","ui"]',
+        NX_EXIT: String(nxExit),
+      },
     },
-  });
-  assert.equal(result.error, undefined);
-  const fetchArgs: string[] = JSON.parse(
-    readFileSync(join(root, "fetch.json"), "utf8"),
   );
-  const testArgs: string[] | null = existsSync(join(root, "test.json"))
-    ? JSON.parse(readFileSync(join(root, "test.json"), "utf8"))
-    : null;
-  return { result, fetchArgs, testArgs };
+  if (result.status !== 0) {
+    const guard = spawnSync(
+      "bash",
+      ["-e", "-c", scriptFor("guard", { "steps.pick.outputs.apps": "" })],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: join(root, "output"),
+          GITHUB_STEP_SUMMARY: join(root, "summary"),
+        },
+      },
+    );
+    assert.equal(guard.status, 0, guard.stderr);
+  }
+  const calls: string[][] = readFileSync(join(root, "calls"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  return { result, calls, output: readFileSync(join(root, "output"), "utf8") };
 }
 
-for (const lane of ["unit", "component", "integration"]) {
-  describe(`当执行 ${lane} 草稿步骤时`, () => {
-    for (const base of ["main", "release/langwatch-3.20.1"]) {
-      /** @scenario "草稿测试统一使用实际目标分支" */
-      it(`以 ${base} 获取历史并选择测试`, (t) => {
-        const { result, fetchArgs, testArgs } = runDraft({ t, lane, base });
-        assert.equal(result.status, 0, result.stderr);
-        assert.ok(fetchArgs.includes("--unshallow"));
-        assert.ok(fetchArgs.includes("refs/pull/59/merge"));
-        assert.ok(
-          fetchArgs.includes(`+refs/heads/${base}:refs/remotes/origin/${base}`),
-        );
-        assert.ok(testArgs);
-        assert.equal(testArgs[0], `test:${lane}`);
-        assert.equal(testArgs[testArgs.indexOf("--changed") + 1], `origin/${base}`);
-      });
-
-      /** @scenario "草稿相对目标分支无变更时不启动测试" */
-      it(`相对 ${base} 无变更时不启动测试`, (t) => {
-        const { result, testArgs } = runDraft({ t, lane, base, changed: false });
-        assert.equal(result.status, 0, result.stderr);
-        assert.equal(testArgs, null);
-      });
-    }
-
-    /** @scenario "草稿测试失败时工作流仍失败" */
-    it("传播测试进程的失败状态", (t) => {
-      const { result } = runDraft({
-        t,
-        lane,
-        base: "release/langwatch-3.20.1",
-        exitCode: 23,
-      });
-      assert.equal(result.status, 23);
+describe("upstream synchronization CI", () => {
+  for (const base of ["main-base-sha", "stacked-upgrade-base-sha"]) {
+    /** @scenario "Git 和 Nx 使用相同的 PR 目标 SHA" */
+    it(`uses the actual PR target commit for Git and Nx (${base})`, (t) => {
+      const { result, calls, output } = runScope(t, base);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(calls.some((call) => call.join(" ") === `git diff --name-only ${base} HEAD`));
+      assert.ok(calls.some((call) => call[0] === "pnpm" && call.includes(`--base=${base}`)));
+      assert.match(output, /apps=\["ui"\]/);
     });
+  }
+
+  /** @scenario "范围检测失败时构建所有应用" */
+  it("falls back to every application if affected-project detection fails", (t) => {
+    const { result, output } = runScope(t, "stacked-upgrade-base-sha", 23);
+    assert.equal(result.status, 23, result.stderr);
+    assert.match(output, /apps=\["platform-api","worker","ui"\]/);
   });
-}
+
+  /** @scenario "上游同步草稿执行完整验证" */
+  it("keeps upstream-sync draft PRs on the full test lane", () => {
+    const heavy = workflow.split("\n").find((line) => line.trimStart().startsWith("heavy:"));
+    assert.ok(
+      heavy?.includes("contains(github.event.pull_request.labels.*.name, 'upstream-sync')"),
+    );
+    assert.match(workflow, /BASE="\$\{\{ github.event.pull_request.base.sha \}\}"/);
+  });
+});

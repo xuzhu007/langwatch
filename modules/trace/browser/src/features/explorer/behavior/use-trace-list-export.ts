@@ -1,0 +1,24 @@
+import { useFilterStore } from "../../../behavior/explorer.store.ts";
+import { useOrganizationTeamProject } from "../../../behavior/use-organization-team-project.ts";
+import { useInstantEvalRuns } from "../../instant-eval/behavior/use-instant-eval-runs.ts";
+import { useExportTraces } from "./use-export-traces.ts";
+
+/**
+ * Adapter around `useExportTraces` that pulls filter/time/query state out of the
+ * traces-v2 zustand stores instead of the legacy `useFilterParams`.
+ */
+export function useTraceListExport() {
+  const { evalRuns } = useInstantEvalRuns();
+  const { project } = useOrganizationTeamProject();
+  const queryText = useFilterStore((s) => s.debouncedQueryText);
+  const timeRange = useFilterStore((s) => s.debouncedTimeRange);
+
+  return useExportTraces({
+    projectId: project?.id,
+    filters: {},
+    startDate: timeRange.from,
+    endDate: timeRange.to,
+    query: queryText || undefined,
+    evalRuns,
+  });
+}

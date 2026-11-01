@@ -1,0 +1,86 @@
+// A read-only input field for copying values: toggle visibility, click to copy.
+// Uses lucide-react icons.
+
+import { copyToClipboard } from "@langwatch/design-system/clipboard";
+import { InputGroup, type InputGroupProps } from "@langwatch/design-system/input-group";
+import { Input } from "@langwatch/design-system/primitives";
+import { toaster } from "@langwatch/design-system/toaster";
+import { Copy as FiCopy, Eye as FiEye, EyeOff as FiEyeOff } from "lucide-react";
+import { useState } from "react";
+
+export function CopyInput(
+  props: {
+    value: string;
+    label: string;
+    onClick?: () => void;
+
+    /**
+     * If true, the input will be hidden (masked) by default, with a toggle to show/hide the value.
+     * Copy will always copy the real value.
+     */
+    secureMode?: boolean;
+  } & Omit<InputGroupProps, "children">,
+) {
+  const [visible, setVisible] = useState(false);
+  const isSecure = !!props.secureMode;
+
+  return (
+    <InputGroup
+      {...props}
+      fontFamily={"monospace"}
+      width="full"
+      cursor="pointer"
+      onClick={() => {
+        if (props.onClick) {
+          props.onClick();
+        }
+        void copyToClipboard(props.value).then((copied) => {
+          toaster.create({
+            title: copied
+              ? `${props.label} copied to your clipboard`
+              : `Unable to copy ${props.label}, please copy it manually`,
+            type: copied ? "success" : "error",
+            duration: 2000,
+          });
+        });
+      }}
+      endElement={
+        <>
+          {isSecure && (
+            <button
+              type="button"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                marginLeft: 8,
+                padding: 0,
+                color: "var(--chakra-colors-fg-subtle)",
+              }}
+              aria-label={visible ? `Hide ${props.label}` : `Show ${props.label}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setVisible((v) => !v);
+              }}
+            >
+              {visible ? <FiEyeOff size={18} /> : <FiEye size={18} />}
+            </button>
+          )}
+          <FiCopy size={18} style={{ marginLeft: isSecure ? 8 : 0 }} />
+        </>
+      }
+    >
+      <Input
+        cursor="pointer"
+        type={isSecure && !visible ? "password" : "text"}
+        value={props.value}
+        data-testid={`copy-input-${props.label.toLowerCase().replaceAll(" ", "-")}`}
+        readOnly
+        style={{ paddingRight: isSecure ? "4rem" : "2rem" }}
+        _hover={{
+          backgroundColor: "bg.subtle",
+        }}
+      />
+    </InputGroup>
+  );
+}
