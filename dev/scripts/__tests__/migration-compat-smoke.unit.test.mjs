@@ -60,6 +60,31 @@ const context = () => ({ label: "floor", email: "compat-floor@example.com", pass
 
 void describe("the smoke against an old image", () => {
   /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
+  void it("mints a scoped service key on the plain JSON API", async () => {
+    const calls = [];
+    const wire = createWire({
+      appBase: APP,
+      format: "plain",
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return new Response(JSON.stringify({ result: { data: { token: "minted-key" } } }));
+      },
+    });
+    assert.equal(
+      await wire.projectKey({ organizationId: "org", projectId: "project" }),
+      "minted-key",
+    );
+    assert.equal(new URL(calls[0].url).pathname, "/api/trpc/apiKey.create");
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      organizationId: "org",
+      name: "Upgrade rehearsal",
+      keyType: "service",
+      permissionMode: "all",
+      bindings: [{ role: "ADMIN", scopeType: "PROJECT", scopeId: "project" }],
+    });
+  });
+
+  /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
   void it("uses plain JSON for 3.21+ without unwrapping application json fields", async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {

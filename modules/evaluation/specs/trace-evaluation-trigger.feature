@@ -178,3 +178,10 @@ Feature: Triggering online evaluations from an ingested trace
     Given each delivery mints a new evaluation id
     When the command is queued twice for one trace and monitor
     Then the two commands carry different evaluation ids over the same trace and evaluator
+
+  @unit
+  Scenario: Stale trace events complete without looking up a missing summary
+    Given a replayed span or origin-resolution event older than one hour
+    And its folded summary is outside the event's lookup window
+    When the evaluation trigger handles the event
+    Then it completes without reading a summary or dispatching an evaluation

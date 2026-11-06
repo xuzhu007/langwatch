@@ -224,6 +224,12 @@ old_trpc_format() {
   if [[ "$ORIGIN" == "3.20.1" ]]; then echo superjson; else echo plain; fi
 }
 
+# Bootstrap the disposable fixture through the supported task, after its account exists.
+grant_seed_operator() {
+  [[ "$ORIGIN" != main ]] || compose exec -T -w /app/apps/tasks old-app \
+    pnpm --silent task grant-platform-operator "$SEED_EMAIL"
+}
+
 # Phase 0 product seeds through the old image's tRPC as a seeded account (seed/product.mjs).
 # A failure is evidence: each kind it left unseeded reads inconclusive.
 phase0_products() {
@@ -237,6 +243,7 @@ phase0_products() {
   PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
     bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$SEED_EMAIL" "$SEED_PASSWORD" \
     >"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 &&
+    grant_seed_operator >>"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 &&
     PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
       APP_BASE="http://localhost:${OLD_APP_PORT}" SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
       SMOKE_TRPC_FORMAT="$(old_trpc_format)" SEED_LABEL="$RUN_ID" SEED_PER_KIND="$SEED_PER_KIND" OUT="$RUN_DIR/evidence/product-seeds.json" node "$HERE/seed/product.mjs" seed \
@@ -500,7 +507,7 @@ lease_drill() {
   compose run -d --name "$name" -w /app/apps/tasks head-migrate pnpm --silent task upgrade >/dev/null
   for ((i = 0; i < 120; i++)); do
     [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == true ]] || break
-    if [[ -n "$(psql_at "UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() AND EXISTS (SELECT 1 FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE status = 'running' AND mode = 'blocking') RETURNING 1" 2>/dev/null)" ]]; then
+    if [[ "$(psql_at "WITH stolen AS (UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() AND EXISTS (SELECT 1 FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE status = 'running' AND mode = 'blocking') RETURNING 1) SELECT count(*) FROM stolen" 2>/dev/null)" == "1" ]]; then
       stolen=true
       break
     fi

@@ -73,6 +73,15 @@ For an isolated deployment, `LANGWATCH_CONNECT_DISABLED=true` disables the
 LangWatch connection; `DISABLE_USAGE_STATS=true` alone does not disable every
 connection or upgrade diagnostic.
 
+## Historical trace imports
+
+The fork applies the existing stale-event guard before evaluation summary reads.
+Previously, a month-old span could be stored successfully while its evaluation
+trigger retried for about 27 minutes because the summary's storage timestamp
+fell outside the event-anchored lookup window. Historical events now complete
+without dispatching evaluations; recent events still wait for their summary and
+retain the bounded retry behavior. This changes no trace retention or storage.
+
 ## Migrations and readiness
 
 There are 11 additional PostgreSQL schema migrations and ClickHouse migration

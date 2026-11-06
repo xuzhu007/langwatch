@@ -295,9 +295,9 @@ async function prepare({ wire, ctx }) {
       },
     })
     .catch(() => {}); // a failure shows up as the prompt kind's own MODEL_NOT_CONFIGURED
-  const { apiKey } = await wire.query({
-    path: "project.getProjectAPIKey",
-    input: { projectId: ctx.projectId },
+  const apiKey = await wire.projectKey({
+    organizationId: ctx.organizationId,
+    projectId: ctx.projectId,
   });
   ctx.traceId = `rehearsal-${randomUUID()}`;
   await wire.rest({

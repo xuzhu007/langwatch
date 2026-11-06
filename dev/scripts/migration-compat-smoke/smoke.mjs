@@ -85,6 +85,23 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch, forma
       });
       return decode(await answerOf({ what: `mutation ${path}`, response }));
     },
+    async projectKey({ organizationId, projectId }) {
+      if (format === "superjson") {
+        return (await this.query({ path: "project.getProjectAPIKey", input: { projectId } }))
+          .apiKey;
+      }
+      const { token } = await this.mutate({
+        path: "apiKey.create",
+        input: {
+          organizationId,
+          name: "Upgrade rehearsal",
+          keyType: "service",
+          permissionMode: "all",
+          bindings: [{ role: "ADMIN", scopeType: "PROJECT", scopeId: projectId }],
+        },
+      });
+      return token;
+    },
     async rest({ method, path, apiKey, body }) {
       const response = await fetchImpl(`${appBase}${path}`, {
         method,
@@ -137,11 +154,10 @@ export function smokeSteps() {
         const organizations = await wire.query({ path: "organization.getAll", input: {} });
         ctx.projectId = findProjectId({ organizations, slug: created.projectSlug });
         if (!ctx.projectId) throw new Error(`project ${created.projectSlug} is not listed`);
-        const { apiKey } = await wire.query({
-          path: "project.getProjectAPIKey",
-          input: { projectId: ctx.projectId },
+        ctx.apiKey = await wire.projectKey({
+          organizationId: ctx.organizationId,
+          projectId: ctx.projectId,
         });
-        ctx.apiKey = apiKey;
         if (!ctx.apiKey) throw new Error("the project has no API key");
       },
     },

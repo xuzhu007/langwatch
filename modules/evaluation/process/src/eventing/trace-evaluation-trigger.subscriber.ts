@@ -6,6 +6,7 @@ import { createLogger } from "@langwatch/observability";
 import { spanSchema } from "@langwatch/otlp/trace-request";
 import {
   MAX_PROCESSED_SPANS,
+  passesTraceEventGuards,
   passesTraceOriginGuards,
   SPAN_RECEIVED_EVENT_TYPE,
   SYNTHETIC_TRACE_SPAN_NAMES,
@@ -87,6 +88,8 @@ export function createTraceEvaluationTrigger(deps: TraceEvaluationTriggerDeps): 
   deliveryAttempt?: number;
 }) => Promise<void> {
   return async ({ tenantId, traceId, event, deliveryAttempt }) => {
+    // Replayed history is ineligible even if its summary is outside the lookup window.
+    if (!passesTraceEventGuards(event)) return;
     // Anchored on the event's own time; a full miss reads 31 days once, so retries stay cheap.
     const foldState = await deps.findSummary({
       projectId: tenantId,
