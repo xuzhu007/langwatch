@@ -308,15 +308,10 @@ function noop({ noopRun, stepsNoopBefore, stepsNoopAfter }) {
       // A fresh install's next run re-infers the tools' history, including 0_init,
       // which is not a release-manifest step. This adds a record of past work;
       // it has never been attempted or finished by the runner itself.
-      if (
-        !was &&
-        step.inferred === true &&
-        ["postgres-schema", "clickhouse-schema"].includes(step.kind) &&
-        step.status === "done" &&
-        step.attempt === 0 &&
-        step.finished_at === null
-      )
-        return false;
+      const inferredSchema =
+        step.inferred === true && ["postgres-schema", "clickhouse-schema"].includes(step.kind);
+      const neverAttempted = step.attempt === 0 && step.finished_at === null;
+      if (!was && inferredSchema && step.status === "done" && neverAttempted) return false;
       return (
         !was ||
         was.status !== step.status ||
