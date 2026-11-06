@@ -129,7 +129,22 @@ function f1({ roster, steps, headImage }) {
   };
 }
 
-function f2({ drill }) {
+/** Docker may take time to deliver a signal; only the worker can acknowledge receipt. */
+function signalReceiptTime({ drill, headWorkerLog }) {
+  const requestedAt = Date.parse(drill.signalAt);
+  const exitedAt = Date.parse(drill.exitedAt);
+  const receipts = matchingLines({ log: headWorkerLog, pattern: /SIGTERM/ }).flatMap((line) => {
+    try {
+      const row = JSON.parse(line);
+      return row.signal === "SIGTERM" && row.msg === "shutting down" ? [Date.parse(row.time)] : [];
+    } catch {
+      return [];
+    }
+  });
+  return receipts.find((time) => time >= requestedAt && time <= exitedAt);
+}
+
+function f2({ drill, headWorkerLog }) {
   const title = "A step stopped by SIGTERM mid-run is recorded done";
   if (!drill || !Array.isArray(drill.after)) return missing("F-2", title, ["f2-drill.json"]);
   const running = drill.runningAtSignal ?? [];
@@ -139,12 +154,30 @@ function f2({ drill }) {
       evidence: ["f2-drill.json"],
     };
   }
-  const signalAt = Date.parse(drill.signalAt);
+  const signalAt = signalReceiptTime({ drill, headWorkerLog });
+  if (signalAt === undefined) {
+    return missing("F-2", title, ["worker SIGTERM acknowledgement in logs/head-worker.log"]);
+  }
+  const completedBeforeSignal = new Set(
+    drill.after
+      .filter((step) => step.status === "done" && Date.parse(step.finished_at) < signalAt)
+      .map((step) => step.id),
+  );
+  const interrupted = running.filter((id) => !completedBeforeSignal.has(id));
+  if (interrupted.length === 0) {
+    return {
+      id: "F-2",
+      title,
+      verdict: VERDICT.inconclusive,
+      detail: `sampled steps completed before the worker received SIGTERM: ${running.join(", ")}`,
+      evidence: ["f2-drill.json", "logs/head-worker.log"],
+    };
+  }
   const exitedAt = Date.parse(drill.exitedAt);
   const doneEarly = drill.after.filter((step) => {
     const finished = Date.parse(step.finished_at);
     return (
-      running.includes(step.id) &&
+      interrupted.includes(step.id) &&
       step.status === "done" &&
       finished >= signalAt &&
       finished <= exitedAt
@@ -154,8 +187,8 @@ function f2({ drill }) {
     id: "F-2",
     title,
     verdict: doneEarly.length > 0 ? VERDICT.reproduced : VERDICT.notReproduced,
-    detail: `running at SIGTERM: ${running.join(", ")}; recorded done between signal and exit: ${doneEarly.map((s) => s.id).join(", ") || "none"}`,
-    evidence: ["f2-drill.json"],
+    detail: `running at SIGTERM: ${interrupted.join(", ")}; recorded done between signal and exit: ${doneEarly.map((s) => s.id).join(", ") || "none"}`,
+    evidence: ["f2-drill.json", "logs/head-worker.log"],
   };
 }
 

@@ -95,6 +95,12 @@ workers with the new image and watch both readiness and the upgrade ledger;
 API liveness alone does not establish migration completion. Background steps
 also populate agent/evaluator versions and initial dataset versions.
 
+The commands below show the base Compose configuration. Reuse your existing
+project name, env file and **all** override files for every command, including
+status checks and rollback. For filesystem storage, add
+`-f infra/compose.local-storage.yml` after the base file in both commands;
+omitting it from a later `up` removes the shared object-storage mount.
+
 ```sh
 docker compose --project-directory . -f infra/compose.yml up -d
 docker compose --project-directory . -f infra/compose.yml exec -w /app/apps/tasks app pnpm task upgrade status

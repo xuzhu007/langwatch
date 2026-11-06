@@ -64,6 +64,19 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then F-2 is "reproduced" and names the step
 
   @unit
+  Scenario: A step completing before the worker receives SIGTERM leaves the interruption inconclusive
+    Given Docker has been asked to signal a worker with a running background step
+    And the step completes before the worker logs receiving SIGTERM
+    When the findings are evaluated
+    Then F-2 is "inconclusive" because the signal did not interrupt that step
+
+  @unit
+  Scenario: Missing worker signal acknowledgement leaves the SIGTERM drill inconclusive
+    Given a SIGTERM drill with no worker acknowledgement between the request and exit
+    When the findings are evaluated
+    Then F-2 is "inconclusive" instead of inferring receipt from the Docker command time
+
+  @unit
   Scenario: Jobs queued at the cut that head drains settle Q09, and jobs it leaves reproduce it
     Given jobs left queued by the old image at the cut
     When head's worker drains them with no dead letter and no refusal
