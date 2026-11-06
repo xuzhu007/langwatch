@@ -204,7 +204,7 @@ snapshot_queues() {
 
 ledger_query() {
   local schema="mydb_upgrade_ledger"
-  psql_json "SELECT id, kind, mode, status, attempt, last_error, report, started_at, finished_at FROM \"$schema\".\"_langwatch_upgrade_step\" ORDER BY id" >"$RUN_DIR/evidence/$1"
+  psql_json "SELECT id, kind, mode, status, inferred, attempt, last_error, report, started_at, finished_at FROM \"$schema\".\"_langwatch_upgrade_step\" ORDER BY id" >"$RUN_DIR/evidence/$1"
 }
 
 build_images() {

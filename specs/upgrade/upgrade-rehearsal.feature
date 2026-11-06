@@ -111,6 +111,12 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then NO-OP is "reproduced"
 
   @unit
+  Scenario: Re-inferring a completed schema baseline does not mean it ran again
+    Given a repeat upgrade adds a completed inferred schema record with no attempt or finish
+    Then NO-OP is "not-reproduced"
+    But an attempted, failed, missing or newly executed step reproduces NO-OP
+
+  @unit
   Scenario: A private ClickHouse target behind the shared one reproduces TARGETS
     Given one organisation routed to a private ClickHouse
     When the private target's goose version differs from the shared one or it has no ledger rows
