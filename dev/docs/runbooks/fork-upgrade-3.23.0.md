@@ -53,8 +53,8 @@ API liveness alone does not establish migration completion. Background steps
 also populate agent/evaluator versions and initial dataset versions.
 
 ```sh
-docker compose -f infra/compose.yml up -d
-docker compose -f infra/compose.yml exec -w /app/apps/tasks app pnpm task upgrade status
+docker compose --project-directory . -f infra/compose.yml up -d
+docker compose --project-directory . -f infra/compose.yml exec -w /app/apps/tasks app pnpm task upgrade status
 ```
 
 Verify that there are no failed or blocked upgrade steps, then check trace
