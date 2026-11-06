@@ -329,6 +329,7 @@ describe.skipIf(!DB_URL || !CH_URL)("the upgrade, end to end over live stores", 
         "_langwatch_upgrade_run",
         "_langwatch_upgrade_step",
         "_langwatch_upgrade_target",
+        "_langwatch_upgrade_tenant_state",
       ]);
     });
 

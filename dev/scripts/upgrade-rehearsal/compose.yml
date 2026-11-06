@@ -82,8 +82,8 @@ services:
   old-worker:
     profiles: ["old"]
     image: ${OLD_IMAGE:-langwatch/langwatch:3.20.1}
-    command: ["pnpm", "run", "start:workers"]
-    working_dir: /app/platform/app
+    command: ["pnpm", "run", "${OLD_WORKER_COMMAND:-start:workers}"]
+    working_dir: ${OLD_WORKER_DIR:-/app/platform/app}
     environment:
       <<: *store-urls
       SKIP_ENV_VALIDATION: "true"

@@ -132,7 +132,13 @@ preflight() {
 log() { printf '[rehearse %s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$RUN_DIR/rehearse.log" >&2; }
 
 compose() {
+  local worker_dir=/app/platform/app worker_command=start:workers
+  if [[ "$ORIGIN" == "main" ]]; then
+    worker_dir=/app/apps/worker
+    worker_command=start
+  fi
   OLD_IMAGE="${OLD_IMAGE:-langwatch/langwatch:3.20.1}" HEAD_IMAGE="$HEAD_IMAGE" \
+    OLD_WORKER_DIR="$worker_dir" OLD_WORKER_COMMAND="$worker_command" \
     REHEARSAL_ENV_FILE="$RUN_DIR/rehearsal.env" REHEARSAL_PROJECT="$PROJECT" \
     docker compose -f "$HERE/compose.yml" --profile old --profile head "$@"
 }
