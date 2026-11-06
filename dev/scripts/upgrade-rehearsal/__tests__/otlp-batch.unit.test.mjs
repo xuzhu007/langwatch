@@ -10,6 +10,17 @@ const startMonths = (batch) =>
     .map((span) => new Date(Number(BigInt(span.startTimeUnixNano) / 1_000_000n)).getUTCMonth());
 
 void describe("an OTLP batch for a project", () => {
+  /** @scenario "Historical seeds remain inside the public collector ingestion window" */
+  void it("keeps historical spans inside 31 days even after a 31-day month", () => {
+    for (const at of ["2026-11-06T02:00:00Z", "2026-03-31T23:59:00Z", "2027-01-15T08:00:00Z"]) {
+      const spans = otlpBatch({ service: "s", count: 4, at }).resourceSpans[0].scopeSpans[0].spans;
+      for (const span of spans) {
+        const age = Date.parse(at) - Number(BigInt(span.startTimeUnixNano) / 1_000_000n);
+        assert.ok(age > 0 && age < 31 * 24 * 60 * 60 * 1000);
+      }
+    }
+  });
+
   /** @scenario "The seeded traces span the current and the previous month" */
   void it("puts half the traces in the month and half in the month before, under the project's service", () => {
     const batch = otlpBatch({ service: "rehearsal-sk-lw-x", count: 4, at: "2026-10-08T12:00:00Z" });

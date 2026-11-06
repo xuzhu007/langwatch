@@ -40,3 +40,11 @@ Feature: Self-hosted deployments can discover what a license unlocks
       Given I am an admin on LangWatch Cloud
       When I open the authentication settings
       Then the enterprise capabilities section is not shown
+
+  Rule: the internal fork preserves its self-hosted plan from PR 62
+    Scenario: The internal deployment keeps enterprise capabilities available
+      Given the internal deployment resolves its unlimited Enterprise plan
+      When a member opens security settings and the plans comparison
+      Then all three governance capabilities are available with setup guides
+      And no activation prompt is displayed
+      And Enterprise is marked as the current plan

@@ -220,6 +220,10 @@ build_images() {
   fi
 }
 
+old_trpc_format() {
+  if [[ "$ORIGIN" == "3.20.1" ]]; then echo superjson; else echo plain; fi
+}
+
 # Phase 0 product seeds through the old image's tRPC as a seeded account (seed/product.mjs).
 # A failure is evidence: each kind it left unseeded reads inconclusive.
 phase0_products() {
@@ -235,7 +239,7 @@ phase0_products() {
     >"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 &&
     PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
       APP_BASE="http://localhost:${OLD_APP_PORT}" SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
-      SEED_LABEL="$RUN_ID" SEED_PER_KIND="$SEED_PER_KIND" OUT="$RUN_DIR/evidence/product-seeds.json" node "$HERE/seed/product.mjs" seed \
+      SMOKE_TRPC_FORMAT="$(old_trpc_format)" SEED_LABEL="$RUN_ID" SEED_PER_KIND="$SEED_PER_KIND" OUT="$RUN_DIR/evidence/product-seeds.json" node "$HERE/seed/product.mjs" seed \
       >>"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 ||
     log "phase 0: product seeds failed (logs/product-seed.log); their findings read inconclusive"
 }
@@ -244,7 +248,7 @@ phase0_products() {
 collect_products() {
   [[ -s "$RUN_DIR/evidence/product-seeds.json" ]] || return 0
   APP_BASE="http://localhost:${HEAD_API_PORT}" APP_ORIGIN="http://localhost:${OLD_APP_PORT}" SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
-    SEEDS="$RUN_DIR/evidence/product-seeds.json" OUT="$RUN_DIR/evidence/product-readback.json" \
+    SMOKE_TRPC_FORMAT=plain SEEDS="$RUN_DIR/evidence/product-seeds.json" OUT="$RUN_DIR/evidence/product-readback.json" \
     node "$HERE/seed/product.mjs" readback >"$RUN_DIR/evidence/logs/product-readback.log" 2>&1 ||
     log "phase 2: product read-back failed (logs/product-readback.log)"
 }
@@ -468,7 +472,7 @@ phase3_rollback() {
       bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$email" "$password" \
       >"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 &&
       APP_BASE="http://localhost:${OLD_APP_PORT}" SMOKE_EMAIL="$email" SMOKE_PASSWORD="$password" \
-        SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
+        SMOKE_TRPC_FORMAT="$(old_trpc_format)" SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
         >>"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
     sleep 30
   fi
@@ -484,7 +488,7 @@ lease_drill() {
   compose run -d --name "$name" -w /app/apps/tasks head-migrate pnpm --silent task upgrade >/dev/null
   for ((i = 0; i < 120; i++)); do
     [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == true ]] || break
-    if [[ -n "$(psql_at "UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() RETURNING 1" 2>/dev/null)" ]]; then
+    if [[ -n "$(psql_at "UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() AND EXISTS (SELECT 1 FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE status = 'running' AND mode = 'blocking') RETURNING 1" 2>/dev/null)" ]]; then
       stolen=true
       break
     fi
@@ -498,7 +502,7 @@ lease_drill() {
   exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
   docker logs "$name" >"$RUN_DIR/evidence/logs/head-migrate-lease.log" 2>&1 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
-  sleep 65 # the stolen lease's 60 s expiry, so the re-run can take it
+  [[ "$stolen" != true ]] || sleep 65 # the stolen lease's 60 s expiry, so the re-run can take it
   head_task upgrade >"$RUN_DIR/evidence/logs/head-migrate-2.log" 2>&1 || rerun=$?
   printf '{"stolen":%s,"exit":%s,"rerunExit":%s}' "$stolen" "$exit_code" "$rerun" >"$RUN_DIR/evidence/lease-drill.json"
   REUPGRADE_EXIT=$rerun

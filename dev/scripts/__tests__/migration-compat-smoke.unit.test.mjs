@@ -60,6 +60,25 @@ const context = () => ({ label: "floor", email: "compat-floor@example.com", pass
 
 void describe("the smoke against an old image", () => {
   /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
+  void it("uses plain JSON for 3.21+ without unwrapping application json fields", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ result: { data: { json: "application value" } } }));
+    };
+    const wire = createWire({ appBase: APP, fetchImpl, format: "plain" });
+    assert.deepEqual(await wire.query({ path: "example.get", input: { projectId: "p" } }), {
+      json: "application value",
+    });
+    assert.deepEqual(JSON.parse(new URL(calls[0].url).searchParams.get("input")), {
+      projectId: "p",
+    });
+    await wire.mutate({ path: "example.set", input: { projectId: "p" } });
+    assert.deepEqual(JSON.parse(calls[1].init.body), { projectId: "p" });
+    assert.equal(calls.length, 2);
+  });
+
+  /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
   void it("signs in, writes and reads through every surface the plan names, in order", async () => {
     const image = fakeImage();
     const wire = createWire({ appBase: APP, fetchImpl: image.fetchImpl });

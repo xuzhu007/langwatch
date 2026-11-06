@@ -1,6 +1,6 @@
 // The HTTP smoke an old image runs on head's migrated schema: the first deploy
 // and a rollback put exactly that pair in production (specs/ci/migration-compat.feature).
-// It speaks the old image's public wire only, so it holds for 3.20.1 and main.
+// Select the public wire explicitly: 3.20.1 uses superjson, 3.21+ uses plain JSON.
 // Usage: node smoke.mjs  (APP_BASE, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_LABEL)
 
 import { randomUUID } from "node:crypto";
@@ -44,7 +44,10 @@ async function answerOf({ what, response }) {
 }
 
 /** The old image's wire: tRPC with superjson envelopes, REST with a project key. */
-export function createWire({ appBase, origin = appBase, fetchImpl = fetch }) {
+export function createWire({ appBase, origin = appBase, fetchImpl = fetch, format = "superjson" }) {
+  if (!["superjson", "plain"].includes(format)) throw new Error(`Unknown tRPC format: ${format}`);
+  const encode = (input) => JSON.stringify(format === "plain" ? input : { json: input });
+  const decode = (body) => (format === "plain" ? body.result.data : body.result.data.json);
   const state = { cookie: null };
   const headers = () => ({
     "Content-Type": "application/json",
@@ -68,19 +71,19 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch }) {
       return answerOf({ what: "GET /api/auth/get-session", response });
     },
     async query({ path, input }) {
-      const encoded = encodeURIComponent(JSON.stringify({ json: input }));
+      const encoded = encodeURIComponent(encode(input));
       const response = await fetchImpl(`${appBase}/api/trpc/${path}?input=${encoded}`, {
         headers: headers(),
       });
-      return (await answerOf({ what: `query ${path}`, response })).result.data.json;
+      return decode(await answerOf({ what: `query ${path}`, response }));
     },
     async mutate({ path, input }) {
       const response = await fetchImpl(`${appBase}/api/trpc/${path}`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ json: input }),
+        body: encode(input),
       });
-      return (await answerOf({ what: `mutation ${path}`, response })).result.data.json;
+      return decode(await answerOf({ what: `mutation ${path}`, response }));
     },
     async rest({ method, path, apiKey, body }) {
       const response = await fetchImpl(`${appBase}${path}`, {
@@ -278,7 +281,7 @@ async function main() {
     process.exit(2);
   }
   const ctx = { label: SMOKE_LABEL, email: SMOKE_EMAIL, password: SMOKE_PASSWORD };
-  const wire = createWire({ appBase: APP_BASE });
+  const wire = createWire({ appBase: APP_BASE, format: process.env.SMOKE_TRPC_FORMAT });
   const { failed } = await runSmoke({ steps: smokeSteps(), wire, ctx });
   if (failed) {
     console.log(
