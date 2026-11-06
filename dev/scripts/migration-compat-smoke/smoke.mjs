@@ -102,6 +102,9 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch, forma
       });
       return token;
     },
+    async revokeTestBinding({ organizationId, userId, projectId }) {
+      return exerciseBindingRevocation({ wire: this, format, organizationId, userId, projectId });
+    },
     async rest({ method, path, apiKey, body }) {
       const response = await fetchImpl(`${appBase}${path}`, {
         method,
@@ -111,6 +114,64 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch, forma
       return answerOf({ what: `${method} ${path}`, response });
     },
   };
+}
+
+/** Revoke a disposable grant using the selected release's management surface. */
+async function exerciseBindingRevocation({ wire, format, organizationId, userId, projectId }) {
+  if (format === "superjson") {
+    const binding = await wire.mutate({
+      path: "roleBinding.create",
+      input: {
+        organizationId,
+        userId,
+        role: "VIEWER",
+        scopeType: "PROJECT",
+        scopeId: projectId,
+      },
+    });
+    await wire.mutate({
+      path: "roleBinding.delete",
+      input: { organizationId, bindingId: binding.id },
+    });
+    return;
+  }
+  const grant = await wire.mutate({
+    path: "authz.createGrant",
+    input: {
+      organizationId,
+      grant: {
+        principal: { type: "user", id: userId },
+        roleId: "viewer",
+        scope: { type: "project", id: projectId },
+      },
+    },
+  });
+  const waitForPresence = async (present) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const page = await wire.query({
+        path: "authz.listGrants",
+        input: {
+          organizationId,
+          query: {
+            principalType: "user",
+            principalId: userId,
+            scopeType: "project",
+            scopeId: projectId,
+            limit: 200,
+          },
+        },
+      });
+      if (page.grants.some((entry) => entry.id === grant.id) === present) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Grant did not become ${present ? "visible" : "revoked"}`);
+  };
+  await waitForPresence(true);
+  await wire.mutate({
+    path: "authz.revokeGrant",
+    input: { organizationId, grantId: grant.id },
+  });
+  await waitForPresence(false);
 }
 
 /** The steps, in order; each reads and writes the context the earlier ones left. */
@@ -255,19 +316,10 @@ export function smokeSteps() {
     {
       name: "revoke a binding",
       run: async ({ wire, ctx }) => {
-        const binding = await wire.mutate({
-          path: "roleBinding.create",
-          input: {
-            organizationId: ctx.organizationId,
-            userId: ctx.userId,
-            role: "VIEWER",
-            scopeType: "PROJECT",
-            scopeId: ctx.projectId,
-          },
-        });
-        await wire.mutate({
-          path: "roleBinding.delete",
-          input: { organizationId: ctx.organizationId, bindingId: binding.id },
+        await wire.revokeTestBinding({
+          organizationId: ctx.organizationId,
+          userId: ctx.userId,
+          projectId: ctx.projectId,
         });
       },
     },

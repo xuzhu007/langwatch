@@ -12,9 +12,10 @@ import {
 const APP = "http://localhost:5560";
 
 /** A fake old image: answers each route the smoke speaks, and records the calls. */
-function fakeImage({ refuse } = {}) {
+function fakeImage({ refuse, format = "superjson" } = {}) {
   const calls = [];
-  const trpc = (json) => ({ result: { data: { json } } });
+  const trpc = (json) => ({ result: { data: format === "plain" ? json : { json } } });
+  let grantExists = false;
   const answers = {
     "/api/auth/sign-in/email": () => ({ token: "t" }),
     "/api/auth/get-session": () => ({ user: { id: "user_1" } }),
@@ -31,6 +32,17 @@ function fakeImage({ refuse } = {}) {
     "/api/trpc/slackIntegration.create": () => trpc({ id: "slack_1" }),
     "/api/trpc/slackIntegration.delete": () => trpc({ deleted: true }),
     "/api/trpc/connectedBilling.get": () => trpc({ contract: null }),
+    "/api/trpc/apiKey.create": () => trpc({ token: "sk-lw-compat" }),
+    "/api/trpc/authz.createGrant": () => {
+      grantExists = true;
+      return trpc({ id: "grant_1" });
+    },
+    "/api/trpc/authz.listGrants": () =>
+      trpc({ grants: grantExists ? [{ id: "grant_1" }] : [], nextCursor: null }),
+    "/api/trpc/authz.revokeGrant": () => {
+      grantExists = false;
+      return trpc({ id: "grant_1", revoked: true });
+    },
     "/api/trpc/roleBinding.create": () => trpc({ id: "binding_1" }),
     "/api/trpc/roleBinding.delete": () => trpc({ success: true }),
   };
@@ -44,6 +56,16 @@ function fakeImage({ refuse } = {}) {
           status: 500,
         },
       );
+    }
+    if (
+      format === "plain" &&
+      [
+        "/api/trpc/project.getProjectAPIKey",
+        "/api/trpc/roleBinding.create",
+        "/api/trpc/roleBinding.delete",
+      ].includes(pathname)
+    ) {
+      return new Response("not found", { status: 404 });
     }
     const answer = answers[pathname];
     if (!answer) return new Response("not found", { status: 404 });
@@ -59,6 +81,31 @@ function fakeImage({ refuse } = {}) {
 const context = () => ({ label: "floor", email: "compat-floor@example.com", password: "pw" });
 
 void describe("the smoke against an old image", () => {
+  /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
+  void it("completes the 3.21 smoke using its grants API and verifies revocation", async () => {
+    const image = fakeImage({ format: "plain" });
+    const wire = createWire({ appBase: APP, fetchImpl: image.fetchImpl, format: "plain" });
+    const result = await runSmoke({ steps: smokeSteps(), wire, ctx: context(), log: () => {} });
+    assert.equal(result.failed, null);
+    assert.equal(result.passed.length, 9);
+    const create = image.calls.find((call) => call.pathname === "/api/trpc/authz.createGrant");
+    assert.deepEqual(JSON.parse(create.init.body), {
+      organizationId: "org_1",
+      grant: {
+        principal: { type: "user", id: "user_1" },
+        roleId: "viewer",
+        scope: { type: "project", id: "project_1" },
+      },
+    });
+    assert.equal(
+      image.calls.filter((call) => call.pathname === "/api/trpc/authz.listGrants").length,
+      2,
+    );
+    const revoke = image.calls.find((call) => call.pathname === "/api/trpc/authz.revokeGrant");
+    assert.deepEqual(JSON.parse(revoke.init.body), { organizationId: "org_1", grantId: "grant_1" });
+    assert.ok(!image.calls.some((call) => call.pathname.startsWith("/api/trpc/roleBinding.")));
+  });
+
   /** @scenario "The old images pass an HTTP smoke on the schema head migrated" */
   void it("mints a scoped service key on the plain JSON API", async () => {
     const calls = [];
