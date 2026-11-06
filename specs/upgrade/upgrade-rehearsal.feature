@@ -161,3 +161,11 @@ Feature: The upgrade is rehearsed from real images before it ships
   Scenario: A fresh install from an empty database
     When head's upgrade runs on empty stores and head's api and worker start
     Then every data step is not-needed or done and a second upgrade applies nothing
+
+  @unit
+  Scenario: Only completed rehearsal evidence permits packaging an upgrade image
+    Given a fork-main upgrade or an empty-install rehearsal report
+    When the image packaging gate checks the report
+    Then the migration must have succeeded and the final ledger must be nonempty and settled
+    And the required checks must have conclusive successful evidence
+    And a reproduced failure prevents packaging

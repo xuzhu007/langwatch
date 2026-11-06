@@ -46,14 +46,19 @@ jobs:
         run: |
           args=(--origin "$ORIGIN" --head-image langwatch-fork:3.23.0)
           if [[ "$ORIGIN" == "main" ]]; then args+=(--build-main); fi
-          bash dev/scripts/upgrade-rehearsal/rehearse.sh "${args[@]}"
+          run_dir="${RUNNER_TEMP}/upgrade-rehearsal/${ORIGIN}"
+          bash dev/scripts/upgrade-rehearsal/rehearse.sh "${args[@]}" --run-dir "$run_dir"
+          node dev/scripts/upgrade-rehearsal/assert-report.mjs "$run_dir"
 
       - name: Upload rehearsal evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: upgrade-rehearsal-${{ matrix.origin }}
-          path: .claude/tmp/upgrade-rehearsal/**
+          path: |
+            ${{ runner.temp }}/upgrade-rehearsal/**/report.*
+            ${{ runner.temp }}/upgrade-rehearsal/**/evidence/**
+            ${{ runner.temp }}/upgrade-rehearsal/**/build.log
           if-no-files-found: warn
           retention-days: 14
 

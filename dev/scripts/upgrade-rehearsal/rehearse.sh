@@ -252,6 +252,7 @@ phase0_seed() {
   compose up -d old-app
   wait_http "http://localhost:${OLD_APP_PORT}/api/health" 600 || { log "old app never became healthy"; return 1; }
   compose up -d old-worker
+  wait_http "http://localhost:${OLD_APP_PORT}/readyz" 600 || { log "old app never became ready after worker migrations"; return 1; }
   compose exec -T postgres psql -U prisma -d mydb -v run="$RUN_ID" -f - <"$HERE/seed/tenancy.sql" >>"$RUN_DIR/rehearse.log"
   phase0_products
   local key
@@ -315,10 +316,11 @@ drill() {
   exited_at="$(node -p "new Date().toISOString()")"
   ledger_query "$name-after.json"
   node -e '
-    const [running, after, signalAt, exitedAt] = process.argv.slice(1);
+    const [running, afterPath, signalAt, exitedAt] = process.argv.slice(1);
     const ids = JSON.parse(running).map((r) => r.id);
-    process.stdout.write(JSON.stringify({ signalAt, exitedAt, runningAtSignal: ids, after: JSON.parse(after) }, null, 2));
-  ' "$running" "$(cat "$RUN_DIR/evidence/$name-after.json")" "$signal_at" "$exited_at" >"$RUN_DIR/evidence/$name-drill.json"
+    const after = JSON.parse(require("node:fs").readFileSync(afterPath, "utf8"));
+    process.stdout.write(JSON.stringify({ signalAt, exitedAt, runningAtSignal: ids, after }, null, 2));
+  ' "$running" "$RUN_DIR/evidence/$name-after.json" "$signal_at" "$exited_at" >"$RUN_DIR/evidence/$name-drill.json"
   compose up -d head-worker
 }
 
@@ -534,6 +536,7 @@ teardown() {
   stop_load
   [[ -n "${SAMPLER_PID:-}" ]] && kill "$SAMPLER_PID" 2>/dev/null || true
   [[ "$KEEP" -eq 1 ]] && { log "kept the stack: docker compose -p $PROJECT -f $HERE/compose.yml down -v"; return; }
+  compose logs --no-color --no-log-prefix >"$RUN_DIR/evidence/logs/final-stack.log" 2>&1 || true
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
@@ -569,6 +572,8 @@ main() {
     [[ "$THROUGH" -ge 4 ]] && phase4_reupgrade
   fi
   [[ "$THROUGH" -ge 5 ]] && phase5_noop
+  wait_http "http://localhost:${HEAD_API_PORT}/readyz" 600
+  wait_http "http://localhost:${HEAD_WORKER_METRICS_PORT}/readyz" 600
   node "$HERE/evaluate.mjs" "$RUN_DIR"
   log "report: $RUN_DIR/report.md"
 }
