@@ -8,7 +8,7 @@ description: Add guardrails to your LLM application to block harmful content in 
   **Let your agent set this up.** [Copy the evaluations prompt](/skills/directory) into your coding agent to get started automatically.
 </Tip>
 
-This guide shows how to integrate guardrails into your application using the LangWatch SDK. Guardrails run evaluators synchronously and return results you can act on immediately.
+Guardrails run LangWatch evaluators synchronously from your code, through the LangWatch SDK, and return a result you can act on immediately.
 
 ## Basic Usage
 
@@ -20,13 +20,14 @@ The key difference between guardrails and regular evaluations is the `as_guardra
 import langwatch
 
 @langwatch.trace()
-def my_llm_app(user_input): # Run guardrail check
-guardrail = langwatch.evaluation.evaluate(
-"azure/jailbreak",
-name="Jailbreak Detection",
-as_guardrail=True,
-data={"input": user_input},
-)
+def my_llm_app(user_input):
+    # Run guardrail check
+    guardrail = langwatch.evaluation.evaluate(
+        "azure/jailbreak",
+        name="Jailbreak Detection",
+        as_guardrail=True,
+        data={"input": user_input},
+    )
 
     # Check result and handle failure
     if not guardrail.passed:
@@ -35,8 +36,7 @@ data={"input": user_input},
     # Continue with normal processing
     response = call_llm(user_input)
     return response
-
-````
+```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
@@ -61,7 +61,7 @@ async function myLLMApp(userInput: string): Promise<string> {
   const response = await callLLM(userInput);
   return response;
 }
-````
+```
 
   </Tab>
 </Tabs>
@@ -197,21 +197,21 @@ For async applications, use `async_evaluate`:
 import langwatch
 
 @langwatch.trace()
-async def async_chatbot(user_input): # Async guardrail check
-guardrail = await langwatch.evaluation.async_evaluate(
-"azure/jailbreak",
-name="Jailbreak Detection",
-as_guardrail=True,
-data={"input": user_input},
-)
+async def async_chatbot(user_input):
+    # Async guardrail check
+    guardrail = await langwatch.evaluation.async_evaluate(
+        "azure/jailbreak",
+        name="Jailbreak Detection",
+        as_guardrail=True,
+        data={"input": user_input},
+    )
 
     if not guardrail.passed:
         return "I can't help with that request."
 
     response = await async_call_llm(user_input)
     return response
-
-````
+```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
@@ -225,7 +225,7 @@ const guardrail = await langwatch.evaluations.evaluate("azure/jailbreak", {
   asGuardrail: true,
   data: { input: userInput },
 });
-````
+```
 
   </Tab>
 </Tabs>
@@ -241,28 +241,29 @@ import asyncio
 import langwatch
 
 @langwatch.trace()
-async def chatbot_with_parallel_guards(user_input): # Run multiple guardrails in parallel
-jailbreak, moderation, off_topic = await asyncio.gather(
-langwatch.evaluation.async_evaluate(
-"azure/jailbreak",
-name="Jailbreak Detection",
-as_guardrail=True,
-data={"input": user_input},
-),
-langwatch.evaluation.async_evaluate(
-"openai/moderation",
-name="Content Moderation",
-as_guardrail=True,
-data={"input": user_input},
-),
-langwatch.evaluation.async_evaluate(
-"langevals/off_topic",
-name="Off Topic Check",
-as_guardrail=True,
-data={"input": user_input},
-settings={"allowed_topics": ["customer support", "product questions"]},
-),
-)
+async def chatbot_with_parallel_guards(user_input):
+    # Run multiple guardrails in parallel
+    jailbreak, moderation, off_topic = await asyncio.gather(
+        langwatch.evaluation.async_evaluate(
+            "azure/jailbreak",
+            name="Jailbreak Detection",
+            as_guardrail=True,
+            data={"input": user_input},
+        ),
+        langwatch.evaluation.async_evaluate(
+            "openai/moderation",
+            name="Content Moderation",
+            as_guardrail=True,
+            data={"input": user_input},
+        ),
+        langwatch.evaluation.async_evaluate(
+            "langevals/off_topic",
+            name="Off Topic Check",
+            as_guardrail=True,
+            data={"input": user_input},
+            settings={"allowed_topics": ["customer support", "product questions"]},
+        ),
+    )
 
     # Check all results
     if not jailbreak.passed:
@@ -273,8 +274,7 @@ settings={"allowed_topics": ["customer support", "product questions"]},
         return "I can only help with customer support questions."
 
     return await async_call_llm(user_input)
-
-````
+```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
@@ -316,7 +316,7 @@ async function chatbotWithParallelGuards(userInput: string): Promise<string> {
 
   return await callLLM(userInput);
 }
-````
+```
 
   </Tab>
 </Tabs>
@@ -347,7 +347,7 @@ Policy rules:
 User message: {input}
 
 Does this message violate our policy? Answer only 'true' or 'false'.""",
-            "model": "openai/gpt-5-mini",
+            "model": "openai/gpt-6-luna",
         },
     )
 
@@ -442,7 +442,7 @@ competitor_check = langwatch.evaluation.evaluate(
   <Card
     title="TypeScript SDK Reference"
     description="Full API documentation for the TypeScript SDK."
-    icon="square-js"
+    icon="typescript"
     href="/integration/typescript/reference"
   />
 </CardGroup>

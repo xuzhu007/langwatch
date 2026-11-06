@@ -1,8 +1,10 @@
 name: Upgrade rehearsal
 
-# Manual dispatch only for now; runner: dev/scripts/upgrade-rehearsal/rehearse.sh (see its README).
+# Runner: dev/scripts/upgrade-rehearsal/rehearse.sh (see its README).
 on:
   workflow_dispatch:
+  push:
+    branches: ["upgrade/upstream-3.23.0"]
 
 permissions:
   contents: read
@@ -19,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        origin: ["3.20.1", "main", "empty"]
+        origin: ["main", "empty"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -31,11 +33,17 @@ jobs:
         with:
           node-version: "24.22.1"
 
+      - name: Build the release image
+        run: |
+          docker build -f infra/docker/Dockerfile \
+            --build-arg LANGWATCH_BUILD_COMMIT="${GITHUB_SHA}" \
+            -t langwatch-fork:3.23.0 .
+
       - name: Rehearse the upgrade
         env:
           ORIGIN: ${{ matrix.origin }}
         run: |
-          args=(--origin "$ORIGIN" --build-head)
+          args=(--origin "$ORIGIN" --head-image langwatch-fork:3.23.0)
           if [[ "$ORIGIN" == "main" ]]; then args+=(--build-main); fi
           bash dev/scripts/upgrade-rehearsal/rehearse.sh "${args[@]}"
 
@@ -47,3 +55,21 @@ jobs:
           path: .claude/tmp/upgrade-rehearsal/**
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Package the verified release image
+        if: success() && matrix.origin == 'empty'
+        run: |
+          mkdir -p image-artifact
+          docker save langwatch-fork:3.23.0 | gzip > image-artifact/langwatch-3.23.0.tar.gz
+          cd image-artifact
+          sha256sum langwatch-3.23.0.tar.gz > SHA256SUMS
+          printf '%s\n' "${GITHUB_SHA}" > SOURCE_COMMIT
+
+      - name: Upload the release image
+        if: success() && matrix.origin == 'empty'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: langwatch-self-hosted-3.23.0
+          path: image-artifact/
+          compression-level: 0
+          retention-days: 7

@@ -220,10 +220,10 @@ describe("clickHouseFilterConditions", () => {
         paramId: "f0",
         key: "eval-1",
       });
-      expect(result.sql).toContain("ts.TraceId IN (");
-      expect(result.sql).toContain("SELECT assumeNotNull(TraceId)");
+      expect(result.sql).toContain("(ts.TenantId, ts.TraceId) IN (");
+      expect(result.sql).toContain("SELECT es.TenantId, assumeNotNull(es.TraceId)");
       expect(result.sql).toContain("TenantId = {tenantId:String}");
-      expect(result.sql).toContain("TraceId IS NOT NULL");
+      expect(result.sql).toContain("es.TraceId IS NOT NULL");
       expect(result.sql).not.toContain("= ts.TraceId");
       expect(result.params).toEqual({ f0_key: "eval-1", f0_values: ["positive"] });
     });
@@ -445,6 +445,47 @@ describe("generateClickHouseFilterConditions", () => {
         { startDate: 10 * DAY, endDate: 20 * DAY },
       );
       expect(result.conditions[0]).not.toContain("sp.StartTime");
+    });
+  });
+
+  describe("given a statement read through a proof's fence", () => {
+    it.each<[FilterField, Partial<Record<FilterField, FilterParam>>, "es" | "sp"]>([
+      ["evaluations.evaluator_id", { "evaluations.evaluator_id": ["eval-1"] }, "es"],
+      ["evaluations.passed", { "evaluations.passed": { "eval-1": ["true"] } }, "es"],
+      ["spans.type", { "spans.type": ["llm"] }, "sp"],
+    ])(
+      "when %s runs, its subquery takes the fence's tenants and the outer trace's own",
+      (_field, filters, alias) => {
+        const result = generateClickHouseFilterConditions(filters, undefined, { fenced: true });
+
+        expect(result.conditions[0]).toContain(`{{tenantSet}} AND ${alias}.TenantId = ts.TenantId`);
+        expect(result.conditions[0]).not.toContain("{tenantId:String}");
+      },
+    );
+
+    /** @scenario "Negated side-table filters match tenant and trace without correlation" */
+    it.each([
+      ["events.event_type", ["thumbs_up_down"], "stored_spans sp"],
+      ["evaluations.label", { "eval-1": ["positive"] }, "evaluation_runs es"],
+    ] as const)("keeps %s tenant-scoped without a correlated subquery", (field, values, table) => {
+      const result = generateClickHouseFilterConditions(
+        { [field]: values },
+        { startDate: 100, endDate: 200 },
+        { fenced: true, negateFilters: true },
+      );
+      expect(result.conditions[0]).toContain("NOT ((ts.TenantId, ts.TraceId) IN (");
+      expect(result.conditions[0]).toContain(`FROM ${table}`);
+      expect(result.conditions[0]).toContain("{{tenantSet}}");
+      expect(result.conditions[0]).not.toContain("{tenantId:String}");
+      expect(result.conditions[0]).not.toContain("= ts.TraceId");
+      expect(result.params).toHaveProperty("spanWindowEnd", 200 + 2 * 24 * 60 * 60 * 1000);
+    });
+
+    it("names the bound tenant when not fenced, as before", () => {
+      const result = generateClickHouseFilterConditions({ "spans.type": ["llm"] });
+
+      expect(result.conditions[0]).toContain("sp.TenantId = {tenantId:String}");
+      expect(result.conditions[0]).not.toContain("{{tenantSet}}");
     });
   });
 });

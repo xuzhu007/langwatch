@@ -42,7 +42,7 @@ services:
       retries: 30
 
   clickhouse:
-    image: langwatch/clickhouse-serverless:0.2.0
+    image: langwatch/clickhouse-serverless:0.4.0
     environment:
       CLICKHOUSE_PASSWORD: langwatch
     healthcheck:
@@ -54,7 +54,7 @@ services:
 
   # The second organisation's private route (CLICKHOUSE_URL__rehearsal__<org> in the env file).
   clickhouse-private:
-    image: langwatch/clickhouse-serverless:0.2.0
+    image: langwatch/clickhouse-serverless:0.4.0
     environment:
       CLICKHOUSE_PASSWORD: langwatch
     healthcheck:
