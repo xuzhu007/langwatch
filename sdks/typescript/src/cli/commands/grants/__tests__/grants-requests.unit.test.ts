@@ -2,7 +2,7 @@
  * What the grants commands SEND, and what `roles list` asks for.
  * @see specs/typescript-sdk/cli-grants.feature
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../utils/apiKey", () => ({
   resolveCredentials: vi.fn(async () => ({
@@ -50,7 +50,8 @@ const lastRequest = (): { url: string; body: unknown; init: RequestInit } => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  process.env.LANGWATCH_API_KEY = "test-key";
+  vi.stubEnv("LANGWATCH_API_KEY", "test-key");
+  vi.stubEnv("LANGWATCH_ENDPOINT", undefined);
   logged = [];
   mockFetch = vi.fn();
   global.fetch = mockFetch as unknown as typeof fetch;
@@ -59,6 +60,8 @@ beforeEach(() => {
   });
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("grants list", () => {
   describe("when grants are listed with a principal, a scope type and a status", () => {
