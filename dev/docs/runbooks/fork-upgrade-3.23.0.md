@@ -75,12 +75,13 @@ connection or upgrade diagnostic.
 
 ## Historical trace imports
 
-The fork applies the existing stale-event guard before evaluation summary reads.
-Previously, a month-old span could be stored successfully while its evaluation
-trigger retried for about 27 minutes because the summary's storage timestamp
-fell outside the event-anchored lookup window. Historical events now complete
-without dispatching evaluations; recent events still wait for their summary and
-retain the bounded retry behavior. This changes no trace retention or storage.
+The collector accepts spans up to 31 days old, while upstream's summary lookup
+searched only 30 days before the ingestion event. An accepted month-old span
+could therefore be stored while its evaluation trigger retried for about
+27 minutes without finding its summary. The fork aligns the final lookup slice
+with the collector's 31-day limit, keeping four bounded, nonoverlapping reads.
+It also skips already-stale events before the lookup. Trace retention and the
+existing rule against evaluating historical traces remain unchanged.
 
 ## Migrations and readiness
 

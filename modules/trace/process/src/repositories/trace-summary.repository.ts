@@ -2,7 +2,7 @@
 // repositories implement the interface as intentional no-ops.
 
 import type { Authorization } from "@langwatch/authorization";
-import type { TraceSummaryData } from "@langwatch/trace-contract";
+import { SPAN_MAX_PAST_MS, type TraceSummaryData } from "@langwatch/trace-contract";
 
 export interface FindByTraceIdOptions {
   /**
@@ -26,7 +26,7 @@ export const TRACE_SUMMARY_LOOKUP_LOOKBACK_STEPS_MS: readonly number[] = [
   3 * DAY_MS,
   7 * DAY_MS,
   21 * DAY_MS,
-  30 * DAY_MS,
+  SPAN_MAX_PAST_MS,
 ];
 /** How far after its anchor a trace may sit: clock skew between a span and its trace's start. */
 export const TRACE_SUMMARY_LOOKUP_FORWARD_MS = DAY_MS;

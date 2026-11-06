@@ -4059,7 +4059,7 @@ export class FoldedTraceSummaryReader extends TraceSummaryReaderRepository {
       return read.kind === "folded" ? read.state : null;
     }
 
-    // Anchored: adjacent bounded slices, narrowest first; a miss at the widest is final.
+    // Anchored: adjacent bounded slices through the collector window; a miss at the widest is final.
     const steps = widen
       ? TRACE_SUMMARY_LOOKUP_LOOKBACK_STEPS_MS
       : TRACE_SUMMARY_LOOKUP_LOOKBACK_STEPS_MS.slice(0, 1);

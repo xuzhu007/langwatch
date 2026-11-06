@@ -2,8 +2,8 @@ Feature: A trace summary lookup is anchored on the event's own time
   Another module reads a trace's folded summary through TraceApi.findSummary while it
   reacts to one of the trace's events. The lookup carries that event's occurredAt and
   trace searches trace_summaries outward from it in adjacent slices: three days back to
-  one day forward, then 3 to 7, 7 to 21 and 21 to 30 days back. It stops at the first
-  hit; a miss at 30 days is final, having read 31 days once. Every step is a bounded
+  one day forward, then 3 to 7, 7 to 21 and 21 to 31 days back. It stops at the first
+  hit; a miss at 31 days is final, having read 32 days once. Every step is a bounded
   read, never every partition. The anchor is when the span happened, never wall-clock
   now. A caller retrying a live trace may ask for the first slice only.
 
@@ -23,12 +23,12 @@ Feature: A trace summary lookup is anchored on the event's own time
     And each read began where the one before it ended, so no day was read twice
 
   @unit
-  Scenario: A trace 40 days before its anchor is final not-found after the 30-day step
+  Scenario: A trace 40 days before its anchor is final not-found after the 31-day step
     Given a trace whose summary was stored 40 days before the anchor
     When a module looks up the summary anchored on now
     Then no summary is found
-    And trace_summaries was read four times, reaching 3, 7, 21 and 30 days back
-    And the four reads together covered 31 days, each day once
+    And trace_summaries was read four times, reaching 3, 7, 21 and 31 days back
+    And the four reads together covered 32 days, each day once
     And no resolving read follows the miss
 
   @unit
@@ -43,7 +43,7 @@ Feature: A trace summary lookup is anchored on the event's own time
     Given traces stored from a minute to 300 days before their anchors
     When a module looks up each summary anchored on its span
     Then every read of trace_summaries is bounded by OccurredAt
-    And no lookup reads more than four times or further than 30 days back
+    And no lookup reads more than four times or further than 31 days back
 
   @unit
   Scenario: A lookup with no anchor behaves as before
@@ -65,3 +65,9 @@ Feature: A trace summary lookup is anchored on the event's own time
     Then the lookup is anchored on the span's own time and may widen
     And a late span of a long trace is still evaluated
 
+
+  @unit
+  Scenario: A late span admitted by the collector remains inside the summary lookup
+    Given a trace stored 30 days and one minute before the current ingestion event
+    When a subscriber looks up the summary using that ingestion event's timestamp
+    Then the existing summary is found within four bounded reads

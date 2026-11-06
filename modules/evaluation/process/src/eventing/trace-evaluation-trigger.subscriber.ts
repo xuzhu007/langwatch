@@ -90,7 +90,7 @@ export function createTraceEvaluationTrigger(deps: TraceEvaluationTriggerDeps): 
   return async ({ tenantId, traceId, event, deliveryAttempt }) => {
     // Replayed history is ineligible even if its summary is outside the lookup window.
     if (!passesTraceEventGuards(event)) return;
-    // Anchored on the event's own time; a full miss reads 31 days once, so retries stay cheap.
+    // Anchored on the event's own time; a full miss reads 32 days once, so retries stay cheap.
     const foldState = await deps.findSummary({
       projectId: tenantId,
       traceId,
