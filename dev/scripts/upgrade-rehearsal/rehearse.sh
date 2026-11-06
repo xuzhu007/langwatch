@@ -468,12 +468,24 @@ phase3_rollback() {
     write_psql_shim
     local password="Rollback-$(node -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
     smoke=0
-    PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
-      bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$email" "$password" \
-      >"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 &&
+    if [[ "$ORIGIN" == "main" ]]; then
+      # 3.21+ grants platform-operator access once. ADMIN_EMAILS does not grant
+      # a newly inserted rollback user while the original operator exists.
+      # Reuse the pre-upgrade account to exercise its persisted access too.
+      email="$SEED_EMAIL"
+      password="$SEED_PASSWORD"
+      : >"$RUN_DIR/evidence/logs/rollback-smoke.log"
+      wait_http "http://localhost:${OLD_APP_PORT}/readyz" 600 || smoke=$?
+    else
+      PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
+        bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$email" "$password" \
+        >"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
+    fi
+    if [[ "$smoke" -eq 0 ]]; then
       APP_BASE="http://localhost:${OLD_APP_PORT}" SMOKE_EMAIL="$email" SMOKE_PASSWORD="$password" \
         SMOKE_TRPC_FORMAT="$(old_trpc_format)" SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
         >>"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
+    fi
     sleep 30
   fi
   compose logs --no-color --no-log-prefix old-app >"$RUN_DIR/evidence/logs/old-app-rollback.log" 2>&1 || true

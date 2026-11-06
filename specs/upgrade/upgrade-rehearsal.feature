@@ -31,6 +31,7 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then their timestamps leave a margin inside the 31-day admission limit
     And the sent span count must still match the stored span count
 
+  @unit
   Scenario: The seeded traces span the current and the previous month
     When an OTLP batch of traces is generated for a project at a given instant
     Then half of the traces start in that month and half in the month before
