@@ -42,6 +42,7 @@ jobs:
       - name: Rehearse the upgrade
         env:
           ORIGIN: ${{ matrix.origin }}
+          REHEARSAL_IS_SAAS: "false"
         run: |
           args=(--origin "$ORIGIN" --head-image langwatch-fork:3.23.0)
           if [[ "$ORIGIN" == "main" ]]; then args+=(--build-main); fi

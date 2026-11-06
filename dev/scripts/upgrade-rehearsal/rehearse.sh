@@ -149,7 +149,9 @@ write_env_file() {
     echo "BASE_HOST=http://localhost:${OLD_APP_PORT}"
     echo "NEXTAUTH_URL=http://localhost:${OLD_APP_PORT}"
     echo "AUTH_PROVIDER=email"
-    echo "IS_SAAS=true"
+    echo "IS_SAAS=${REHEARSAL_IS_SAAS:-true}"
+    echo "LANGWATCH_CONNECT_DISABLED=true"
+    echo "DISABLE_USAGE_STATS=true"
     echo "GROUP_QUEUE_ENVELOPE_WRITES_ENABLED=true"
     # Main's SaaS boot throws without a Stripe key; a dummy test key, never a real one.
     echo "STRIPE_SECRET_KEY=sk_test_rehearsal"
