@@ -15,7 +15,8 @@ HEAD_IMAGE=""
 BUILD_MAIN=0
 BUILD_HEAD=0
 ORDER="api-first"
-SETTLE_SECONDS=300
+# A queued retry can already be delayed by up to 600 seconds at the upgrade cut.
+SETTLE_SECONDS=900
 DRILL_SECONDS=120
 SEED_TRACES=200
 SEED_PER_KIND=1
@@ -197,9 +198,15 @@ post_traces() {
 }
 
 # Every group-queue key under any queue with its size, as a flat JSON [key, size, ...] array.
-snapshot_queues() {
+queue_snapshot() {
   local lua='local out={} local c="0" repeat local r=redis.call("SCAN",c,"MATCH","*:gq:*:jobs","COUNT",1000) c=r[1] for _,k in ipairs(r[2]) do local t=redis.call("TYPE",k)["ok"] local n=0 if t=="zset" then n=redis.call("ZCARD",k) elseif t=="list" then n=redis.call("LLEN",k) elseif t=="hash" then n=redis.call("HLEN",k) elseif t=="set" then n=redis.call("SCARD",k) end out[#out+1]=k out[#out+1]=tostring(n) end until c=="0" return cjson.encode(out)'
-  compose exec -T redis redis-cli --raw EVAL "$lua" 0 >"$RUN_DIR/evidence/$1"
+  compose exec -T redis redis-cli --raw EVAL "$lua" 0
+}
+
+snapshot_queues() { queue_snapshot >"$RUN_DIR/evidence/$1"; }
+
+queue_depth() {
+  queue_snapshot | node -e 'const a=JSON.parse(require("node:fs").readFileSync(0,"utf8")); let n=0; for(let i=1;i<a.length;i+=2) n+=Number(a[i]); console.log(n)'
 }
 
 ledger_query() {
@@ -412,10 +419,11 @@ collect_spans() {
 }
 
 settle() {
-  local deadline=$((SECONDS + SETTLE_SECONDS)) open
+  local deadline=$((SECONDS + SETTLE_SECONDS)) open queued
   while ((SECONDS < deadline)); do
     open="$(psql_at "SELECT count(*) FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE mode = 'background' AND status IN ('pending', 'running')" 2>/dev/null || echo 1)"
-    [[ "$open" == "0" ]] && break
+    queued="$(queue_depth 2>/dev/null || echo 1)"
+    [[ "$open" == "0" && "$queued" == "0" ]] && break
     sleep 5
   done
 }
