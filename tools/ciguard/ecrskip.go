@@ -88,25 +88,30 @@ func jobSkipGates(rel, job string, j ciscan.Job) []string {
 			check = step
 		}
 		if pushes(step, exempt) {
-			problems = append(problems, pushProblems(rel+" job "+job, exempt, check, step)...)
+			problems = append(problems, pushProblems(pushContext{where: rel + " job " + job, exempt: exempt}, check, step)...)
 		}
 	}
 
 	return problems
 }
 
-func pushProblems(where string, exempt bool, check, step *ciscan.Step) []string {
-	if exempt {
-		return []string{fmt.Sprintf("%s: %q writes to the registry with something other than `imagetools create` and %#q, the only writes behind its ecrtag checks", where, step.Name, ecrtagLambda)}
+type pushContext struct {
+	where  string
+	exempt bool
+}
+
+func pushProblems(context pushContext, check, step *ciscan.Step) []string {
+	if context.exempt {
+		return []string{fmt.Sprintf("%s: %q writes to the registry with something other than `imagetools create` and %#q, the only writes behind its ecrtag checks", context.where, step.Name, ecrtagLambda)}
 	}
 	if check == nil || !gated(step.If) {
-		return []string{fmt.Sprintf("%s: %q pushes without an earlier `id: exists` step running %q and %#q as a top-level && term of its if:", where, step.Name, ecrtagPublished, skipGate)}
+		return []string{fmt.Sprintf("%s: %q pushes without an earlier `id: exists` step running %q and %#q as a top-level && term of its if:", context.where, step.Name, ecrtagPublished, skipGate)}
 	}
 	if step.Run != "" {
 		return nil
 	}
 	if want := checkedImage(check); want == "" || !slices.Equal(tagList(step.With["tags"]), []string{registryHost + "/" + want}) {
-		return []string{fmt.Sprintf("%s: %q pushes tags %v, not exactly the %q its exists step checked", where, step.Name, step.With["tags"], want)}
+		return []string{fmt.Sprintf("%s: %q pushes tags %v, not exactly the %q its exists step checked", context.where, step.Name, step.With["tags"], want)}
 	}
 
 	return nil
