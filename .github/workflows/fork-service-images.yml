@@ -1,0 +1,94 @@
+name: Fork service images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["upgrade/upstream-3.23.0"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-service-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and verify ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: langwatch_nlp
+            python: /usr/bin/python3.11
+            health: http://127.0.0.1:5561/healthz
+          - service: langevals
+            python: /usr/local/bin/python
+            health: http://127.0.0.1:5562/healthcheck
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - name: Build the service image
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker build -f "infra/docker/Dockerfile.${SERVICE}" \
+            --build-arg VERSION="3.23.0-${GITHUB_SHA}" \
+            -t "langwatch-fork-${SERVICE}:3.23.0" .
+      - name: Verify without outbound networking
+        env:
+          SERVICE: ${{ matrix.service }}
+          PYTHON: ${{ matrix.python }}
+          HEALTH: ${{ matrix.health }}
+        run: |
+          docker run -d --name service-smoke --network none \
+            -e DISABLE_EVALUATORS_PRELOAD=true \
+            "langwatch-fork-${SERVICE}:3.23.0"
+          ready=false
+          for attempt in $(seq 1 90); do
+            if docker exec service-smoke "$PYTHON" -c \
+              'import sys,urllib.request; assert urllib.request.urlopen(sys.argv[1], timeout=2).status == 200' "$HEALTH"; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          if [[ "$SERVICE" == langevals ]]; then
+            docker exec service-smoke "$PYTHON" -c '
+          import json, urllib.request
+          data = {"data": [{"output": "alpha", "expected_output": "alpha"}, {"output": "beta", "expected_output": "gamma"}]}
+          request = urllib.request.Request("http://127.0.0.1:5562/langevals/exact_match/evaluate", data=json.dumps(data).encode(), headers={"Content-Type": "application/json"})
+          result = json.load(urllib.request.urlopen(request, timeout=30))
+          assert [row["passed"] for row in result] == [True, False], result
+          print("Offline exact-match evaluation passed")'
+          else
+            docker exec service-smoke "$PYTHON" -c 'import langwatch; print("Sandbox SDK import passed")'
+          fi
+      - name: Collect runtime logs
+        if: always()
+        run: docker logs service-smoke > service-smoke.log 2>&1 || true
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.service }}-smoke
+          path: service-smoke.log
+          retention-days: 14
+      - name: Package the verified image
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          mkdir -p image-artifact
+          docker save "langwatch-fork-${SERVICE}:3.23.0" | gzip > "image-artifact/${SERVICE}-3.23.0.tar.gz"
+          cd image-artifact
+          sha256sum "${SERVICE}-3.23.0.tar.gz" > SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT
+      - name: Upload the service image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.service }}-self-hosted-3.23.0
+          path: image-artifact/
+          compression-level: 0
+          retention-days: 7

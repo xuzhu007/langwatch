@@ -1,6 +1,6 @@
 // The HTTP smoke an old image runs on head's migrated schema: the first deploy
 // and a rollback put exactly that pair in production (specs/ci/migration-compat.feature).
-// It speaks the old image's public wire only, so it holds for 3.20.1 and main.
+// Select the public wire explicitly: 3.20.1 uses superjson, 3.21+ uses plain JSON.
 // Usage: node smoke.mjs  (APP_BASE, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_LABEL)
 
 import { randomUUID } from "node:crypto";
@@ -44,7 +44,10 @@ async function answerOf({ what, response }) {
 }
 
 /** The old image's wire: tRPC with superjson envelopes, REST with a project key. */
-export function createWire({ appBase, origin = appBase, fetchImpl = fetch }) {
+export function createWire({ appBase, origin = appBase, fetchImpl = fetch, format = "superjson" }) {
+  if (!["superjson", "plain"].includes(format)) throw new Error(`Unknown tRPC format: ${format}`);
+  const encode = (input) => JSON.stringify(format === "plain" ? input : { json: input });
+  const decode = (body) => (format === "plain" ? body.result.data : body.result.data.json);
   const state = { cookie: null };
   const headers = () => ({
     "Content-Type": "application/json",
@@ -68,19 +71,39 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch }) {
       return answerOf({ what: "GET /api/auth/get-session", response });
     },
     async query({ path, input }) {
-      const encoded = encodeURIComponent(JSON.stringify({ json: input }));
+      const encoded = encodeURIComponent(encode(input));
       const response = await fetchImpl(`${appBase}/api/trpc/${path}?input=${encoded}`, {
         headers: headers(),
       });
-      return (await answerOf({ what: `query ${path}`, response })).result.data.json;
+      return decode(await answerOf({ what: `query ${path}`, response }));
     },
     async mutate({ path, input }) {
       const response = await fetchImpl(`${appBase}/api/trpc/${path}`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ json: input }),
+        body: encode(input),
       });
-      return (await answerOf({ what: `mutation ${path}`, response })).result.data.json;
+      return decode(await answerOf({ what: `mutation ${path}`, response }));
+    },
+    async projectKey({ organizationId, projectId }) {
+      if (format === "superjson") {
+        return (await this.query({ path: "project.getProjectAPIKey", input: { projectId } }))
+          .apiKey;
+      }
+      const { token } = await this.mutate({
+        path: "apiKey.create",
+        input: {
+          organizationId,
+          name: "Upgrade rehearsal",
+          keyType: "service",
+          permissionMode: "all",
+          bindings: [{ role: "ADMIN", scopeType: "PROJECT", scopeId: projectId }],
+        },
+      });
+      return token;
+    },
+    async revokeTestBinding({ organizationId, userId, projectId }) {
+      return exerciseBindingRevocation({ wire: this, format, organizationId, userId, projectId });
     },
     async rest({ method, path, apiKey, body }) {
       const response = await fetchImpl(`${appBase}${path}`, {
@@ -91,6 +114,64 @@ export function createWire({ appBase, origin = appBase, fetchImpl = fetch }) {
       return answerOf({ what: `${method} ${path}`, response });
     },
   };
+}
+
+/** Revoke a disposable grant using the selected release's management surface. */
+async function exerciseBindingRevocation({ wire, format, organizationId, userId, projectId }) {
+  if (format === "superjson") {
+    const binding = await wire.mutate({
+      path: "roleBinding.create",
+      input: {
+        organizationId,
+        userId,
+        role: "VIEWER",
+        scopeType: "PROJECT",
+        scopeId: projectId,
+      },
+    });
+    await wire.mutate({
+      path: "roleBinding.delete",
+      input: { organizationId, bindingId: binding.id },
+    });
+    return;
+  }
+  const grant = await wire.mutate({
+    path: "authz.createGrant",
+    input: {
+      organizationId,
+      grant: {
+        principal: { type: "user", id: userId },
+        roleId: "viewer",
+        scope: { type: "project", id: projectId },
+      },
+    },
+  });
+  const waitForPresence = async (present) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const page = await wire.query({
+        path: "authz.listGrants",
+        input: {
+          organizationId,
+          query: {
+            principalType: "user",
+            principalId: userId,
+            scopeType: "project",
+            scopeId: projectId,
+            limit: 200,
+          },
+        },
+      });
+      if (page.grants.some((entry) => entry.id === grant.id) === present) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Grant did not become ${present ? "visible" : "revoked"}`);
+  };
+  await waitForPresence(true);
+  await wire.mutate({
+    path: "authz.revokeGrant",
+    input: { organizationId, grantId: grant.id },
+  });
+  await waitForPresence(false);
 }
 
 /** The steps, in order; each reads and writes the context the earlier ones left. */
@@ -134,11 +215,10 @@ export function smokeSteps() {
         const organizations = await wire.query({ path: "organization.getAll", input: {} });
         ctx.projectId = findProjectId({ organizations, slug: created.projectSlug });
         if (!ctx.projectId) throw new Error(`project ${created.projectSlug} is not listed`);
-        const { apiKey } = await wire.query({
-          path: "project.getProjectAPIKey",
-          input: { projectId: ctx.projectId },
+        ctx.apiKey = await wire.projectKey({
+          organizationId: ctx.organizationId,
+          projectId: ctx.projectId,
         });
-        ctx.apiKey = apiKey;
         if (!ctx.apiKey) throw new Error("the project has no API key");
       },
     },
@@ -236,19 +316,10 @@ export function smokeSteps() {
     {
       name: "revoke a binding",
       run: async ({ wire, ctx }) => {
-        const binding = await wire.mutate({
-          path: "roleBinding.create",
-          input: {
-            organizationId: ctx.organizationId,
-            userId: ctx.userId,
-            role: "VIEWER",
-            scopeType: "PROJECT",
-            scopeId: ctx.projectId,
-          },
-        });
-        await wire.mutate({
-          path: "roleBinding.delete",
-          input: { organizationId: ctx.organizationId, bindingId: binding.id },
+        await wire.revokeTestBinding({
+          organizationId: ctx.organizationId,
+          userId: ctx.userId,
+          projectId: ctx.projectId,
         });
       },
     },
@@ -278,7 +349,7 @@ async function main() {
     process.exit(2);
   }
   const ctx = { label: SMOKE_LABEL, email: SMOKE_EMAIL, password: SMOKE_PASSWORD };
-  const wire = createWire({ appBase: APP_BASE });
+  const wire = createWire({ appBase: APP_BASE, format: process.env.SMOKE_TRPC_FORMAT });
   const { failed } = await runSmoke({ steps: smokeSteps(), wire, ctx });
   if (failed) {
     console.log(

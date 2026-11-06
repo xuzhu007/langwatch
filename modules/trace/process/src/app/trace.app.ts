@@ -2582,6 +2582,7 @@ export class TraceModule implements TraceApi, CollectorApp {
     filters: Readonly<Record<string, unknown>>;
     negateFilters?: boolean;
     window?: { startDate?: number; endDate?: number };
+    fenced?: boolean;
   }): GenerateFilterConditionsResult {
     return translateLegacyFilters(input);
   }
@@ -4058,7 +4059,7 @@ export class FoldedTraceSummaryReader extends TraceSummaryReaderRepository {
       return read.kind === "folded" ? read.state : null;
     }
 
-    // Anchored: adjacent bounded slices, narrowest first; a miss at the widest is final.
+    // Anchored slices cover the collector window; a miss at the widest is final.
     const steps = widen
       ? TRACE_SUMMARY_LOOKUP_LOOKBACK_STEPS_MS
       : TRACE_SUMMARY_LOOKUP_LOOKBACK_STEPS_MS.slice(0, 1);

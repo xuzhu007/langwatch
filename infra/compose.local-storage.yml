@@ -1,0 +1,19 @@
+# Optional for installations using the filesystem object store. Copy existing
+# objects into this volume before enabling it; see the fork upgrade runbook.
+# Apply together with compose.yml, using --project-directory at the repo root.
+services:
+  app:
+    environment:
+      STORED_OBJECTS_BACKEND: file
+      LANGWATCH_LOCAL_STORAGE_PATH: /var/lib/langwatch/objects
+    volumes:
+      - langwatch_objects:/var/lib/langwatch/objects
+  workers:
+    environment:
+      STORED_OBJECTS_BACKEND: file
+      LANGWATCH_LOCAL_STORAGE_PATH: /var/lib/langwatch/objects
+    volumes:
+      - langwatch_objects:/var/lib/langwatch/objects
+
+volumes:
+  langwatch_objects:

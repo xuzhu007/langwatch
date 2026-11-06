@@ -120,6 +120,36 @@ void describe("phase 5 drills", () => {
     );
   });
 
+  /** @scenario "Re-inferring a completed schema baseline does not mean it ran again" */
+  void it("accepts only an unattempted inferred schema record and still rejects changed work", () => {
+    const before = [step("a:x", "done")];
+    const baseline = step("prisma:0_init", "done", {
+      kind: "postgres-schema",
+      inferred: true,
+      attempt: 0,
+      finished_at: null,
+    });
+    const evidence = { noopRun: { exit: 0 }, stepsNoopBefore: before };
+    assert.equal(
+      finding({ ...evidence, stepsNoopAfter: [...before, baseline] }, "NO-OP").verdict,
+      VERDICT.notReproduced,
+    );
+    for (const change of [
+      { attempt: 1 },
+      { inferred: false },
+      { status: "failed" },
+      { kind: "data" },
+      { finished_at: "2026-11-06T01:00:00Z" },
+    ]) {
+      assert.equal(
+        finding({ ...evidence, stepsNoopAfter: [...before, { ...baseline, ...change }] }, "NO-OP")
+          .verdict,
+        VERDICT.reproduced,
+      );
+    }
+    assert.equal(finding({ ...evidence, stepsNoopAfter: [] }, "NO-OP").verdict, VERDICT.reproduced);
+  });
+
   /** @scenario "A step killed by SIGKILL that never settles reproduces SIGKILL" */
   void it("reproduces SIGKILL when the killed step never settles", () => {
     const killDrill = { runningAtSignal: ["a:x"], after: [step("a:x", "running")] };

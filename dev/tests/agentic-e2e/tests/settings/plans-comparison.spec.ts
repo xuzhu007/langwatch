@@ -7,6 +7,7 @@ import { test, expect } from "../test.ts";
  */
 
 test.describe("Settings Plans Comparison", () => {
+  /** @scenario "The internal deployment keeps enterprise capabilities available" */
   test("member compares plans on the plans page", async ({ page }) => {
     // Navigate to the plans comparison page
     await page.goto("/settings/plans");
@@ -33,12 +34,10 @@ test.describe("Settings Plans Comparison", () => {
     await expect(growthPlan.getByText("Growth")).toBeVisible();
     await expect(enterprisePlan.getByText("Enterprise")).toBeVisible();
 
-    // This deployment is self-hosted and unlicensed, so it is on none of the
-    // Cloud tiers. Marking Free as current would quote its two-seat,
-    // fifty-thousand-event limits at an operator who is capped by neither.
+    // PR #62's internal deployment deliberately resolves an unlimited Enterprise plan.
     await expect(freePlan.getByText("Current")).toHaveCount(0);
     await expect(growthPlan.getByText("Current")).toHaveCount(0);
-    await expect(enterprisePlan.getByText("Current")).toHaveCount(0);
+    await expect(enterprisePlan.getByText("Current")).toBeVisible();
 
     // Verify plan capabilities are shown side-by-side (billing toggle exists)
     await expect(page.getByTestId("billing-period-toggle")).toBeVisible();

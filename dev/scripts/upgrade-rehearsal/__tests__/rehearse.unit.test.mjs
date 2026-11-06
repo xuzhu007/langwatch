@@ -73,3 +73,37 @@ void describe("a host that cannot run compose", () => {
     assert.deepEqual(readdirSync(bin), ["docker"]);
   });
 });
+
+void describe("settling the upgraded stack", () => {
+  /** @scenario "Jobs queued at the cut that head drains settle Q09, and jobs it leaves reproduce it" */
+  void it("waits for pending queue jobs even when every migration is done", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mig-rehearsal-settle-"));
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+      source "$1"
+      attempts="$2/attempts"
+      echo 0 > "$attempts"
+      psql_at() { echo 0; }
+      queue_depth() {
+        local n=$(cat "$attempts")
+        echo $((n + 1)) > "$attempts"
+        if ((n == 0)); then echo 4; else echo 0; fi
+      }
+      sleep() { :; }
+      SETTLE_SECONDS=5
+      settle
+      cat "$attempts"
+    `,
+        "test",
+        script,
+        dir,
+      ],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "2");
+  });
+});

@@ -25,6 +25,13 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then there is no old image and phase 0 seeds nothing
 
   @unit
+  Scenario: Historical seeds remain inside the public collector ingestion window
+    Given the preceding calendar month has 31 days
+    When historical traces are seeded through the public collector
+    Then their timestamps leave a margin inside the 31-day admission limit
+    And the sent span count must still match the stored span count
+
+  @unit
   Scenario: The seeded traces span the current and the previous month
     When an OTLP batch of traces is generated for a project at a given instant
     Then half of the traces start in that month and half in the month before
@@ -55,6 +62,19 @@ Feature: The upgrade is rehearsed from real images before it ships
     And the ledger records it done with a finish time between the signal and the exit
     When the findings are evaluated
     Then F-2 is "reproduced" and names the step
+
+  @unit
+  Scenario: A step completing before the worker receives SIGTERM leaves the interruption inconclusive
+    Given Docker has been asked to signal a worker with a running background step
+    And the step completes before the worker logs receiving SIGTERM
+    When the findings are evaluated
+    Then F-2 is "inconclusive" because the signal did not interrupt that step
+
+  @unit
+  Scenario: Missing worker signal acknowledgement leaves the SIGTERM drill inconclusive
+    Given a SIGTERM drill with no worker acknowledgement between the request and exit
+    When the findings are evaluated
+    Then F-2 is "inconclusive" instead of inferring receipt from the Docker command time
 
   @unit
   Scenario: Jobs queued at the cut that head drains settle Q09, and jobs it leaves reproduce it
@@ -111,6 +131,12 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then NO-OP is "reproduced"
 
   @unit
+  Scenario: Re-inferring a completed schema baseline does not mean it ran again
+    Given a repeat upgrade adds a completed inferred schema record with no attempt or finish
+    Then NO-OP is "not-reproduced"
+    But an attempted, failed, missing or newly executed step reproduces NO-OP
+
+  @unit
   Scenario: A private ClickHouse target behind the shared one reproduces TARGETS
     Given one organisation routed to a private ClickHouse
     When the private target's goose version differs from the shared one or it has no ledger rows
@@ -161,3 +187,11 @@ Feature: The upgrade is rehearsed from real images before it ships
   Scenario: A fresh install from an empty database
     When head's upgrade runs on empty stores and head's api and worker start
     Then every data step is not-needed or done and a second upgrade applies nothing
+
+  @unit
+  Scenario: Only completed rehearsal evidence permits packaging an upgrade image
+    Given a fork-main upgrade or an empty-install rehearsal report
+    When the image packaging gate checks the report
+    Then the migration must have succeeded and the final ledger must be nonempty and settled
+    And the required checks must have conclusive successful evidence
+    And a reproduced failure prevents packaging

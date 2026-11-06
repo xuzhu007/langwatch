@@ -5,7 +5,6 @@ import type { ClickHouseFilterQueryParams } from "../clickhouse.filter-shapes.ma
 
 describe("clickHouseFilters", () => {
   const baseParams: ClickHouseFilterQueryParams = {
-    tenantId: "test-project",
     startDate: 0,
     endDate: 1000,
   };
@@ -19,6 +18,7 @@ describe("clickHouseFilters", () => {
       expect(sql).toContain("arrayJoin(");
       expect(sql).toContain("Events.Name");
       expect(sql).toContain("FROM stored_spans");
+      expect(sql).toContain("{{tenantScope:");
       // 下拉选项不能读取未填充的 span 属性；
       // 事件实际以 OTel span event 形式存储在 Events.Name 数组中。
       expect(sql).not.toContain("SpanAttributes['event.type']");

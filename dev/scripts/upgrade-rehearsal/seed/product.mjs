@@ -295,9 +295,9 @@ async function prepare({ wire, ctx }) {
       },
     })
     .catch(() => {}); // a failure shows up as the prompt kind's own MODEL_NOT_CONFIGURED
-  const { apiKey } = await wire.query({
-    path: "project.getProjectAPIKey",
-    input: { projectId: ctx.projectId },
+  const apiKey = await wire.projectKey({
+    organizationId: ctx.organizationId,
+    projectId: ctx.projectId,
   });
   ctx.traceId = `rehearsal-${randomUUID()}`;
   await wire.rest({
@@ -428,7 +428,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       );
   }
   // Head shares the old image's BASE_HOST, so its auth trusts only that origin.
-  const wire = createWire({ appBase: process.env.APP_BASE, origin: process.env.APP_ORIGIN });
+  const wire = createWire({
+    appBase: process.env.APP_BASE,
+    origin: process.env.APP_ORIGIN,
+    format: process.env.SMOKE_TRPC_FORMAT,
+  });
   const result =
     mode === "seed"
       ? await seedProducts({ wire, ctx })

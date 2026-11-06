@@ -123,3 +123,13 @@ Feature: ClickHouse filter-SQL generation
       Given more than one filter field is selected
       When the conditions are generated
       Then each field's bound parameters use a distinct, incrementing parameter id
+
+  Rule: Negated label and event filters preserve the authorised tenant boundary
+
+    @unit
+    Scenario: Negated side-table filters match tenant and trace without correlation
+      Given an event-name or evaluation-label filter read through an authorisation fence
+      When the filter is negated within a time window
+      Then the subquery matches both tenant ID and trace ID
+      And it uses the fence tenant set without an outer correlated predicate
+      And the time-window parameters remain bound

@@ -23,7 +23,9 @@ export function previousMonth({ at }) {
 /** An OTLP/JSON export of `count` two-span traces; even traces now, odd a month earlier. */
 export function otlpBatch({ service, count, at, randomHex = hex }) {
   const now = new Date(at).getTime();
-  const before = previousMonth({ at }).getTime();
+  // The public collector admits only 31 days. Leave a day's margin for the
+  // one-minute span offset and the upgrade itself, including 31-day months.
+  const before = Math.max(previousMonth({ at }).getTime(), now - 30 * 24 * 60 * 60 * 1000);
   const spans = [];
   for (let i = 0; i < count; i++) {
     const start = (i % 2 === 0 ? now : before) - 60_000 + i;

@@ -15,7 +15,8 @@ HEAD_IMAGE=""
 BUILD_MAIN=0
 BUILD_HEAD=0
 ORDER="api-first"
-SETTLE_SECONDS=300
+# A queued retry can already be delayed by up to 600 seconds at the upgrade cut.
+SETTLE_SECONDS=900
 DRILL_SECONDS=120
 SEED_TRACES=200
 SEED_PER_KIND=1
@@ -132,7 +133,13 @@ preflight() {
 log() { printf '[rehearse %s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$RUN_DIR/rehearse.log" >&2; }
 
 compose() {
+  local worker_dir=/app/platform/app worker_command=start:workers
+  if [[ "$ORIGIN" == "main" ]]; then
+    worker_dir=/app/apps/worker
+    worker_command=start
+  fi
   OLD_IMAGE="${OLD_IMAGE:-langwatch/langwatch:3.20.1}" HEAD_IMAGE="$HEAD_IMAGE" \
+    OLD_WORKER_DIR="$worker_dir" OLD_WORKER_COMMAND="$worker_command" \
     REHEARSAL_ENV_FILE="$RUN_DIR/rehearsal.env" REHEARSAL_PROJECT="$PROJECT" \
     docker compose -f "$HERE/compose.yml" --profile old --profile head "$@"
 }
@@ -149,7 +156,9 @@ write_env_file() {
     echo "BASE_HOST=http://localhost:${OLD_APP_PORT}"
     echo "NEXTAUTH_URL=http://localhost:${OLD_APP_PORT}"
     echo "AUTH_PROVIDER=email"
-    echo "IS_SAAS=true"
+    echo "IS_SAAS=${REHEARSAL_IS_SAAS:-true}"
+    echo "LANGWATCH_CONNECT_DISABLED=true"
+    echo "DISABLE_USAGE_STATS=true"
     echo "GROUP_QUEUE_ENVELOPE_WRITES_ENABLED=true"
     # Main's SaaS boot throws without a Stripe key; a dummy test key, never a real one.
     echo "STRIPE_SECRET_KEY=sk_test_rehearsal"
@@ -189,14 +198,20 @@ post_traces() {
 }
 
 # Every group-queue key under any queue with its size, as a flat JSON [key, size, ...] array.
-snapshot_queues() {
+queue_snapshot() {
   local lua='local out={} local c="0" repeat local r=redis.call("SCAN",c,"MATCH","*:gq:*:jobs","COUNT",1000) c=r[1] for _,k in ipairs(r[2]) do local t=redis.call("TYPE",k)["ok"] local n=0 if t=="zset" then n=redis.call("ZCARD",k) elseif t=="list" then n=redis.call("LLEN",k) elseif t=="hash" then n=redis.call("HLEN",k) elseif t=="set" then n=redis.call("SCARD",k) end out[#out+1]=k out[#out+1]=tostring(n) end until c=="0" return cjson.encode(out)'
-  compose exec -T redis redis-cli --raw EVAL "$lua" 0 >"$RUN_DIR/evidence/$1"
+  compose exec -T redis redis-cli --raw EVAL "$lua" 0
+}
+
+snapshot_queues() { queue_snapshot >"$RUN_DIR/evidence/$1"; }
+
+queue_depth() {
+  queue_snapshot | node -e 'const a=JSON.parse(require("node:fs").readFileSync(0,"utf8")); let n=0; for(let i=1;i<a.length;i+=2) n+=Number(a[i]); console.log(n)'
 }
 
 ledger_query() {
   local schema="mydb_upgrade_ledger"
-  psql_json "SELECT id, kind, mode, status, attempt, last_error, report, started_at, finished_at FROM \"$schema\".\"_langwatch_upgrade_step\" ORDER BY id" >"$RUN_DIR/evidence/$1"
+  psql_json "SELECT id, kind, mode, status, inferred, attempt, last_error, report, started_at, finished_at FROM \"$schema\".\"_langwatch_upgrade_step\" ORDER BY id" >"$RUN_DIR/evidence/$1"
 }
 
 build_images() {
@@ -212,6 +227,16 @@ build_images() {
   fi
 }
 
+old_trpc_format() {
+  if [[ "$ORIGIN" == "3.20.1" ]]; then echo superjson; else echo plain; fi
+}
+
+# Bootstrap the disposable fixture through the supported task, after its account exists.
+grant_seed_operator() {
+  [[ "$ORIGIN" != main ]] || compose exec -T -w /app/apps/tasks old-app \
+    pnpm --silent task grant-platform-operator "$SEED_EMAIL"
+}
+
 # Phase 0 product seeds through the old image's tRPC as a seeded account (seed/product.mjs).
 # A failure is evidence: each kind it left unseeded reads inconclusive.
 phase0_products() {
@@ -225,9 +250,10 @@ phase0_products() {
   PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
     bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$SEED_EMAIL" "$SEED_PASSWORD" \
     >"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 &&
+    grant_seed_operator >>"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 &&
     PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
       APP_BASE="http://localhost:${OLD_APP_PORT}" SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
-      SEED_LABEL="$RUN_ID" SEED_PER_KIND="$SEED_PER_KIND" OUT="$RUN_DIR/evidence/product-seeds.json" node "$HERE/seed/product.mjs" seed \
+      SMOKE_TRPC_FORMAT="$(old_trpc_format)" SEED_LABEL="$RUN_ID" SEED_PER_KIND="$SEED_PER_KIND" OUT="$RUN_DIR/evidence/product-seeds.json" node "$HERE/seed/product.mjs" seed \
       >>"$RUN_DIR/evidence/logs/product-seed.log" 2>&1 ||
     log "phase 0: product seeds failed (logs/product-seed.log); their findings read inconclusive"
 }
@@ -236,7 +262,7 @@ phase0_products() {
 collect_products() {
   [[ -s "$RUN_DIR/evidence/product-seeds.json" ]] || return 0
   APP_BASE="http://localhost:${HEAD_API_PORT}" APP_ORIGIN="http://localhost:${OLD_APP_PORT}" SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
-    SEEDS="$RUN_DIR/evidence/product-seeds.json" OUT="$RUN_DIR/evidence/product-readback.json" \
+    SMOKE_TRPC_FORMAT=plain SEEDS="$RUN_DIR/evidence/product-seeds.json" OUT="$RUN_DIR/evidence/product-readback.json" \
     node "$HERE/seed/product.mjs" readback >"$RUN_DIR/evidence/logs/product-readback.log" 2>&1 ||
     log "phase 2: product read-back failed (logs/product-readback.log)"
 }
@@ -250,6 +276,7 @@ phase0_seed() {
   compose up -d old-app
   wait_http "http://localhost:${OLD_APP_PORT}/api/health" 600 || { log "old app never became healthy"; return 1; }
   compose up -d old-worker
+  wait_http "http://localhost:${OLD_APP_PORT}/readyz" 600 || { log "old app never became ready after worker migrations"; return 1; }
   compose exec -T postgres psql -U prisma -d mydb -v run="$RUN_ID" -f - <"$HERE/seed/tenancy.sql" >>"$RUN_DIR/rehearse.log"
   phase0_products
   local key
@@ -313,10 +340,11 @@ drill() {
   exited_at="$(node -p "new Date().toISOString()")"
   ledger_query "$name-after.json"
   node -e '
-    const [running, after, signalAt, exitedAt] = process.argv.slice(1);
+    const [running, afterPath, signalAt, exitedAt] = process.argv.slice(1);
     const ids = JSON.parse(running).map((r) => r.id);
-    process.stdout.write(JSON.stringify({ signalAt, exitedAt, runningAtSignal: ids, after: JSON.parse(after) }, null, 2));
-  ' "$running" "$(cat "$RUN_DIR/evidence/$name-after.json")" "$signal_at" "$exited_at" >"$RUN_DIR/evidence/$name-drill.json"
+    const after = JSON.parse(require("node:fs").readFileSync(afterPath, "utf8"));
+    process.stdout.write(JSON.stringify({ signalAt, exitedAt, runningAtSignal: ids, after }, null, 2));
+  ' "$running" "$RUN_DIR/evidence/$name-after.json" "$signal_at" "$exited_at" >"$RUN_DIR/evidence/$name-drill.json"
   compose up -d head-worker
 }
 
@@ -391,10 +419,11 @@ collect_spans() {
 }
 
 settle() {
-  local deadline=$((SECONDS + SETTLE_SECONDS)) open
+  local deadline=$((SECONDS + SETTLE_SECONDS)) open queued
   while ((SECONDS < deadline)); do
     open="$(psql_at "SELECT count(*) FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE mode = 'background' AND status IN ('pending', 'running')" 2>/dev/null || echo 1)"
-    [[ "$open" == "0" ]] && break
+    queued="$(queue_depth 2>/dev/null || echo 1)"
+    [[ "$open" == "0" && "$queued" == "0" ]] && break
     sleep 5
   done
 }
@@ -454,12 +483,24 @@ phase3_rollback() {
     write_psql_shim
     local password="Rollback-$(node -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
     smoke=0
-    PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
-      bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$email" "$password" \
-      >"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 &&
+    if [[ "$ORIGIN" == "main" ]]; then
+      # 3.21+ grants platform-operator access once. ADMIN_EMAILS does not grant
+      # a newly inserted rollback user while the original operator exists.
+      # Reuse the pre-upgrade account to exercise its persisted access too.
+      email="$SEED_EMAIL"
+      password="$SEED_PASSWORD"
+      : >"$RUN_DIR/evidence/logs/rollback-smoke.log"
+      wait_http "http://localhost:${OLD_APP_PORT}/readyz" 600 || smoke=$?
+    else
+      PATH="$RUN_DIR/bin:$PATH" DATABASE_URL="postgresql://prisma:prisma@postgres:5432/mydb?schema=mydb" \
+        bash "$REPO_ROOT/dev/scripts/migration-compat-smoke/seed-account.sh" "$email" "$password" \
+        >"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
+    fi
+    if [[ "$smoke" -eq 0 ]]; then
       APP_BASE="http://localhost:${OLD_APP_PORT}" SMOKE_EMAIL="$email" SMOKE_PASSWORD="$password" \
-        SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
+        SMOKE_TRPC_FORMAT="$(old_trpc_format)" SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
         >>"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
+    fi
     sleep 30
   fi
   compose logs --no-color --no-log-prefix old-app >"$RUN_DIR/evidence/logs/old-app-rollback.log" 2>&1 || true
@@ -474,7 +515,7 @@ lease_drill() {
   compose run -d --name "$name" -w /app/apps/tasks head-migrate pnpm --silent task upgrade >/dev/null
   for ((i = 0; i < 120; i++)); do
     [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == true ]] || break
-    if [[ -n "$(psql_at "UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() RETURNING 1" 2>/dev/null)" ]]; then
+    if [[ "$(psql_at "WITH stolen AS (UPDATE \"mydb_upgrade_ledger\".\"_langwatch_upgrade_lease\" SET owner = 'rehearsal-thief' WHERE expires_at > now() AND EXISTS (SELECT 1 FROM \"mydb_upgrade_ledger\".\"_langwatch_upgrade_step\" WHERE status = 'running' AND mode = 'blocking') RETURNING 1) SELECT count(*) FROM stolen" 2>/dev/null)" == "1" ]]; then
       stolen=true
       break
     fi
@@ -488,7 +529,7 @@ lease_drill() {
   exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
   docker logs "$name" >"$RUN_DIR/evidence/logs/head-migrate-lease.log" 2>&1 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
-  sleep 65 # the stolen lease's 60 s expiry, so the re-run can take it
+  [[ "$stolen" != true ]] || sleep 65 # the stolen lease's 60 s expiry, so the re-run can take it
   head_task upgrade >"$RUN_DIR/evidence/logs/head-migrate-2.log" 2>&1 || rerun=$?
   printf '{"stolen":%s,"exit":%s,"rerunExit":%s}' "$stolen" "$exit_code" "$rerun" >"$RUN_DIR/evidence/lease-drill.json"
   REUPGRADE_EXIT=$rerun
@@ -532,6 +573,7 @@ teardown() {
   stop_load
   [[ -n "${SAMPLER_PID:-}" ]] && kill "$SAMPLER_PID" 2>/dev/null || true
   [[ "$KEEP" -eq 1 ]] && { log "kept the stack: docker compose -p $PROJECT -f $HERE/compose.yml down -v"; return; }
+  compose logs --no-color --no-log-prefix >"$RUN_DIR/evidence/logs/final-stack.log" 2>&1 || true
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
@@ -567,6 +609,8 @@ main() {
     [[ "$THROUGH" -ge 4 ]] && phase4_reupgrade
   fi
   [[ "$THROUGH" -ge 5 ]] && phase5_noop
+  wait_http "http://localhost:${HEAD_API_PORT}/readyz" 600
+  wait_http "http://localhost:${HEAD_WORKER_METRICS_PORT}/readyz" 600
   node "$HERE/evaluate.mjs" "$RUN_DIR"
   log "report: $RUN_DIR/report.md"
 }

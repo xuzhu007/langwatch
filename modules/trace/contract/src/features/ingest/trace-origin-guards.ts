@@ -19,13 +19,8 @@ const MAX_TRACE_AGE_MS = 24 * 60 * 60 * 1000;
  */
 const MESSAGE_EVENT_TYPES = new Set<string>([SPAN_RECEIVED_EVENT_TYPE, ORIGIN_RESOLVED_EVENT_TYPE]);
 
-/** Pure guard check, shared by trace's origin-guarded subscribers and automation's
- *  trace trigger match (ADR-052) so all stay in sync. Returns true when
- *  the subscriber's user-provided body should run. */
-export function passesTraceOriginGuards(
-  event: { type: string; occurredAt: number },
-  foldState: TraceSummaryData,
-): boolean {
+/** Event-only guards, usable before reading a summary for a replayed trace. */
+export function passesTraceEventGuards(event: { type: string; occurredAt: number }): boolean {
   // 1. Skip stale events (replay/resync re-emit old-occurredAt events).
   if (event.occurredAt < nowInstant().epochMilliseconds - OLD_TRACE_THRESHOLD_MS) return false;
 
@@ -34,6 +29,18 @@ export function passesTraceOriginGuards(
   //    historical traces; without this it would re-run every monitor/alert
   //    over the whole backlog (2026-05-27 read-amp incident).
   if (!MESSAGE_EVENT_TYPES.has(event.type)) return false;
+
+  return true;
+}
+
+/** Pure guard check, shared by trace's origin-guarded subscribers and automation's
+ *  trace trigger match (ADR-052) so all stay in sync. Returns true when
+ *  the subscriber's user-provided body should run. */
+export function passesTraceOriginGuards(
+  event: { type: string; occurredAt: number },
+  foldState: TraceSummaryData,
+): boolean {
+  if (!passesTraceEventGuards(event)) return false;
 
   // 3. Never re-run for a trace whose first span is older than the cutoff,
   //    even on a genuine new span. Checks the TRACE START

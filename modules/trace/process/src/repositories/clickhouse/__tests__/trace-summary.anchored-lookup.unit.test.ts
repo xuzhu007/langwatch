@@ -136,9 +136,25 @@ describe("given a trace summary lookup anchored on its event's time", () => {
     });
   });
 
+  describe("when an admitted historical span arrives under a fresh event timestamp", () => {
+    /** @scenario "A late span admitted by the collector remains inside the summary lookup" */
+    it("finds a trace from 30 days and one minute ago", async () => {
+      const storedAtMs = NOW_MS - 30 * DAY_MS - 60_000;
+      const { store, reads } = storeOver({ storedAtMs });
+      const summary = await FoldedTraceSummaryReader.create(store).findSummary({
+        tenantId: "tenant-1",
+        traceId: "t1",
+        occurredAtMs: NOW_MS,
+      });
+      expect(summary?.occurredAt).toBe(storedAtMs);
+      expect(reads).toHaveLength(4);
+      expect(reads.every(({ sql }) => isBounded(sql))).toBe(true);
+    });
+  });
+
   describe("when the trace sits 40 days before its anchor", () => {
-    /** @scenario "A trace 40 days before its anchor is final not-found after the 30-day step" */
-    it("finds nothing after the 30-day step and never resolves", async () => {
+    /** @scenario "A trace 40 days before its anchor is final not-found after the 31-day step" */
+    it("finds nothing after the 31-day step and never resolves", async () => {
       const { store, reads } = storeOver({ storedAtMs: NOW_MS - 40 * DAY_MS });
 
       const summary = await FoldedTraceSummaryReader.create(store).findSummary({
@@ -148,12 +164,12 @@ describe("given a trace summary lookup anchored on its event's time", () => {
       });
 
       expect(summary).toBeNull();
-      expect(reads.map(({ sql, params }) => readBack(sql, params))).toEqual([3, 7, 21, 30]);
+      expect(reads.map(({ sql, params }) => readBack(sql, params))).toEqual([3, 7, 21, 31]);
       const coveredMs = reads.reduce(
         (sum, { params }) => sum + Number(params.idBound_toMs) - Number(params.idBound_fromMs) + 1,
         0,
       );
-      expect(coveredMs).toBe(31 * DAY_MS + 1);
+      expect(coveredMs).toBe(32 * DAY_MS + 1);
       expect(reads.some(({ sql }) => isResolve(sql))).toBe(false);
     });
   });
@@ -181,7 +197,7 @@ describe("given a trace summary lookup anchored on its event's time", () => {
   describe("when lookups span every distance from their anchors", () => {
     /** @scenario "No anchored lookup ever makes an unbounded read" */
     it.each([0, 2, 5, 20, 29, 31, 40, 300])(
-      "bounds every read of a trace %i days back to at most four steps within 30 days",
+      "bounds every read of a trace %i days back to at most four steps within 31 days",
       async (daysBack) => {
         const { store, reads } = storeOver({ storedAtMs: NOW_MS - daysBack * DAY_MS - 60_000 });
 
@@ -194,7 +210,7 @@ describe("given a trace summary lookup anchored on its event's time", () => {
         expect(reads.length).toBeLessThanOrEqual(4);
         expect(reads.every(({ sql }) => isBounded(sql))).toBe(true);
         expect(
-          reads.every(({ params }) => Number(params.idBound_fromMs) >= NOW_MS - 30 * DAY_MS),
+          reads.every(({ params }) => Number(params.idBound_fromMs) >= NOW_MS - 31 * DAY_MS),
         ).toBe(true);
       },
     );

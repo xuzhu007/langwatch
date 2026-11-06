@@ -92,6 +92,8 @@ void describe("F-1, the roster's empty step list", () => {
 });
 
 void describe("F-2, the SIGTERM drill", () => {
+  const received = (time) => JSON.stringify({ time, signal: "SIGTERM", msg: "shutting down" });
+  const headWorkerLog = received("2026-10-08T10:00:01.000Z");
   const drill = (finishedAt) => ({
     signalAt: "2026-10-08T10:00:00.000Z",
     exitedAt: "2026-10-08T10:00:05.000Z",
@@ -101,7 +103,7 @@ void describe("F-2, the SIGTERM drill", () => {
 
   /** @scenario "A step running at SIGTERM and recorded done before the worker exited reproduces F-2" */
   void it("is reproduced and names the step", () => {
-    const f2 = finding({ drill: drill("2026-10-08T10:00:02.500Z") }, "F-2");
+    const f2 = finding({ drill: drill("2026-10-08T10:00:02.500Z"), headWorkerLog }, "F-2");
     assert.equal(f2.verdict, VERDICT.reproduced);
     assert.match(f2.detail, /recorded done between signal and exit: entitlement:seed-trace-meter/);
   });
@@ -109,7 +111,34 @@ void describe("F-2, the SIGTERM drill", () => {
   void it("is not reproduced when the step was left running", () => {
     const evidence = drill(null);
     evidence.after[0].status = "running";
-    assert.equal(finding({ drill: evidence }, "F-2").verdict, VERDICT.notReproduced);
+    assert.equal(finding({ drill: evidence, headWorkerLog }, "F-2").verdict, VERDICT.notReproduced);
+  });
+
+  /** @scenario "A step completing before the worker receives SIGTERM leaves the interruption inconclusive" */
+  void it("does not confuse Docker command latency with an interrupted step", () => {
+    const result = finding({ drill: drill("2026-10-08T10:00:00.410Z"), headWorkerLog }, "F-2");
+    assert.equal(result.verdict, VERDICT.inconclusive);
+    assert.match(result.detail, /completed before the worker received SIGTERM/);
+  });
+
+  /** @scenario "Missing worker signal acknowledgement leaves the SIGTERM drill inconclusive" */
+  void it("requires the worker acknowledgement within this drill's window", () => {
+    for (const log of [
+      undefined,
+      "not json",
+      received("2026-10-08T09:59:59.000Z"),
+      received("2026-10-08T10:00:06.000Z"),
+      JSON.stringify({
+        time: "2026-10-08T10:00:01.000Z",
+        signal: "SIGTERM",
+        msg: "graceful shutdown complete",
+      }),
+    ]) {
+      assert.equal(
+        finding({ drill: drill("2026-10-08T10:00:02.500Z"), headWorkerLog: log }, "F-2").verdict,
+        VERDICT.inconclusive,
+      );
+    }
   });
 });
 

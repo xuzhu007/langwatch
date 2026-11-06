@@ -15,6 +15,7 @@ function fakeWire({ failMutations = [], failReads = [] } = {}) {
     written,
     signIn: async () => {},
     rest: async () => ({}),
+    projectKey: async () => "sk-lw-1",
     async mutate({ path, input }) {
       if (path === "onboarding.initializeOrganization") {
         return { organizationId: "org_1", teamId: "team_1", projectSlug: "p" };
@@ -27,7 +28,6 @@ function fakeWire({ failMutations = [], failReads = [] } = {}) {
       if (path === "organization.getAll") {
         return [{ teams: [{ projects: [{ id: "project_1", slug: "p" }] }] }];
       }
-      if (path === "project.getProjectAPIKey") return { apiKey: "sk-lw-1" };
       if (failReads.includes(path)) throw new Error(`${path} answered 500`);
       return written;
     },

@@ -270,6 +270,26 @@ describe("createTraceEvaluationTrigger", () => {
     });
   });
 
+  describe.each([SPAN_RECEIVED_EVENT_TYPE, ORIGIN_RESOLVED_EVENT_TYPE])(
+    "given a stale %s event without a readable summary",
+    (type) => {
+      /** @scenario "Stale trace events complete without looking up a missing summary" */
+      it("completes without a lookup, retry or evaluation", async () => {
+        const { built, lookups, dispatch, listMonitors } = subscriber({});
+        await expect(
+          built.trigger({
+            tenantId: "tenant-1",
+            traceId: "trace-1",
+            event: { type, occurredAt: Date.now() - 30 * 24 * 60 * 60 * 1000 },
+          }),
+        ).resolves.toBeUndefined();
+        expect(lookups).toEqual([]);
+        expect(dispatch.sent).toEqual([]);
+        expect(listMonitors).not.toHaveBeenCalled();
+      });
+    },
+  );
+
   describe("given a trace whose summary has not folded", () => {
     describe.each([
       ["a span event", SPAN_RECEIVED_EVENT_TYPE],
@@ -279,7 +299,7 @@ describe("createTraceEvaluationTrigger", () => {
         built.trigger({
           tenantId: "tenant-1",
           traceId: "trace-1",
-          event: { type, occurredAt: 1 },
+          event: { type, occurredAt: Date.now() },
           ...(deliveryAttempt !== undefined && { deliveryAttempt }),
         });
 

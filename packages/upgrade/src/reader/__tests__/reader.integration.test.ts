@@ -600,6 +600,7 @@ describe.skipIf(!DB_URL)("UpgradeReader over the ledger tables", () => {
     expect(rows.map((row) => row.name).toSorted()).toEqual([
       "_langwatch_upgrade_run",
       "_langwatch_upgrade_step",
+      "_langwatch_upgrade_tenant_state",
     ]);
     await expect(reader.status()).resolves.toBeDefined();
     await expect(reader.listReleases()).resolves.toBeDefined();
