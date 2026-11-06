@@ -9,6 +9,8 @@ x-store-urls: &store-urls
   CLICKHOUSE_BACKUP_METRICS_ENABLED: "false"
   REDIS_URL: redis://redis:6379
   NODE_ENV: production
+  STORED_OBJECTS_BACKEND: file
+  LANGWATCH_LOCAL_STORAGE_PATH: /var/lib/langwatch/objects
 
 x-stores-healthy: &stores-healthy
   postgres:
@@ -74,6 +76,7 @@ services:
       SKIP_ENV_VALIDATION: "true"
       INSTALL_METHOD: docker
       LANGWATCH_ENDPOINT: http://old-app:5560
+    volumes: ["objects:/var/lib/langwatch/objects"]
     env_file: ["${REHEARSAL_ENV_FILE:?rehearse.sh writes the env file}"]
     pull_policy: missing
     ports: ["${OLD_APP_PORT:-15560}:5560"]
@@ -88,6 +91,7 @@ services:
       <<: *store-urls
       SKIP_ENV_VALIDATION: "true"
       LANGWATCH_ENDPOINT: http://old-app:5560
+    volumes: ["objects:/var/lib/langwatch/objects"]
     env_file: ["${REHEARSAL_ENV_FILE:?rehearse.sh writes the env file}"]
     pull_policy: missing
     depends_on: *stores-healthy
@@ -98,6 +102,7 @@ services:
     command: ["pnpm", "--silent", "run", "start:prepare:db"]
     working_dir: /app/apps/api
     environment: *store-urls
+    volumes: ["objects:/var/lib/langwatch/objects"]
     env_file: ["${REHEARSAL_ENV_FILE:?rehearse.sh writes the env file}"]
     pull_policy: missing
     restart: "no"
@@ -110,6 +115,7 @@ services:
       <<: *store-urls
       INSTALL_METHOD: docker
       LANGWATCH_ENDPOINT: http://head-api:5560
+    volumes: ["objects:/var/lib/langwatch/objects"]
     env_file: ["${REHEARSAL_ENV_FILE:?rehearse.sh writes the env file}"]
     pull_policy: missing
     ports: ["${HEAD_API_PORT:-16560}:5560"]
@@ -123,7 +129,11 @@ services:
     environment:
       <<: *store-urls
       LANGWATCH_ENDPOINT: http://head-api:5560
+    volumes: ["objects:/var/lib/langwatch/objects"]
     env_file: ["${REHEARSAL_ENV_FILE:?rehearse.sh writes the env file}"]
     pull_policy: missing
     ports: ["${HEAD_WORKER_METRICS_PORT:-12999}:2999"]
     depends_on: *stores-healthy
+
+volumes:
+  objects:

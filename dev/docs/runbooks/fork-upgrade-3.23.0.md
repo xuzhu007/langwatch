@@ -20,6 +20,31 @@ or its historic PostgreSQL migration names.
   Dataset versions create snapshots in that store, so include it in backups
   and capacity planning.
 
+### Filesystem object storage
+
+Without an S3 bucket or an explicit backend, object storage defaults to files at
+`/var/lib/langwatch/objects` (or `LANGWATCH_LOCAL_STORAGE_PATH`). API and worker
+containers must see the same durable directory. The base Compose file does not
+mount this directory; files in a container's writable layer disappear when that
+container is replaced.
+
+For filesystem installations, `infra/compose.local-storage.yml` adds a shared
+named volume. Before enabling it, stop writes, export the existing object trees
+from **both** old containers and copy them into the volume, preserving paths and
+the `.digests` directory. Resolve conflicting paths before replacing either
+container, keep the exports with the database backup, and verify existing
+dataset content can be read. Do not mount an empty volume over existing files.
+Keep the same storage configuration when rolling back.
+
+```sh
+docker compose --project-directory . -f infra/compose.yml \
+  -f infra/compose.local-storage.yml up -d
+```
+
+Installations already using shared S3/MinIO or Azure storage keep that backend
+and do not apply the filesystem override. Its explicit `file` setting would
+otherwise change their destination.
+
 ## Image and configuration
 
 The verification workflow packages `langwatch-3.23.0.tar.gz`, `SHA256SUMS` and
