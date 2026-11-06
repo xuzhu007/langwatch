@@ -85,7 +85,7 @@ services:
   # binary (Dockerfile.langwatch_nlp); it still binds :5561 and reads
   # LANGWATCH_ENDPOINT for evaluator + agent-workflow callbacks.
   langwatch_nlp:
-    image: langwatch/langwatch_nlp:latest
+    image: ${LANGWATCH_NLP_IMAGE:-langwatch/langwatch_nlp:latest}
     env_file:
       - path: .env
         required: false
@@ -96,16 +96,16 @@ services:
     # and this engine runs workflow nodes for whichever project the request
     # body names.
     restart: always
-    pull_policy: always
+    pull_policy: ${LANGWATCH_NLP_PULL_POLICY:-always}
     environment:
       - LANGWATCH_ENDPOINT=http://app:5560
 
   langevals:
-    image: langwatch/langevals:latest
+    image: ${LANGEVALS_IMAGE:-langwatch/langevals:latest}
     ports:
       - "5562:5562"
     restart: always
-    pull_policy: always
+    pull_policy: ${LANGEVALS_PULL_POLICY:-always}
     environment:
       - DISABLE_EVALUATORS_PRELOAD=true
 

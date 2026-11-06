@@ -61,6 +61,14 @@ Set `LANGWATCH_IMAGE` to the imported or internally retagged fork image and
 `LANGWATCH_PULL_POLICY=never` for an imported image, or `always` for a registry
 image. The Compose file applies the same image to `app` and `workers`.
 Retain the existing environment file location and internal model endpoints.
+The companion **Fork service images** workflow packages NLP and LangEvals with
+the same source commit. Load their archives too, then set
+`LANGWATCH_NLP_IMAGE=langwatch-fork-langwatch_nlp:3.23.0`,
+`LANGEVALS_IMAGE=langwatch-fork-langevals:3.23.0`,
+`LANGWATCH_NLP_PULL_POLICY=never` and `LANGEVALS_PULL_POLICY=never` (or retag and
+push them into the internal registry). The fork NLP image is needed to retain
+PR #62's `host:port` allowlist matching for internal HTTP workflow nodes.
+
 For an isolated deployment, `LANGWATCH_CONNECT_DISABLED=true` disables the
 LangWatch connection; `DISABLE_USAGE_STATS=true` alone does not disable every
 connection or upgrade diagnostic.
