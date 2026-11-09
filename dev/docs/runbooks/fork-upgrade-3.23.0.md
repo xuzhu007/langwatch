@@ -126,3 +126,9 @@ Restore the previous **fork** image for API and workers together. Keep the
 expanded database schema; do not run destructive down migrations. The rehearsal
 runs that actual fork base against the upgraded stores, then upgrades again.
 If data restoration is needed, restore the stores as a consistent backup set.
+
+## Rollout notes
+
+The first production rollout on Docker Compose, its problems, root causes and a
+checklist for the next upgrade (in Chinese):
+[fork-upgrade-3.23.0-retrospective.md](fork-upgrade-3.23.0-retrospective.md).
