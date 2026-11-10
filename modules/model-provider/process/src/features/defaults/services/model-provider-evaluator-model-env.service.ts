@@ -139,6 +139,8 @@ function generationParamsEnv({
     const value = settings?.[param];
     if (value === undefined || value === null) continue;
     if (param === "max_tokens" && typeof value === "number") {
+      // Zero or less reads as unset: providers refuse it, and an older model switch stored 0.
+      if (!(value > 0)) continue;
       env[`${prefix}${param}`] = String(computeClampedMaxTokens(value, maxTokensCeiling));
     } else if (
       typeof value === "string" ||
