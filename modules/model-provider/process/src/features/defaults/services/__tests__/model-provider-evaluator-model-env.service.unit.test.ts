@@ -133,6 +133,30 @@ describe("ModelProviderEvaluatorModelEnvService", () => {
     });
   });
 
+  describe("given an evaluator whose stored max tokens is 0", () => {
+    /** @scenario "An evaluator's max tokens of zero is not sent to the judge model" */
+    it("sends no max tokens and still sends the other generation parameters", async () => {
+      const env = await service({ openai: provider({}) }).prepare({
+        ...base,
+        model: "openai/gpt-5-mini",
+        settings: { temperature: 0, max_tokens: 0 },
+      });
+
+      expect(env).not.toHaveProperty("X_LITELLM_max_tokens");
+      expect(env).toMatchObject({ X_LITELLM_temperature: "0" });
+    });
+
+    it("treats a negative max tokens as unset too", async () => {
+      const env = await service({ openai: provider({}) }).prepare({
+        ...base,
+        model: "openai/gpt-5-mini",
+        settings: { max_tokens: -1 },
+      });
+
+      expect(env).not.toHaveProperty("X_LITELLM_max_tokens");
+    });
+  });
+
   describe("given a Vertex AI row serving a catalogued Gemini model and a tuned endpoint", () => {
     const vertex = provider({
       id: "mp_vertex",

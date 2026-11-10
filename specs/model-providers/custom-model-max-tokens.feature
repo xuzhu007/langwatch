@@ -45,6 +45,17 @@ Feature: Max Tokens is universal for chat models
     When a user opens the LLM Config popover for that model
     Then the Max Tokens slider is visible alongside the Reasoning selector
 
+  # A custom model registered before the Max Tokens field existed carries no
+  # ceiling, and its metadata reports a context length of 0. Read as a limit,
+  # that 0 became the max tokens a model switch saved (which the provider then
+  # refused) and a slider capped at its floor of 512.
+  @unit
+  Scenario: A custom model with no Max Tokens ceiling falls back to the default limit
+    Given a custom chat model registered without a Max Tokens ceiling
+    When its token limit is read for the LLM config
+    Then the limit is the default of 4096, not zero
+    And switching to that model sets max tokens to the default, never to 0
+
   @integration @unimplemented
   Scenario: Embedding popovers are unaffected
     Given an embedding model

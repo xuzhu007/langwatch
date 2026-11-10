@@ -68,6 +68,13 @@ Feature: Model Provider service
     And on a model whose limit is unknown the value the user set is sent as is
 
   @unit
+  Scenario: An evaluator's max tokens of zero is not sent to the judge model
+    Given an LLM evaluator whose stored max tokens is 0, as an older model switch saved it
+    When it is prepared to run
+    Then no max tokens is sent, so the provider's default applies
+    And the other generation parameters are still sent as configured
+
+  @unit
   Scenario: The platform chain borrows the Google credential from data privacy
     Given data privacy holds the deployment's Google application credential
     When the platform provider chain is read
