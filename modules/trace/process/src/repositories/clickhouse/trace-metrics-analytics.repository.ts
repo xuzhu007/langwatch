@@ -36,6 +36,13 @@ const READ_BACK_FOLD_INSERT_SETTINGS = {
 } as const;
 
 /**
+ * The read-back is eager: ClickHouse 25.10's lazy reader decodes a garbage size for an
+ * ALTER-added Array a part lacks (Code 173) instead of its DEFAULT, past an ORDER BY ... LIMIT 1.
+ * Spec: modules/trace/specs/single-trace-read-lazy-materialization.feature
+ */
+const READ_BACK_SETTINGS = { query_plan_optimize_lazy_materialization: "0" } as const;
+
+/**
  * ClickHouse write shape for `trace_analytics` (ADR-034 Phase 2, migration
  * 00039). 64-bit-integer columns are serialised as strings in JSONEachRow
  * (JSON numbers can't round-trip past 2^53); other types stay unstringified.
@@ -307,6 +314,7 @@ export class TraceAnalyticsClickHouseRepository extends TraceAnalyticsProjection
       `,
       query_params: { traceId },
       format: "JSONEachRow",
+      clickhouse_settings: READ_BACK_SETTINGS,
       idBound: { fallback: "none" },
     });
     return TraceAnalyticsClickHouseRepository.latestOf(
@@ -357,6 +365,7 @@ export class TraceAnalyticsClickHouseRepository extends TraceAnalyticsProjection
         ...(window !== undefined ? { from: window.fromMs, to: window.toMs } : {}),
       },
       format: "JSONEachRow",
+      clickhouse_settings: READ_BACK_SETTINGS,
     });
 
     return TraceAnalyticsClickHouseRepository.latestOf(

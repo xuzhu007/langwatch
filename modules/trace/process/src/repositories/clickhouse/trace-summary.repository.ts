@@ -33,6 +33,13 @@ import { chBoolean, chNumber, chString, chStringMap } from "./stored-span-row.ma
 import { createTraceSummaryProjectionId } from "./trace-summary-id.mapper.ts";
 
 /**
+ * One trace's row is read eagerly: ClickHouse 25.10's lazy reader decodes a garbage size for an
+ * ALTER-added Array a part lacks (Code 173) instead of its DEFAULT, past an ORDER BY ... LIMIT 1.
+ * Spec: modules/trace/specs/single-trace-read-lazy-materialization.feature
+ */
+const SINGLE_TRACE_READ_SETTINGS = { query_plan_optimize_lazy_materialization: "0" } as const;
+
+/**
  * Fields shared between trace summary and list repositories from trace_summaries.
  */
 interface TraceSummaryFieldsBase {
@@ -541,6 +548,7 @@ export class TraceSummaryClickHouseRepository implements TraceSummaryRepository 
       `,
       query_params: { traceId },
       format: "JSONEachRow",
+      clickhouse_settings: SINGLE_TRACE_READ_SETTINGS,
       idBound,
     });
 
