@@ -100,6 +100,57 @@ function tiedVersion({
   };
 }
 
+/** The read path recording each read-back's SQL and settings, answering one committed version. */
+function settingsRecordingRepository() {
+  const reads: { sql: string; settings: unknown }[] = [];
+  const row = tiedVersion({
+    lastEventOccurredAt: "1750000000000",
+    spanCount: 1,
+    appliedEventIds: ["a"],
+    occurredAt: "2026-07-24 12:00:00.000",
+  });
+  const clickhouse = new AuthorizedClickHouse({
+    resolveClient: async () =>
+      idIndexedClientDouble({
+        indexes: TRACE_ID_INDEXES,
+        driver: {
+          execute: vi.fn<ScriptedStatements["execute"]>(async ({ sql, settings }) => {
+            reads.push({ sql, settings });
+            return { rows: [row] };
+          }),
+        },
+      }),
+  });
+  return {
+    repository: TraceAnalyticsClickHouseRepository.create({
+      resolveClient: async () => clientReturning(row),
+      clickhouse,
+    }),
+    readBacks: () => reads.filter(({ sql }) => sql.includes("SELECT *")),
+  };
+}
+
+describe("TraceAnalyticsClickHouseRepository.findByTraceId (lazy reader)", () => {
+  describe("given a fold reading its trace's analytics row back", () => {
+    /** @scenario "A single trace's analytics row is read back without the lazy reader" */
+    it("turns lazy materialization off with and without a fold window", async () => {
+      const { repository, readBacks } = settingsRecordingRepository();
+
+      await repository.findByTraceId({ authorization: AUTHORIZATION, traceId: TRACE_ID });
+      await repository.findByTraceId({
+        authorization: AUTHORIZATION,
+        traceId: TRACE_ID,
+        window: { fromMs: 1_750_000_000_000, toMs: 1_750_000_600_000 },
+      });
+
+      expect(readBacks().length).toBeGreaterThanOrEqual(2);
+      for (const { settings } of readBacks()) {
+        expect(settings).toMatchObject({ query_plan_optimize_lazy_materialization: "0" });
+      }
+    });
+  });
+});
+
 describe("TraceAnalyticsClickHouseRepository DateTime64 decode", () => {
   describe("given a row whose DateTime64 columns carry no timezone suffix", () => {
     describe("when it is read back on a host that is not on UTC", () => {

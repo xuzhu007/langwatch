@@ -78,12 +78,14 @@ function makeRepo(responder: (sql: string) => unknown[]) {
   const resolvedFor: (string | undefined)[] = [];
   const boundTenants: string[] = [];
   const declaredFullScans: string[] = [];
+  const settingsBySql = new Map<string, unknown>();
   const client = idIndexedClientDouble({
     indexes: TRACE_ID_INDEXES,
     driver: {
       execute: vi.fn<ScriptedStatements["execute"]>(
-        async ({ sql, params, tenantId, SKIP_COLD_SCAN_CHECK }) => {
+        async ({ sql, params, tenantId, settings, SKIP_COLD_SCAN_CHECK }) => {
           queries.push(sql);
+          settingsBySql.set(sql, settings);
           if (SKIP_COLD_SCAN_CHECK === true) declaredFullScans.push(sql);
           parameters.push(params ?? {});
           boundTenants.push(tenantId);
@@ -107,6 +109,7 @@ function makeRepo(responder: (sql: string) => unknown[]) {
     queries,
     parameters,
     resolvedFor,
+    settingsBySql,
   };
 }
 
@@ -237,6 +240,45 @@ describe("TraceSummaryClickHouseRepository.findByTraceId (unit)", () => {
 
 // Storage-anchor split (ADR-087): OccurredAt = partition/TTL, EarliestSpanStartMs = baseline
 // Version-gated decode handles pre/post-split row ambiguity
+describe("TraceSummaryClickHouseRepository.findByTraceId (lazy reader)", () => {
+  const heavySettings = (settingsBySql: Map<string, unknown>) =>
+    [...settingsBySql].filter(([sql]) => sql.includes("ComputedInput")).map(([, s]) => s);
+
+  describe("given a trace whose summary is read for the drawer header", () => {
+    /** @scenario "A single trace's summary is read without the lazy reader" */
+    it("turns lazy materialization off on the summary read", async () => {
+      const { repo, settingsBySql } = makeRepo((sql) =>
+        isResolve(sql) ? [{ rowCount: "1", occurredAtMs: String(Date.now()) }] : [heavyRow],
+      );
+
+      await repo.findByTraceId({ authorization, traceId: "t1" });
+
+      const reads = heavySettings(settingsBySql);
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toMatchObject({ query_plan_optimize_lazy_materialization: "0" });
+    });
+  });
+
+  describe("given a fold reading its trace back inside its own window", () => {
+    /** @scenario "A single trace's summary is read without the lazy reader" */
+    it("turns lazy materialization off on the windowed read too", async () => {
+      const { repo, settingsBySql } = makeRepo(() => [heavyRow]);
+
+      await repo.findByTraceId({
+        authorization,
+        traceId: "t1",
+        window: { fromMs: 1_700_000_000_000, toMs: 1_700_000_600_000 },
+      });
+
+      const reads = heavySettings(settingsBySql);
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) {
+        expect(read).toMatchObject({ query_plan_optimize_lazy_materialization: "0" });
+      }
+    });
+  });
+});
+
 describe("given the trace-summary row carries a storage anchor", () => {
   const anchorMs = 1_760_000_060_000;
   const baselineMs = 1_760_000_055_000;

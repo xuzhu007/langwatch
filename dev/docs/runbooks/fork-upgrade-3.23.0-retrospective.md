@@ -433,7 +433,7 @@ docker-compose exec -T clickhouse sh -c 'clickhouse-client --password "$CLICKHOU
 
 要先完成下面至少一项，再用 7.4 第 3 条的 A 查询确认不再报错：
 
-1. **代码修复**：参照 `span-storage.repository.ts` 的做法，给单条 trace 汇总这类单行读取加上查询级的 `query_plan_optimize_lazy_materialization: "0"`。
+1. **代码修复（已完成）**：参照 `span-storage.repository.ts` 的做法，给单条 trace 汇总读取（`trace-summary.repository.ts` 的 `queryByTraceId`），以及 `trace_analytics` 的两条 fold 读回（`trace-metrics-analytics.repository.ts`），加上查询级的 `query_plan_optimize_lazy_materialization: "0"`。见 `modules/trace/specs/single-trace-read-lazy-materialization.feature`。部署了包含这项修复的镜像后，trace 详情页就不再依赖这个配置文件。但其他模块里还有 `ORDER BY ... LIMIT` 的单行读取没有加，所以删除配置文件之前，仍然要先确认 7.4 第 5 条查不出其他缺失的 Array 或 Map 列，或者完成第 2 项。
 2. **补齐旧分片**：在业务低峰时，先 `ALTER TABLE langwatch.trace_summaries FREEZE WITH NAME '<备份名>'` 做硬链接备份，再对 7.4 第 4 条查出的分区逐个执行 `OPTIMIZE TABLE langwatch.trace_summaries PARTITION ID '<分区>' FINAL`。合并时会把缺失的列按默认值写全，ReplacingMergeTree 的多版本也会顺带去重。完成后，7.4 第 4 条的第二条查询应返回空，确认无误后再清理 `/var/lib/clickhouse/shadow/<备份名>`。第 5 条查出的其他表，也用同样的方法处理。
 3. **升级 ClickHouse**：换到修复了这个缺陷的版本。具体是哪个版本，这次没有核实，需要查 CK 的发布说明。
 
@@ -442,7 +442,7 @@ docker-compose exec -T clickhouse sh -c 'clickhouse-client --password "$CLICKHOU
 - **代码缺陷未修复**：数据集列表在 `modules/dataset/process/src/repositories/prisma/prisma.dataset.repository.ts` 的 `findAll` 里逐行做 schema 校验，一行坏数据就会让整个列表返回 422，用户只能看到"未知错误"。可以改成跳过不合格的行并记录告警，需要单独排期。
 - **并发参数未调整**：`GLOBAL_QUEUE_CONCURRENCY=300`、`LANGWATCH_DISPATCH_TENANT_CAP=0` 沿用了原值。在 3.23.0 里，前者是每个 worker 的并行组数（默认 100，吞吐上升时自动扩容，上限 1000，见 `packages/group-queue/src/groupQueue.ts`）；后者设为 0 会关闭每租户默认 50 的上限。Redis 只分配了 1 核，后续根据监控再评估。
 - **日志变量**：compose 里的 `PINO_LOG_LEVEL` 改成 `LOG_LEVEL`。
-- **延迟物化**：`zz-disable-lazy-materialization.xml` 目前是全局关闭。单条 trace 汇总读取的代码修复，以及旧分片的补齐，都还没有做，删除配置文件的前提见 7.6。
+- **延迟物化**：`zz-disable-lazy-materialization.xml` 目前是全局关闭。trace 汇总和 analytics 读回的代码修复已经完成（7.6 第 1 项）；旧分片的补齐还没有做。删除配置文件的前提见 7.6。
 - **内部实施文档需要同步修订**：
   1. 全文 `docker compose` 改成实际可用的命令形式；
   2. 启动应用前先启动并确认 redis、clickhouse healthy；
