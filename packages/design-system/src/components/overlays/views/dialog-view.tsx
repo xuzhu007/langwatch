@@ -621,6 +621,8 @@ export function Dialog({
             display="contents"
             onSubmit={(event) => {
               event.preventDefault();
+              // React bubbles a portalled submit to the form the overlay is rendered inside.
+              event.stopPropagation();
               if (!busy) onSubmit(event);
             }}
           >

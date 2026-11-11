@@ -21,6 +21,7 @@
 | 3   | 登录后打开数据集页面，`dataset.getAll` 返回 422                                                                                                                                                                                                                              | 3 个历史数据集的 `slug` 是空字符串。列表接口逐行用 schema 校验（`slug` 至少 1 个字符），一行不合格整个列表就报错                                                                                                                | 按名称补上 slug（5.1）                                                                      | 升级前执行数据检查 SQL（3.1）                                    |
 | 4   | 状态显示 `Needs attention`，`Failed steps: dataset:create-first-versions`                                                                                                                                                                                                    | 同问题 3：这个后台步骤读取数据集时同样校验 slug，5 次自动重试用完后被标记为 failed                                                                                                                                              | 修好数据后执行一次 `pnpm task upgrade`，预检阶段会把 failed 的后台步骤重置为 pending        | 同问题 3；后台步骤失败后，重启 worker 不会重试（3.5）            |
 | 5   | 升级后，部分旧 trace 从首页搜索打开时，`traces.header` 返回 500；app 日志是 `Failed to get trace summary from ClickHouse`，CK 报 `Code: 173 ... Amount of memory requested to allocate is more than allowed: (while reading column UnpricedModels) ... max_rows_to_read = 1` | **ClickHouse 25.10 延迟物化（lazy materialization）的缺陷**。`ORDER BY ... LIMIT 1` 的单行读取，碰到分片里缺失的 Array 列时，没有按 DEFAULT 补值，而是读到了垃圾长度。迁移 00109 之前写入的旧分片里没有 `UnpricedModels` 这一列 | 在 CK 的 `users.d` 里加配置文件，关闭延迟物化（第 7 节）                                    | 升级前确认这个配置文件在位（3.1）；升级后抽查一条旧 trace（3.4） |
+| 6   | 评估器的 Max Tokens 最大只能调到 4096，报 `The evaluator prompt takes 4671 tokens, which leaves no room for the content within the maximum of 4096 tokens`；在模型供应商里编辑自定义模型、改了 Max Tokens 再保存，值没有变化                                                 | 自定义模型没有登记 Max Tokens，滑块只能用默认上限 4096。编辑对话框的 Save 同时提交了外层的供应商表单（React 的 submit 事件会穿过 portal 冒泡），外层用编辑前的列表先保存并关闭了抽屉，新值没有发出去                            | 部署包含修复的镜像后重新编辑；之前可以先用 SQL 写入（9.3）                                  | 升级后在界面上改一次自定义模型并核对接口请求（9.4）              |
 
 ## 2 时间线（UTC）
 
@@ -442,6 +443,7 @@ docker-compose exec -T clickhouse sh -c 'clickhouse-client --password "$CLICKHOU
 - **代码缺陷未修复**：数据集列表在 `modules/dataset/process/src/repositories/prisma/prisma.dataset.repository.ts` 的 `findAll` 里逐行做 schema 校验，一行坏数据就会让整个列表返回 422，用户只能看到"未知错误"。可以改成跳过不合格的行并记录告警，需要单独排期。
 - **并发参数未调整**：`GLOBAL_QUEUE_CONCURRENCY=300`、`LANGWATCH_DISPATCH_TENANT_CAP=0` 沿用了原值。在 3.23.0 里，前者是每个 worker 的并行组数（默认 100，吞吐上升时自动扩容，上限 1000，见 `packages/group-queue/src/groupQueue.ts`）；后者设为 0 会关闭每租户默认 50 的上限。Redis 只分配了 1 核，后续根据监控再评估。
 - **日志变量**：compose 里的 `PINO_LOG_LEVEL` 改成 `LOG_LEVEL`。
+- **评估器 Max Tokens 的双重含义**：评估器的 Max Tokens 同时是 langevals 的输入预算和发给模型的输出上限，调大输入预算会同时调大输出上限，在上下文较小的模型上容易超出 `max_model_len`。可以考虑拆开这两个含义，需要单独排期（第 9 节）。
 - **延迟物化**：`zz-disable-lazy-materialization.xml` 目前是全局关闭。trace 汇总和 analytics 读回的代码修复已经完成（7.6 第 1 项）；旧分片的补齐还没有做。删除配置文件的前提见 7.6。
 - **内部实施文档需要同步修订**：
   1. 全文 `docker compose` 改成实际可用的命令形式；
@@ -450,3 +452,47 @@ docker-compose exec -T clickhouse sh -c 'clickhouse-client --password "$CLICKHOU
   4. 状态检查改用一次性容器，并写明第 3.4 节的判定标准；
   5. 在异常处理中写明后台步骤失败后的重试方法；
   6. 把 CK 的 `users.d/zz-disable-lazy-materialization.xml` 写进部署配置清单，并在升级后的验收里加上"打开几条旧 trace"这一项。
+
+## 9 升级后问题：自定义模型的 Max Tokens 改了不生效
+
+### 9.1 现象
+
+- 评估器（LLM 评判类）的 Max Tokens 滑块最大只能到 4096，评估报 `The evaluator prompt takes 4671 tokens, which leaves no room for the content within the maximum of 4096 tokens`。
+- 在 Settings 的模型供应商里编辑自定义模型，把 Max Tokens 改大后点对话框的 Save，抽屉随即关闭，看起来保存成功了，但再打开时值没有变化。
+- 抓到的 `modelProvider.update` 请求里，`customModels` 的每一项只有 `modelId`、`displayName`、`mode`，没有 `maxTokens`，顺序也和库里一致，说明编辑结果根本没有进入请求。
+
+### 9.2 根因
+
+1. **滑块上限**：滑块上限取模型的 `maxCompletionTokens`，没有时用默认的 4096。自定义模型的 `maxCompletionTokens` 就是它登记的 Max Tokens，旧数据里没有这个字段，所以上限是 4096。
+2. **编辑不生效**：自定义模型对话框有自己的表单，打开它的供应商编辑器也是一个表单（抽屉底部的 Save 按 id 提交它）。对话框渲染在 portal 里，DOM 上不嵌套，但 React 的合成事件沿组件树冒泡，所以对话框的 submit 也触发了外层表单的保存。外层读到的还是编辑前的状态，于是用旧列表调了 `modelProvider.update`，成功后关闭抽屉。新增自定义模型也受影响。
+3. **代码修复**：设计系统的 Dialog 和 Drawer 在自己的表单提交时调用 `stopPropagation()`，不再提交外层表单。见 `packages/design-system/specs/overlay-shapes.feature` 和 `specs/model-providers/custom-model-max-tokens.feature`。
+
+### 9.3 部署修复之前的临时处理：用 SQL 写入 Max Tokens
+
+库里存的格式是 `{"id", "type", "label", "maxTokens"}`，下面只给 `type` 为 `chat` 且没有 `maxTokens` 的项补上，其他项原样保留。先备份：
+
+```sql
+CREATE TABLE "<schema>"."ModelProvider_bak_maxtokens" AS
+SELECT * FROM "<schema>"."ModelProvider" WHERE id = '<provider_id>';
+
+UPDATE "<schema>"."ModelProvider"
+SET "customModels" = (
+  SELECT jsonb_agg(
+           CASE WHEN m->>'type' = 'chat' AND NOT (m ? 'maxTokens')
+                THEN m || '{"maxTokens": <max_tokens>}'::jsonb
+                ELSE m END
+           ORDER BY ord)
+  FROM jsonb_array_elements("customModels") WITH ORDINALITY AS t(m, ord)
+)
+WHERE id = '<provider_id>';
+
+SELECT jsonb_pretty("customModels") FROM "<schema>"."ModelProvider" WHERE id = '<provider_id>';
+```
+
+`<max_tokens>` 的取值：评估器的 Max Tokens 既是 langevals 的输入预算，也会作为 `max_tokens` 发给模型，而 vLLM 要求输入加 `max_tokens` 不超过 `max_model_len`。所以自定义模型的 Max Tokens 不要超过模型上下文长度的一半（上下文 32k 就填 16384），评估器里再按评估提示词的长度往上调。改完后刷新页面，评估器的滑块上限就是这个值。
+
+### 9.4 验证
+
+1. 在模型供应商里编辑一个自定义模型，改 Max Tokens，点对话框的 Save：抽屉不应关闭，列表里这个模型应显示新值。
+2. 再点抽屉底部的 Save，在浏览器开发者工具里确认 `modelProvider.update` 请求的 `customModels` 里这一项带有 `maxTokens`。
+3. 打开评估器，Max Tokens 滑块的上限应等于这个值。
