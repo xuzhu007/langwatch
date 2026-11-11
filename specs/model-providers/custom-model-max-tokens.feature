@@ -66,6 +66,16 @@ Feature: Max Tokens is universal for chat models
     Then the provider is not saved yet
     And saving the provider sends the model with its Max Tokens of 32768
 
+  # The browser sends each custom model with its ceiling and capabilities. The
+  # tRPC transport kept only the id and the label, both on save and on the way
+  # back, so the ceiling was dropped and the editor never showed it again.
+  @unit
+  Scenario: The server keeps a custom model's Max Tokens ceiling on save and sends it back
+    Given a provider saved with a custom chat model whose Max Tokens is 32768
+    When the save is written and the provider is read back
+    Then the stored model keeps its Max Tokens of 32768 and its supported parameters
+    And the provider read back carries the same ceiling and parameters
+
   @integration @unimplemented
   Scenario: Embedding popovers are unaffected
     Given an embedding model

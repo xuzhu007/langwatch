@@ -3,6 +3,7 @@
  * The `modelProvider.*` procedures over the real runtime and application.
  * @see specs/model-providers/provider-configuration.feature
  * @see specs/settings/model-provider-skip-permissions.feature
+ * @see specs/model-providers/custom-model-max-tokens.feature
  */
 import { createTrpcRuntime } from "@langwatch/api/trpc";
 import { ModelNotConfiguredError, type ModelProviderApi } from "@langwatch/model-provider-contract";
@@ -335,6 +336,61 @@ describe("the modelProvider tRPC namespace", () => {
         scopes: [{ scopeType: "TEAM", scopeId: "team-1" }],
       });
       expect(upsert.mock.calls[0]?.[1]).toMatchObject({ id: "user_a" });
+    });
+  });
+
+  describe("when the drawer saves a custom model with a Max Tokens ceiling", () => {
+    /** @scenario "The server keeps a custom model's Max Tokens ceiling on save and sends it back" */
+    it("writes the ceiling and answers with it", async () => {
+      const stored = {
+        id: "self-hosted-chat",
+        label: "Self-hosted chat",
+        type: "chat",
+        maxTokens: 32768,
+        supportedParameters: ["temperature"],
+        multimodalInputs: [],
+      };
+      const upsert = vi.fn(async (..._args: Parameters<ModelProviderApi["upsert"]>) =>
+        storedProvider({ provider: "custom", customModels: [stored] }),
+      );
+      const { caller } = mount({ modelProviders: { upsert: upsert as never } });
+
+      const answer = await caller.update({
+        id: "mp_custom",
+        projectId: PROJECT_A,
+        provider: "custom",
+        enabled: true,
+        customModels: [
+          {
+            modelId: "self-hosted-chat",
+            displayName: "Self-hosted chat",
+            mode: "chat",
+            maxTokens: 32768,
+            supportedParameters: ["temperature"],
+          },
+        ],
+      });
+
+      expect(upsert.mock.calls[0]?.[0]).toMatchObject({
+        customModels: [
+          {
+            id: "self-hosted-chat",
+            label: "Self-hosted chat",
+            type: "chat",
+            maxTokens: 32768,
+            supportedParameters: ["temperature"],
+          },
+        ],
+      });
+      expect(answer.customModels).toEqual([
+        {
+          modelId: "self-hosted-chat",
+          displayName: "Self-hosted chat",
+          mode: "chat",
+          maxTokens: 32768,
+          supportedParameters: ["temperature"],
+        },
+      ]);
     });
   });
 

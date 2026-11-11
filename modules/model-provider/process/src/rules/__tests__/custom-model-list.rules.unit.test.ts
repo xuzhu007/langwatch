@@ -1,10 +1,11 @@
 /**
- * Both shapes a custom model list has ever been sent in.
+ * Both shapes a custom model list has ever been sent in, and the shape it goes back in.
+ * @see specs/model-providers/custom-model-max-tokens.feature
  */
 
 import { describe, expect, it } from "vitest";
 
-import { toCanonicalCustomModelList } from "../custom-model-list.rules.ts";
+import { toCanonicalCustomModelList, toCustomModelEntry } from "../custom-model-list.rules.ts";
 
 describe("toCanonicalCustomModelList", () => {
   describe("given the string shape the field started as", () => {
@@ -70,6 +71,100 @@ describe("toCanonicalCustomModelList", () => {
       expect(toCanonicalCustomModelList([{ modelId: "m", type: "chat" }], "embedding")).toEqual([
         { id: "m", label: "m", type: "embedding" },
       ]);
+    });
+  });
+
+  describe("given a model sent with its ceiling and capabilities", () => {
+    /** @scenario "The server keeps a custom model's Max Tokens ceiling on save and sends it back" */
+    it("keeps the Max Tokens ceiling, the supported parameters and the inputs", () => {
+      const sent = {
+        modelId: "m",
+        displayName: "M",
+        mode: "chat",
+        maxTokens: 32768,
+        supportedParameters: ["temperature", "top_p"],
+        multimodalInputs: ["image"],
+      };
+
+      expect(toCanonicalCustomModelList([sent], "chat")).toEqual([
+        {
+          id: "m",
+          label: "M",
+          type: "chat",
+          maxTokens: 32768,
+          supportedParameters: ["temperature", "top_p"],
+          multimodalInputs: ["image"],
+        },
+      ]);
+    });
+
+    it("drops a ceiling that is not a positive number and inputs it does not know", () => {
+      expect(
+        toCanonicalCustomModelList(
+          [
+            { modelId: "zero", maxTokens: 0 },
+            { modelId: "text", maxTokens: "8192", multimodalInputs: ["image", "video"] },
+          ],
+          "chat",
+        ),
+      ).toEqual([
+        { id: "zero", label: "zero", type: "chat" },
+        { id: "text", label: "text", type: "chat", multimodalInputs: ["image"] },
+      ]);
+    });
+  });
+});
+
+describe("toCustomModelEntry", () => {
+  describe("given a stored model with a ceiling", () => {
+    /** @scenario "The server keeps a custom model's Max Tokens ceiling on save and sends it back" */
+    it("sends the ceiling and the capabilities back to the editor", () => {
+      expect(
+        toCustomModelEntry(
+          {
+            id: "m",
+            label: "M",
+            maxTokens: 32768,
+            supportedParameters: ["temperature"],
+            multimodalInputs: ["image"],
+          },
+          "chat",
+        ),
+      ).toEqual({
+        modelId: "m",
+        displayName: "M",
+        mode: "chat",
+        maxTokens: 32768,
+        supportedParameters: ["temperature"],
+        multimodalInputs: ["image"],
+      });
+    });
+  });
+
+  describe("given a stored model with no ceiling and empty lists", () => {
+    it("leaves them out, so the editor offers its own defaults", () => {
+      expect(
+        toCustomModelEntry(
+          { id: "m", label: "M", maxTokens: null, supportedParameters: [], multimodalInputs: [] },
+          "embedding",
+        ),
+      ).toEqual({ modelId: "m", displayName: "M", mode: "embedding" });
+    });
+  });
+
+  describe("given a stored parameter the editor does not offer", () => {
+    it("leaves that one out rather than failing the whole list", () => {
+      expect(
+        toCustomModelEntry(
+          { id: "m", label: "M", supportedParameters: ["temperature", "response_format"] },
+          "chat",
+        ),
+      ).toEqual({
+        modelId: "m",
+        displayName: "M",
+        mode: "chat",
+        supportedParameters: ["temperature"],
+      });
     });
   });
 });
