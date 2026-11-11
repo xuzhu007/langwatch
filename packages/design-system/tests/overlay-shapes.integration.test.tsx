@@ -244,6 +244,47 @@ describe("the Dialog shape", () => {
     });
   });
 
+  describe("given it owns its form and is opened from inside another form", () => {
+    function renderDialogInsideAForm() {
+      const outerSubmit = vi.fn((event: { preventDefault: () => void }) => event.preventDefault());
+      const dialogSubmit = vi.fn();
+      renderWithDesignSystem(
+        <form onSubmit={outerSubmit}>
+          <Dialog
+            open
+            onClose={vi.fn()}
+            title="Edit model"
+            onSubmit={dialogSubmit}
+            primaryAction={{ label: "Save model", type: "submit" }}
+          >
+            <input aria-label="Max Tokens" />
+          </Dialog>
+        </form>,
+      );
+      return { outerSubmit, dialogSubmit };
+    }
+
+    /** @scenario "An overlay's own form never submits the form it is opened from" */
+    it("submits only the dialog from its submit action", async () => {
+      const { outerSubmit, dialogSubmit } = renderDialogInsideAForm();
+
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Save model" }));
+      expect(dialogSubmit).toHaveBeenCalledTimes(1);
+      expect(outerSubmit).not.toHaveBeenCalled();
+    });
+
+    /** @scenario "An overlay's own form never submits the form it is opened from" */
+    it("submits only the dialog from Enter in its field", async () => {
+      const { outerSubmit, dialogSubmit } = renderDialogInsideAForm();
+
+      await userEvent
+        .setup()
+        .type(await screen.findByRole("textbox", { name: "Max Tokens" }), "32768{Enter}");
+      expect(dialogSubmit).toHaveBeenCalledTimes(1);
+      expect(outerSubmit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("given it is not dismissible", () => {
     /** @scenario "A dialog that must be acknowledged cannot be dismissed" */
     it("has no X, no Cancel, and ignores Escape", async () => {

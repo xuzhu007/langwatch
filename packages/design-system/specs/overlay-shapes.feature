@@ -25,6 +25,13 @@ Feature: Drawer and dialog shapes
     And a submit action naming a child form's id submits that form instead
 
   @integration
+  Scenario: An overlay's own form never submits the form it is opened from
+    Given a dialog that owns its form, opened from a field inside another form
+    When the reader presses the dialog's submit action or Enter in its field
+    Then the dialog's onSubmit runs
+    And the form it was opened from is not submitted
+
+  @integration
   Scenario: An overlay body shows loading and failure in place of its content
     Given a drawer whose read is loading or has failed
     Then skeleton rows or an error banner with a retry replace the body

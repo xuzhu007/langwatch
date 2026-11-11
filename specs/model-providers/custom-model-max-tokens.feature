@@ -56,6 +56,16 @@ Feature: Max Tokens is universal for chat models
     Then the limit is the default of 4096, not zero
     And switching to that model sets max tokens to the default, never to 0
 
+  # The custom model dialog opens from inside the provider form. Its Save used
+  # to submit that form too, with the list from before the edit, so a new Max
+  # Tokens ceiling never reached the server and the drawer closed as if saved.
+  @integration
+  Scenario: A custom model's new Max Tokens ceiling is saved with its provider
+    Given a saved provider with a custom chat model that has no Max Tokens ceiling
+    When the user edits that model, sets Max Tokens to 32768 and saves the model dialog
+    Then the provider is not saved yet
+    And saving the provider sends the model with its Max Tokens of 32768
+
   @integration @unimplemented
   Scenario: Embedding popovers are unaffected
     Given an embedding model
