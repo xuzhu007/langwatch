@@ -59,8 +59,9 @@ export function toCustomModelEntry(
 function sentCapabilities(
   item: Record<string, unknown>,
 ): Pick<StoredCustomModel, "maxTokens" | "supportedParameters" | "multimodalInputs"> {
+  // The execution path parses these against the known names; an unknown one would fail every run.
   const supportedParameters = Array.isArray(item.supportedParameters)
-    ? item.supportedParameters.filter((entry): entry is string => typeof entry === "string")
+    ? knownValues(item.supportedParameters, supportedParameterValues)
     : undefined;
   const multimodalInputs = Array.isArray(item.multimodalInputs)
     ? knownValues(item.multimodalInputs, multimodalInputValues)

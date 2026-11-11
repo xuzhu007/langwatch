@@ -98,18 +98,29 @@ describe("toCanonicalCustomModelList", () => {
       ]);
     });
 
-    it("drops a ceiling that is not a positive number and inputs it does not know", () => {
+    it("drops a ceiling that is not a positive number, and names it does not know", () => {
       expect(
         toCanonicalCustomModelList(
           [
             { modelId: "zero", maxTokens: 0 },
-            { modelId: "text", maxTokens: "8192", multimodalInputs: ["image", "video"] },
+            {
+              modelId: "text",
+              maxTokens: "8192",
+              supportedParameters: ["temperature", "response_format"],
+              multimodalInputs: ["image", "video"],
+            },
           ],
           "chat",
         ),
       ).toEqual([
         { id: "zero", label: "zero", type: "chat" },
-        { id: "text", label: "text", type: "chat", multimodalInputs: ["image"] },
+        {
+          id: "text",
+          label: "text",
+          type: "chat",
+          supportedParameters: ["temperature"],
+          multimodalInputs: ["image"],
+        },
       ]);
     });
   });
