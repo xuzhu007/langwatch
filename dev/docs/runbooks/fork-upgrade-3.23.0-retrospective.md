@@ -14,14 +14,14 @@
 
 ## 1 问题速览
 
-| #   | 现象                                                                                                                                                                                                                                                                         | 根因                                                                                                                                                                                                                            | 处理                                                                                        | 预防                                                             |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| 1   | `pnpm task upgrade status` 和 worker 日志里大量 `[ioredis] Unhandled error event: Error: connect ETIMEDOUT`，同时有 `Transient ClickHouse query error, retrying`；app、workers 的 `/readyz` 都是 503                                                                         | **redis、clickhouse 容器没有运行**（推测是维护窗口备份时被停掉）。之后用 `up -d --no-deps ... app workers` 启动应用，`--no-deps` 不会带起依赖服务；手册里检查 Redis/CK 的 `docker compose ps` 在这台机器上不存在，这一步被跳过  | `docker-compose up -d redis clickhouse`，等两者 healthy 后 `docker-compose restart workers` | 启动应用前单独启动并确认 redis、clickhouse healthy（3.3）        |
-| 2   | `docker compose ...` 报 `unknown shorthand flag: 'q' in -q`                                                                                                                                                                                                                  | 宿主机 Docker 是 20.10，没有 compose v2 插件，只有独立的 `docker-compose`（v1，容器名形如 `langwatch_workers_1`）                                                                                                               | 所有命令改用 `docker-compose`                                                               | 升级前先确认 compose 命令的形式（3.1）                           |
-| 3   | 登录后打开数据集页面，`dataset.getAll` 返回 422                                                                                                                                                                                                                              | 3 个历史数据集的 `slug` 是空字符串。列表接口逐行用 schema 校验（`slug` 至少 1 个字符），一行不合格整个列表就报错                                                                                                                | 按名称补上 slug（5.1）                                                                      | 升级前执行数据检查 SQL（3.1）                                    |
-| 4   | 状态显示 `Needs attention`，`Failed steps: dataset:create-first-versions`                                                                                                                                                                                                    | 同问题 3：这个后台步骤读取数据集时同样校验 slug，5 次自动重试用完后被标记为 failed                                                                                                                                              | 修好数据后执行一次 `pnpm task upgrade`，预检阶段会把 failed 的后台步骤重置为 pending        | 同问题 3；后台步骤失败后，重启 worker 不会重试（3.5）            |
-| 5   | 升级后，部分旧 trace 从首页搜索打开时，`traces.header` 返回 500；app 日志是 `Failed to get trace summary from ClickHouse`，CK 报 `Code: 173 ... Amount of memory requested to allocate is more than allowed: (while reading column UnpricedModels) ... max_rows_to_read = 1` | **ClickHouse 25.10 延迟物化（lazy materialization）的缺陷**。`ORDER BY ... LIMIT 1` 的单行读取，碰到分片里缺失的 Array 列时，没有按 DEFAULT 补值，而是读到了垃圾长度。迁移 00109 之前写入的旧分片里没有 `UnpricedModels` 这一列 | 在 CK 的 `users.d` 里加配置文件，关闭延迟物化（第 7 节）                                    | 升级前确认这个配置文件在位（3.1）；升级后抽查一条旧 trace（3.4） |
-| 6   | 评估器的 Max Tokens 最大只能调到 4096，报 `The evaluator prompt takes 4671 tokens, which leaves no room for the content within the maximum of 4096 tokens`；在模型供应商里编辑自定义模型、改了 Max Tokens 再保存，值没有变化                                                 | 自定义模型没有登记 Max Tokens，滑块只能用默认上限 4096。编辑对话框的 Save 同时提交了外层的供应商表单（React 的 submit 事件会穿过 portal 冒泡），外层用编辑前的列表先保存并关闭了抽屉，新值没有发出去                            | 部署包含修复的镜像后重新编辑；之前可以先用 SQL 写入（9.3）                                  | 升级后在界面上改一次自定义模型并核对接口请求（9.4）              |
+| #   | 现象                                                                                                                                                                                                                                                                         | 根因                                                                                                                                                                                                                                                                                        | 处理                                                                                        | 预防                                                             |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | `pnpm task upgrade status` 和 worker 日志里大量 `[ioredis] Unhandled error event: Error: connect ETIMEDOUT`，同时有 `Transient ClickHouse query error, retrying`；app、workers 的 `/readyz` 都是 503                                                                         | **redis、clickhouse 容器没有运行**（推测是维护窗口备份时被停掉）。之后用 `up -d --no-deps ... app workers` 启动应用，`--no-deps` 不会带起依赖服务；手册里检查 Redis/CK 的 `docker compose ps` 在这台机器上不存在，这一步被跳过                                                              | `docker-compose up -d redis clickhouse`，等两者 healthy 后 `docker-compose restart workers` | 启动应用前单独启动并确认 redis、clickhouse healthy（3.3）        |
+| 2   | `docker compose ...` 报 `unknown shorthand flag: 'q' in -q`                                                                                                                                                                                                                  | 宿主机 Docker 是 20.10，没有 compose v2 插件，只有独立的 `docker-compose`（v1，容器名形如 `langwatch_workers_1`）                                                                                                                                                                           | 所有命令改用 `docker-compose`                                                               | 升级前先确认 compose 命令的形式（3.1）                           |
+| 3   | 登录后打开数据集页面，`dataset.getAll` 返回 422                                                                                                                                                                                                                              | 3 个历史数据集的 `slug` 是空字符串。列表接口逐行用 schema 校验（`slug` 至少 1 个字符），一行不合格整个列表就报错                                                                                                                                                                            | 按名称补上 slug（5.1）                                                                      | 升级前执行数据检查 SQL（3.1）                                    |
+| 4   | 状态显示 `Needs attention`，`Failed steps: dataset:create-first-versions`                                                                                                                                                                                                    | 同问题 3：这个后台步骤读取数据集时同样校验 slug，5 次自动重试用完后被标记为 failed                                                                                                                                                                                                          | 修好数据后执行一次 `pnpm task upgrade`，预检阶段会把 failed 的后台步骤重置为 pending        | 同问题 3；后台步骤失败后，重启 worker 不会重试（3.5）            |
+| 5   | 升级后，部分旧 trace 从首页搜索打开时，`traces.header` 返回 500；app 日志是 `Failed to get trace summary from ClickHouse`，CK 报 `Code: 173 ... Amount of memory requested to allocate is more than allowed: (while reading column UnpricedModels) ... max_rows_to_read = 1` | **ClickHouse 25.10 延迟物化（lazy materialization）的缺陷**。`ORDER BY ... LIMIT 1` 的单行读取，碰到分片里缺失的 Array 列时，没有按 DEFAULT 补值，而是读到了垃圾长度。迁移 00109 之前写入的旧分片里没有 `UnpricedModels` 这一列                                                             | 在 CK 的 `users.d` 里加配置文件，关闭延迟物化（第 7 节）                                    | 升级前确认这个配置文件在位（3.1）；升级后抽查一条旧 trace（3.4） |
+| 6   | 评估器的 Max Tokens 最大只能调到 4096，报 `The evaluator prompt takes 4671 tokens, which leaves no room for the content within the maximum of 4096 tokens`；在模型供应商里编辑自定义模型、改了 Max Tokens 再保存，值没有变化                                                 | 自定义模型没有登记 Max Tokens，滑块只能用默认上限 4096。编辑对话框的 Save 同时提交了外层的供应商表单（React 的 submit 事件会穿过 portal 冒泡），外层用编辑前的列表先保存并关闭了抽屉，新值没有发出去。修好这一处后，服务端的 tRPC 传输层又只保留 id 和名称，保存和返回时都丢掉了 Max Tokens | 部署包含修复的镜像后在界面上重新编辑（9.3、9.4）                                            | 升级后在界面上改一次自定义模型并核对接口响应（9.5）              |
 
 ## 2 时间线（UTC）
 
@@ -465,34 +465,59 @@ docker-compose exec -T clickhouse sh -c 'clickhouse-client --password "$CLICKHOU
 
 1. **滑块上限**：滑块上限取模型的 `maxCompletionTokens`，没有时用默认的 4096。自定义模型的 `maxCompletionTokens` 就是它登记的 Max Tokens，旧数据里没有这个字段，所以上限是 4096。
 2. **编辑不生效**：自定义模型对话框有自己的表单，打开它的供应商编辑器也是一个表单（抽屉底部的 Save 按 id 提交它）。对话框渲染在 portal 里，DOM 上不嵌套，但 React 的合成事件沿组件树冒泡，所以对话框的 submit 也触发了外层表单的保存。外层读到的还是编辑前的状态，于是用旧列表调了 `modelProvider.update`，成功后关闭抽屉。新增自定义模型也受影响。
-3. **代码修复**：设计系统的 Dialog 和 Drawer 在自己的表单提交时调用 `stopPropagation()`，不再提交外层表单。见 `packages/design-system/specs/overlay-shapes.feature` 和 `specs/model-providers/custom-model-max-tokens.feature`。
+3. **服务端丢字段**：前端修好后，请求里已经带上了 `maxTokens`，但返回的列表里仍然没有。tRPC 传输层（`model-provider.trpc.ts`）写入时用 `toCanonicalCustomModelList` 把每个模型只转成 `{id, label, type}`，返回时 `toListEntry` 也只给 `modelId`、`displayName`、`mode`，Max Tokens、支持的参数和多模态输入两头都丢了。仓储层和 REST 的返回本来就带这些字段，所以只在界面上能看到这个问题。
+4. **代码修复**：
+   - 设计系统的 Dialog 和 Drawer 在自己的表单提交时调用 `stopPropagation()`，不再提交外层表单。见 `packages/design-system/specs/overlay-shapes.feature`。
+   - 写入和返回都保留 Max Tokens、支持的参数和多模态输入（`rules/custom-model-list.rules.ts`）。两处都见 `specs/model-providers/custom-model-max-tokens.feature`。
 
-### 9.3 部署修复之前的临时处理：用 SQL 写入 Max Tokens
+### 9.3 取值：自定义模型和评估器的 Max Tokens
 
-库里存的格式是 `{"id", "type", "label", "maxTokens"}`，下面只给 `type` 为 `chat` 且没有 `maxTokens` 的项补上，其他项原样保留。先备份：
+一次 LLM 评判请求里，同一个 Max Tokens 被用了两次：
+
+| 环节               | 用法                                                                                             | 来源                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| langevals 截断内容 | 评估提示词加内容不超过这个值（预算）。litellm 不认识自定义模型的上下文窗口，所以不会再按窗口收紧 | 评估器设置里的 `max_tokens`，没有设置时按 128000 |
+| 发给模型的输出上限 | `max_tokens` 参数，先按自定义模型的 Max Tokens 截断                                              | 同上，没有设置或不大于 0 时不发                  |
+
+vLLM 要求输入加 `max_tokens` 不超过 `max_model_len`，所以：
+
+1. **自定义模型的 Max Tokens 不超过 `max_model_len` 的一半**（32k 上下文填 16384）。评估器里切换到这个模型时，Max Tokens 默认就取这个值，滑块上限也是它。
+2. **每个评估器都要有明确的 Max Tokens**，并且不超过上面的值。没有设置或为 0 时，输入预算是 128000，内容稍长就会超出上下文。界面打开评估器时会把它压到模型上限以内；执行时只截断发给模型的输出上限，langevals 的输入预算不截断。
+3. 评估提示词本身约 4.7k tokens，评估器的 Max Tokens 至少要 8192 才有足够的内容空间。
+
+### 9.4 部署后的检查
+
+升级到包含修复的镜像后，在界面上逐个编辑自定义模型填写 Max Tokens，不需要改库。然后检查评估器和在线评估的设置：
 
 ```sql
-CREATE TABLE "<schema>"."ModelProvider_bak_maxtokens" AS
-SELECT * FROM "<schema>"."ModelProvider" WHERE id = '<provider_id>';
+-- 评估器：模型和 Max Tokens（评估器的 config.settings 优先于关联在线评估的 parameters）
+SELECT e."projectId", e.id, e.name,
+       e.config->'settings'->>'model'      AS model,
+       e.config->'settings'->>'max_tokens' AS max_tokens
+FROM "<schema>"."Evaluator" e
+WHERE e."archivedAt" IS NULL
+  AND e.config->'settings'->>'model' LIKE 'custom/%'
+ORDER BY e."projectId", e.name;
 
-UPDATE "<schema>"."ModelProvider"
-SET "customModels" = (
-  SELECT jsonb_agg(
-           CASE WHEN m->>'type' = 'chat' AND NOT (m ? 'maxTokens')
-                THEN m || '{"maxTokens": <max_tokens>}'::jsonb
-                ELSE m END
-           ORDER BY ord)
-  FROM jsonb_array_elements("customModels") WITH ORDINALITY AS t(m, ord)
-)
-WHERE id = '<provider_id>';
+-- 没有关联评估器的旧在线评估，用的是自己的 parameters
+SELECT m."projectId", m.id, m.name, m.enabled,
+       m.parameters->>'model' AS model, m.parameters->>'max_tokens' AS max_tokens
+FROM "<schema>"."Monitor" m
+WHERE m."evaluatorId" IS NULL AND m.parameters->>'model' LIKE 'custom/%';
 
-SELECT jsonb_pretty("customModels") FROM "<schema>"."ModelProvider" WHERE id = '<provider_id>';
+-- 同一个项目里是否有多条 custom 供应商：界面和执行都只取其中一条
+SELECT s."scopeType", s."scopeId", count(*) AS rows, string_agg(p.id, ', ') AS ids
+FROM "<schema>"."ModelProvider" p
+JOIN "<schema>"."ModelProviderScope" s ON s."modelProviderId" = p.id
+WHERE p.provider = 'custom'
+GROUP BY s."scopeType", s."scopeId"
+HAVING count(*) > 1;
 ```
 
-`<max_tokens>` 的取值：评估器的 Max Tokens 既是 langevals 的输入预算，也会作为 `max_tokens` 发给模型，而 vLLM 要求输入加 `max_tokens` 不超过 `max_model_len`。所以自定义模型的 Max Tokens 不要超过模型上下文长度的一半（上下文 32k 就填 16384），评估器里再按评估提示词的长度往上调。改完后刷新页面，评估器的滑块上限就是这个值。
+`max_tokens` 为空、为 0 或超过模型上限的评估器，在界面上打开后调整并保存。实验（Experiments）里在本地改过、没有保存回评估器的设置会覆盖评估器本身的设置；工作流里的评估器节点也带着自己的设置，这两处要分别检查。
 
-### 9.4 验证
+### 9.5 验证
 
 1. 在模型供应商里编辑一个自定义模型，改 Max Tokens，点对话框的 Save：抽屉不应关闭，列表里这个模型应显示新值。
-2. 再点抽屉底部的 Save，在浏览器开发者工具里确认 `modelProvider.update` 请求的 `customModels` 里这一项带有 `maxTokens`。
-3. 打开评估器，Max Tokens 滑块的上限应等于这个值。
+2. 再点抽屉底部的 Save，`modelProvider.update` 的响应里这一项应带有 `maxTokens`；重新打开编辑器，输入框显示的是这个值，而不是默认的 8192。
+3. 刷新页面，打开评估器，Max Tokens 滑块的上限应等于这个值；跑一次评估，不再出现 `leaves no room for the content`。
