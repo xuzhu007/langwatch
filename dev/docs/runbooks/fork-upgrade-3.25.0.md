@@ -4,7 +4,7 @@
 
 ## 准备内网镜像
 
-在能访问构建依赖的环境，用同一个已审阅的 fork 提交构建 Linux/amd64 镜像。如生产架构不同，按目标架构执行构建和演练。app 和 workers 共用主镜像。升级演练工作流产生主镜像及升级记录，Fork service images 工作流产生 NLP 和 LangEvals 镜像及无网络运行记录。确认两条工作流使用同一 `SOURCE_COMMIT`，并检查空库、已有库升级和回滚作业的结果。
+在能访问构建依赖的环境，用同一个已审阅的 fork 提交构建 Linux/amd64 镜像。如生产架构不同，按目标架构执行构建和演练。app 和 workers 共用主镜像。`Upgrade rehearsal` 的同一次运行产出主应用、NLP 和 LangEvals 镜像，覆盖空库、已有库升级、回滚和再升级，并在离线 Compose 作业中校验三个归档的 SHA-256 和 `SOURCE_COMMIT` 后一起启动。只从该工作流全部通过的同一次运行下载三个镜像。`Fork service images` 可独立重建和检查 NLP、LangEvals 服务镜像。
 
 本地复现构建时在仓库根目录执行以下命令。
 
@@ -40,6 +40,12 @@ LANGWATCH_CONNECT_DISABLED=true
 ```
 
 若 `LANGWATCH_CONNECT_DISABLED=true` 已是生产隔离配置，确认 app 和 workers 最终都收到该变量。使用仓库 Compose 时，通过服务的 `env_file` 或 `environment` 将它注入容器。`--env-file` 供 Compose 插值，变量只有被 Compose 配置引用时才会进入容器。用封锁公共出口、允许内网模型、所用对象存储及必要认证服务的环境验证整套应用。 [上游出站连接清单](../../../docs/self-hosting/data-and-telemetry.mdx)
+
+在 Linux 测试宿主机准备 Docker Compose 2.24.4 或更新版本（支持 `!reset` 和 `!override`），并安装 Bash、Node.js、`jq` 和 OpenSSL。加载三个 fork 镜像以及 PostgreSQL、Redis、ClickHouse 镜像后，运行下面的冒烟检查。脚本创建仅容器间可达的新 Compose 项目和临时数据卷，用合成数据验证 API、worker、NLP、LangEvals 以及模型目录和 tokenizer 缓存。退出时会删除该测试栈并保留检查输出。升级、回滚和内网模型验收仍使用后面的流程。
+
+```bash
+bash dev/scripts/upgrade-rehearsal/compose-offline-smoke.sh --run-dir /tmp/langwatch-offline-smoke
+```
 
 ## 备份与演练
 

@@ -400,7 +400,7 @@ saveTraceEditOverlayAsViewer(input: { projectId: string; traceId: string; patch:
 #### `readTracesWithSpans`
 
 ```typescript
-readTracesWithSpans(input: { projectId: string; traceIds: string[]; protections: unknown; occurredAt?: { from: number; to: number }; withEditOverlay?: boolean; }): Promise<Trace[]>;
+readTracesWithSpans(input: { projectId: string; traceIds: string[]; protections: unknown; occurredAt?: { from: number; to: number }; includeSpans?: boolean; withEditOverlay?: boolean; }): Promise<Trace[]>;
 ```
 
 #### `readTracesWithSpansPreview`
@@ -780,7 +780,7 @@ translateTraceFilter(input: { query: string; tenantId: string; timeRange: { from
 A legacy `filters` document compiled to parameterized ClickHouse conditions over `trace_summaries ts`; Trace owns the grammar because it owns the tables. `fenced` writes side-table subqueries for a statement read through a proof's fence (ADR-177).
 
 ```typescript
-translateLegacyFilters(input: { filters: Readonly<Record<string, unknown>>; window?: { startDate?: number; endDate?: number }; fenced?: boolean; }): { conditions: string[]; params: Record<string, unknown>; hasUnsupportedFilters: boolean };
+translateLegacyFilters(input: { filters: Readonly<Record<string, unknown>>; negateFilters?: boolean; window?: { startDate?: number; endDate?: number }; fenced?: boolean; }): { conditions: string[]; params: Record<string, unknown>; hasUnsupportedFilters: boolean };
 ```
 
 #### `compileExplorerTraceFilter`
@@ -1238,7 +1238,7 @@ Permission `traces:view`. Hidden from the OpenAPI document. Declared at `src/tra
 Answers at `/api/export/traces/download`.
 
 ```typescript
-type Body = z.infer<typeof traceExportRequestSchema>; // ../contract/src/features/export/trace-export.vocabulary.ts:87
+type Body = z.infer<typeof traceExportRequestSchema>; // ../contract/src/features/export/trace-export.vocabulary.ts:95
 // Response: inline, src/transport/trace-export.rest.ts:36
 type Response = unknown;
 ```
@@ -1511,7 +1511,7 @@ type Output = z.infer<typeof exportProgressEventSchema>; // ../contract/src/feat
 
 ### `sharedTrace`
 
-Contract `../contract/src/traces.trpc.ts:667`, router `src/transport/shared-trace.trpc.ts:30`.
+Contract `../contract/src/traces.trpc.ts:669`, router `src/transport/shared-trace.trpc.ts:30`.
 
 | Procedure         | Kind  | Gate                                                                                                                                                | Input                       | Output                 |
 | ----------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ---------------------- |
@@ -1519,7 +1519,7 @@ Contract `../contract/src/traces.trpc.ts:667`, router `src/transport/shared-trac
 
 ```typescript
 // sharedTrace.get
-// Input: sharedTraceGetInputSchema, ../contract/src/traces.trpc.ts:665
+// Input: sharedTraceGetInputSchema, ../contract/src/traces.trpc.ts:667
 interface Input {
   token: string;
 }
@@ -1528,7 +1528,7 @@ type Output = z.infer<typeof sharedTraceDtoSchema>; // ../contract/src/trace-sha
 
 ### `spans`
 
-Contract `../contract/src/traces.trpc.ts:676`, router `src/transport/spans.trpc.ts:10`.
+Contract `../contract/src/traces.trpc.ts:678`, router `src/transport/spans.trpc.ts:10`.
 
 | Procedure                  | Kind  | Gate                     | Input              | Output                   |
 | -------------------------- | ----- | ------------------------ | ------------------ | ------------------------ |
@@ -1545,7 +1545,7 @@ interface Input {
 type Output = z.infer<typeof spansForTraceSchema>; // ../contract/src/trace.responses.ts:63
 
 // spans.getForPromptStudio
-// Input: inline, ../contract/src/traces.trpc.ts:683
+// Input: inline, ../contract/src/traces.trpc.ts:685
 interface Input {
   projectId: string;
   spanId: string;
@@ -1689,39 +1689,45 @@ interface Input {
 interface Input {
   projectId: string;
   traceIds: string[];
+  timeRange?: {
+    from: number;
+    to: number;
+    live?: boolean;
+  };
+  includeSpans?: boolean;
   withEditOverlay?: boolean;
 }
-// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:225)
+// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:227)
 
 // traces.getFormattedSpansDigest
-// Input: inline, ../contract/src/traces.trpc.ts:229
+// Input: inline, ../contract/src/traces.trpc.ts:231
 interface Input {
   projectId: string;
   traceIds: string[];
   withEditOverlay?: boolean;
 }
-// Output: inline, ../contract/src/traces.trpc.ts:235
+// Output: inline, ../contract/src/traces.trpc.ts:237
 type Output = Record<string, string>;
 
 // traces.getTracesWithSpansByThreadIds
-// Input: inline, ../contract/src/traces.trpc.ts:239
+// Input: inline, ../contract/src/traces.trpc.ts:241
 interface Input {
   projectId: string;
   threadIds: string[];
   withEditOverlay?: boolean;
 }
-// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:245)
+// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:247)
 
 // traces.getSampleTracesDataset
-// Input: z.object({ ...traceFilterInputSchema.shape, ...sampleExtrasSchema.shape }) (inline, ../contract/src/traces.trpc.ts:248)
-// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:249)
+// Input: z.object({ ...traceFilterInputSchema.shape, ...sampleExtrasSchema.shape }) (inline, ../contract/src/traces.trpc.ts:250)
+// Output: traceSchema.array() (inline, ../contract/src/traces.trpc.ts:251)
 
 // traces.getSampleTraces
-// Input: z.object({ ...traceFilterInputSchema.shape, ...sampleExtrasSchema.shape, query: z.string(… (inline, ../contract/src/traces.trpc.ts:253)
-// Output: z.object({ ...traceSchema.shape, passesPreconditions: z.boolean() }).array() (inline, ../contract/src/traces.trpc.ts:262)
+// Input: z.object({ ...traceFilterInputSchema.shape, ...sampleExtrasSchema.shape, query: z.string(… (inline, ../contract/src/traces.trpc.ts:255)
+// Output: z.object({ ...traceSchema.shape, passesPreconditions: z.boolean() }).array() (inline, ../contract/src/traces.trpc.ts:264)
 
 // traces.getFieldNames
-// Input: inline, ../contract/src/traces.trpc.ts:265
+// Input: inline, ../contract/src/traces.trpc.ts:267
 interface Input {
   projectId: string;
   startDate: number;
@@ -1730,7 +1736,7 @@ interface Input {
 type Output = z.infer<typeof distinctFieldNamesResultSchema>; // ../contract/src/trace-read.contract.ts:232
 
 // traces.getFieldRedactionStatus
-// Input: inline, ../contract/src/traces.trpc.ts:270
+// Input: inline, ../contract/src/traces.trpc.ts:272
 interface Input {
   projectId: string;
 }
@@ -1747,23 +1753,23 @@ interface Output {
 }
 
 // traces.getAllForDownload
-// Input: z.object({ ...traceListInputSchema.shape, ...downloadExtrasSchema.shape, pageSize: z.numb… (inline, ../contract/src/traces.trpc.ts:275)
+// Input: z.object({ ...traceListInputSchema.shape, ...downloadExtrasSchema.shape, pageSize: z.numb… (inline, ../contract/src/traces.trpc.ts:277)
 type Output = z.infer<typeof tracesForProjectResultSchema>; // ../contract/src/trace-read.contract.ts:202
 
 // traces.onTraceUpdate
-// Input: inline, ../contract/src/traces.trpc.ts:288
+// Input: inline, ../contract/src/traces.trpc.ts:290
 interface Input {
   projectId: string;
 }
-// Output: inline, ../contract/src/traces.trpc.ts:289
+// Output: inline, ../contract/src/traces.trpc.ts:291
 type Output = unknown;
 
 // traces.list
-// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, sort: sortSchema, page: z.n… (inline, ../contract/src/traces.trpc.ts:297)
+// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, sort: sortSchema, page: z.n… (inline, ../contract/src/traces.trpc.ts:299)
 type Output = z.infer<typeof tracesListPageSchema>; // ../contract/src/trace.responses.ts:126
 
 // traces.listEvents
-// Input: inline, ../contract/src/traces.trpc.ts:320
+// Input: inline, ../contract/src/traces.trpc.ts:322
 interface Input {
   projectId: string;
   traceIds: string[];
@@ -1788,14 +1794,14 @@ type Output = Record<
 >;
 
 // traces.newCount
-// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, since: z.number(), query: z… (inline, ../contract/src/traces.trpc.ts:330)
+// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, since: z.number(), query: z… (inline, ../contract/src/traces.trpc.ts:332)
 // Output: tracesNewCountSchema, ../contract/src/trace.responses.ts:159
 interface Output {
   count: number;
 }
 
 // traces.suggest
-// Input: inline, ../contract/src/traces.trpc.ts:342
+// Input: inline, ../contract/src/traces.trpc.ts:344
 interface Input {
   projectId: string;
   field: string;
@@ -1808,7 +1814,7 @@ interface Output {
 }
 
 // traces.conversationContext
-// Input: inline, ../contract/src/traces.trpc.ts:358
+// Input: inline, ../contract/src/traces.trpc.ts:360
 interface Input {
   projectId: string;
   conversationId: string;
@@ -1817,23 +1823,23 @@ interface Input {
 type Output = z.infer<typeof tracesConversationContextSchema>; // ../contract/src/trace.responses.ts:189
 
 // traces.discover
-// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, query: z.string().nullish()… (inline, ../contract/src/traces.trpc.ts:374)
+// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, query: z.string().nullish()… (inline, ../contract/src/traces.trpc.ts:376)
 type Output = z.infer<typeof discoverResultSchema>; // ../contract/src/features/list/trace-list-view.ts:173
 
 // traces.facets
-// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, query: z.string().nullish()… (inline, ../contract/src/traces.trpc.ts:386)
+// Input: z.object({ projectId: z.string(), timeRange: timeRangeSchema, query: z.string().nullish()… (inline, ../contract/src/traces.trpc.ts:388)
 type Output = z.infer<typeof discoverResultSchema>; // ../contract/src/features/list/trace-list-view.ts:173
 
 // traces.onDiscoverUpdate
-// Input: inline, ../contract/src/traces.trpc.ts:401
+// Input: inline, ../contract/src/traces.trpc.ts:403
 interface Input {
   projectId: string;
 }
-// Output: inline, ../contract/src/traces.trpc.ts:402
+// Output: inline, ../contract/src/traces.trpc.ts:404
 type Output = unknown;
 
 // traces.facetValues
-// Input: inline, ../contract/src/traces.trpc.ts:406
+// Input: inline, ../contract/src/traces.trpc.ts:408
 interface Input {
   projectId: string;
   timeRange: {
@@ -1857,7 +1863,7 @@ interface Output {
 }
 
 // traces.aiQuery
-// Input: inline, ../contract/src/traces.trpc.ts:420
+// Input: inline, ../contract/src/traces.trpc.ts:422
 interface Input {
   projectId: string;
   prompt: string;
@@ -1882,7 +1888,7 @@ type Output =
     };
 
 // traces.aiAction
-// Input: inline, ../contract/src/traces.trpc.ts:431
+// Input: inline, ../contract/src/traces.trpc.ts:433
 interface Input {
   projectId: string;
   prompt: string;
@@ -1911,7 +1917,7 @@ type Input = z.infer<typeof routeSearchInputSchema>; // ../contract/src/features
 type Output = z.infer<typeof routeSearchResultSchema>; // ../contract/src/features/query/trace-search-route.ts:134
 
 // traces.header
-// Input: inline, ../contract/src/traces.trpc.ts:450
+// Input: inline, ../contract/src/traces.trpc.ts:452
 interface Input {
   projectId: string;
   traceId: string;
@@ -1922,7 +1928,7 @@ interface Input {
 type Output = z.infer<typeof traceHeaderSchema>; // ../contract/src/trace-view.contract.ts:154
 
 // traces.changeName
-// Input: inline, ../contract/src/traces.trpc.ts:462
+// Input: inline, ../contract/src/traces.trpc.ts:464
 interface Input {
   projectId: string;
   traceId: string;
@@ -1935,7 +1941,7 @@ interface Output {
 }
 
 // traces.changeMetadata
-// Input: inline, ../contract/src/traces.trpc.ts:472
+// Input: inline, ../contract/src/traces.trpc.ts:474
 interface Input {
   projectId: string;
   traceId: string;
@@ -1944,7 +1950,7 @@ interface Input {
 type Output = z.infer<typeof traceMetadataResponseSchema>; // ../contract/src/trace-rest.schemas.ts:261
 
 // traces.evals
-// Input: inline, ../contract/src/traces.trpc.ts:482
+// Input: inline, ../contract/src/traces.trpc.ts:484
 interface Input {
   projectId: string;
   traceId: string;
@@ -1953,7 +1959,7 @@ interface Input {
 type Output = z.infer<typeof tracesEvaluationRunsSchema>; // ../contract/src/trace.responses.ts:216
 
 // traces.traceLogs
-// Input: inline, ../contract/src/traces.trpc.ts:492
+// Input: inline, ../contract/src/traces.trpc.ts:494
 interface Input {
   projectId: string;
   traceId: string;
@@ -1974,7 +1980,7 @@ type Output = {
 }[];
 
 // traces.spansPaginated
-// Input: inline, ../contract/src/traces.trpc.ts:502
+// Input: inline, ../contract/src/traces.trpc.ts:504
 interface Input {
   projectId: string;
   traceId: string;
@@ -1986,7 +1992,7 @@ interface Input {
 type Output = z.infer<typeof tracesSpansPageSchema>; // ../contract/src/trace.responses.ts:203
 
 // traces.spansDelta
-// Input: inline, ../contract/src/traces.trpc.ts:514
+// Input: inline, ../contract/src/traces.trpc.ts:516
 interface Input {
   projectId: string;
   traceId: string;
@@ -1997,7 +2003,7 @@ interface Input {
 type Output = z.infer<typeof tracesSpansDeltaSchema>; // ../contract/src/trace.responses.ts:208
 
 // traces.spanTreePaginated
-// Input: inline, ../contract/src/traces.trpc.ts:529
+// Input: inline, ../contract/src/traces.trpc.ts:531
 interface Input {
   projectId: string;
   traceId: string;
@@ -2013,7 +2019,7 @@ interface Input {
 type Output = z.infer<typeof spanTreePageSchema>; // ../contract/src/trace.ts:50
 
 // traces.spanTreeDelta
-// Input: inline, ../contract/src/traces.trpc.ts:538
+// Input: inline, ../contract/src/traces.trpc.ts:540
 interface Input {
   projectId: string;
   traceId: string;
@@ -2024,7 +2030,7 @@ interface Input {
 type Output = z.infer<typeof tracesSpanTreeNodesSchema>; // ../contract/src/trace.responses.ts:224
 
 // traces.spanTree
-// Input: inline, ../contract/src/traces.trpc.ts:548
+// Input: inline, ../contract/src/traces.trpc.ts:550
 interface Input {
   projectId: string;
   traceId: string;
@@ -2034,7 +2040,7 @@ interface Input {
 type Output = z.infer<typeof tracesSpanTreeNodesSchema>; // ../contract/src/trace.responses.ts:224
 
 // traces.spanLangwatchSignals
-// Input: inline, ../contract/src/traces.trpc.ts:563
+// Input: inline, ../contract/src/traces.trpc.ts:565
 interface Input {
   projectId: string;
   traceId: string;
@@ -2051,7 +2057,7 @@ type Output = {
 }[];
 
 // traces.spansFull
-// Input: inline, ../contract/src/traces.trpc.ts:578
+// Input: inline, ../contract/src/traces.trpc.ts:580
 interface Input {
   projectId: string;
   traceId: string;
@@ -2061,7 +2067,7 @@ interface Input {
 type Output = z.infer<typeof tracesSpanDetailsSchema>; // ../contract/src/trace.responses.ts:237
 
 // traces.agentCallGraph
-// Input: inline, ../contract/src/traces.trpc.ts:589
+// Input: inline, ../contract/src/traces.trpc.ts:591
 interface Input {
   projectId: string;
   traceId: string;
@@ -2071,7 +2077,7 @@ interface Input {
 type Output = z.infer<typeof agentCallGraphSchema>; // ../contract/src/trace-read.contract.ts:289
 
 // traces.spanDetail
-// Input: inline, ../contract/src/traces.trpc.ts:599
+// Input: inline, ../contract/src/traces.trpc.ts:601
 interface Input {
   projectId: string;
   traceId: string;
@@ -2083,7 +2089,7 @@ interface Input {
 type Output = z.infer<typeof spanDetailSchema>; // ../contract/src/trace-view.contract.ts:297
 
 // traces.resourceInfo
-// Input: inline, ../contract/src/traces.trpc.ts:617
+// Input: inline, ../contract/src/traces.trpc.ts:619
 interface Input {
   projectId: string;
   traceId: string;
@@ -2093,7 +2099,7 @@ interface Input {
 type Output = z.infer<typeof traceResourceInfoSchema>; // ../contract/src/trace-view.contract.ts:358
 
 // traces.traceEvents
-// Input: inline, ../contract/src/traces.trpc.ts:631
+// Input: inline, ../contract/src/traces.trpc.ts:633
 interface Input {
   projectId: string;
   traceId: string;

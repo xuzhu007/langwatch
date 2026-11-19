@@ -2,8 +2,7 @@ name: Fork service images
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["upgrade/upstream-3.25.0"]
+  workflow_call:
 
 permissions:
   contents: read

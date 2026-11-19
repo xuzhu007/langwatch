@@ -591,7 +591,7 @@ type Output = z.infer<typeof costRuleMatchingSpansPreviewSchema>; // ../contract
 
 ### `modelProvider`
 
-Contract `../contract/src/model-provider.trpc.ts:44`, router `src/transport/model-provider.trpc.ts:46`.
+Contract `../contract/src/model-provider.trpc.ts:44`, router `src/transport/model-provider.trpc.ts:50`.
 
 | Procedure                                         | Kind     | Gate                                                                                                                                                                                                                                                                   | Input                                                  | Output                                    |
 | ------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------- |
