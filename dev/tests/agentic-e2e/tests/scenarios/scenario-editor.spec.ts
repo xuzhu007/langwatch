@@ -95,7 +95,7 @@ test.describe("Scenario Editor", () => {
     await whenIWriteCriteria(page, ["Agent acknowledges the issue"]);
 
     // And I click "Save"
-    await whenIClickSave(page);
+    await whenIClickSave(page, "created");
 
     // Then the scenario appears in the list
     await thenScenarioAppearsInList(page, title);
@@ -122,7 +122,7 @@ test.describe("Scenario Editor", () => {
     await whenIChangeTitleTo(page, updatedTitle);
 
     // And I click "Save"
-    await whenIClickSave(page);
+    await whenIClickSave(page, "updated");
 
     // Then I see the updated title in the list
     await thenScenarioAppearsInList(page, updatedTitle);
