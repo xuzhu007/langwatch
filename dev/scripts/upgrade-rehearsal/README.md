@@ -21,6 +21,12 @@ bash dev/scripts/upgrade-rehearsal/rehearse.sh --origin main --build-main --buil
 bash dev/scripts/upgrade-rehearsal/rehearse.sh --origin empty --build-head
 ```
 
+For the 3.25 fork rehearsal, use the image built from `d71a11654b7316f68fadae742472808bc15dc972`
+with `--origin main --old-image <previous-fork-image> --head-image <candidate-fork-image>
+--check-evaluation-rollback`. The previous fork appends a span to a trace that 3.25 ingested and
+evaluated, after the evaluation outcome event is present in ClickHouse. Both images must read
+the evaluation and the new span, including after re-upgrade.
+
 Reuse built images with `--old-image` and `--head-image`. `--keep` leaves the stack up for
 inspection. The run directory defaults to `.claude/tmp/upgrade-rehearsal/<origin>-<order>-<id>/`
 and holds `report.md`, `report.json` and every piece of evidence under `evidence/`.

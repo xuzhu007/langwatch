@@ -52,6 +52,7 @@ describe("@langwatch/ksuid contract", () => {
       timestamp: 1_700_003_839,
       instance: INSTANCE,
       sequenceId: 0,
+      layout: "v1-legacy",
     });
 
     expect(recreated.toString()).toBe(historicalId);

@@ -23,6 +23,7 @@ SEED_PER_KIND=1
 RUN_DIR=""
 KEEP=0
 PLAN_ONLY=0
+CHECK_EVALUATION_ROLLBACK=0
 THROUGH=5
 SCALE=0
 SCALE_PROJECTS=20000
@@ -36,6 +37,7 @@ usage: rehearse.sh [--origin 3.20.1|main|empty] [--old-image IMAGE | --build-mai
                    [--settle-seconds N] [--drill-seconds N] [--seed-traces N] [--seed-per-kind N]
                    [--through 2|3|4|5] [--scale [--scale-projects N] [--scale-users N]]
                    [--bounds FILE] [--run-dir DIR] [--keep] [--plan-only]
+                   [--check-evaluation-rollback]
 EOF
 }
 
@@ -61,6 +63,7 @@ parse_args() {
       --run-dir) RUN_DIR="${2:?}"; shift 2 ;;
       --keep) KEEP=1; shift ;;
       --plan-only) PLAN_ONLY=1; shift ;;
+      --check-evaluation-rollback) CHECK_EVALUATION_ROLLBACK=1; shift ;;
       --through) THROUGH="${2:?}"; shift 2 ;;
       --scale) SCALE=1; shift ;;
       --scale-projects) SCALE_PROJECTS="${2:?}"; shift 2 ;;
@@ -91,6 +94,9 @@ resolve_plan() {
   case "$THROUGH" in 2 | 3 | 4 | 5) ;; *) die_usage "unknown --through: $THROUGH (2 to 5)" ;; esac
   if [[ "$ORIGIN" == "empty" && "$THROUGH" -gt 2 && "$THROUGH" -lt 5 ]]; then
     die_usage "origin empty has no old image to roll back to; use --through 2 or 5"
+  fi
+  if [[ "$CHECK_EVALUATION_ROLLBACK" == 1 && ( "$ORIGIN" != main || "$THROUGH" -lt 4 ) ]]; then
+    die_usage "--check-evaluation-rollback requires a fork image origin and phases 3 and 4"
   fi
   [[ -n "$BOUNDS" && ! -f "$BOUNDS" ]] && die_usage "no bounds file: $BOUNDS"
   if [[ -z "$HEAD_IMAGE" && "$BUILD_HEAD" -eq 0 ]]; then
@@ -451,6 +457,33 @@ phase2_collect() {
 
 head_task() { compose run --rm -w /app/apps/tasks head-migrate pnpm --silent task "$@"; }
 
+evaluation_rollback_probe() {
+  local mode="$1" port="$2" status=0
+  APP_BASE="http://localhost:$port" APP_ORIGIN="http://localhost:${OLD_APP_PORT}" \
+    SEED_EMAIL="$SEED_EMAIL" SEED_PASSWORD="$SEED_PASSWORD" \
+    SEEDS="$RUN_DIR/evidence/product-seeds.json" \
+    node "$HERE/evaluation-rollback.mjs" "$mode" "$RUN_DIR/evidence/evaluation-rollback-fixture.json" \
+    >"$RUN_DIR/evidence/logs/evaluation-rollback-$mode.log" 2>&1 || status=$?
+  printf '%s\n' "$status" >"$RUN_DIR/evidence/evaluation-rollback-$mode.exit"
+}
+
+wait_for_evaluation_event() {
+  local fixture="$RUN_DIR/evidence/evaluation-rollback-fixture.json" trace project count=0
+  [[ -s "$fixture" ]] || return 0
+  trace="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).traceId' "$fixture")"
+  project="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).projectId' "$fixture")"
+  local deadline=$((SECONDS + 90))
+  while ((SECONDS < deadline)); do
+    count="$(compose exec -T clickhouse clickhouse-client --password langwatch --database langwatch \
+      --param_trace="$trace" --param_project="$project" \
+      --query "SELECT count() FROM event_log WHERE TenantId = {project:String} AND AggregateType = 'trace' AND AggregateId = {trace:String} AND EventType = 'lw.obs.trace.evaluation_outcome_recorded'" \
+      2>>"$RUN_DIR/evidence/logs/evaluation-rollback-record.log" || echo 0)"
+    [[ "$count" =~ ^[1-9][0-9]*$ ]] && break
+    sleep 2
+  done
+  printf '%s\n' "$count" >"$RUN_DIR/evidence/evaluation-rollback-event.count"
+}
+
 # The smoke's psql, run in the postgres container; the head database's tables live in schema mydb.
 write_psql_shim() {
   mkdir -p "$RUN_DIR/bin"
@@ -467,6 +500,11 @@ EOF
 # Phase 3: head stops, the old image starts on head's schema with no head upgrade (a Helm rollback).
 phase3_rollback() {
   local developer=false pre=0 serving=false smoke=1 email="rollback+${RUN_ID}@rehearsal.test"
+  if [[ "$CHECK_EVALUATION_ROLLBACK" == 1 ]]; then
+    log "phase 3: recording an evaluation through the candidate before rollback"
+    evaluation_rollback_probe record "$HEAD_API_PORT"
+    wait_for_evaluation_event
+  fi
   if [[ "$ORIGIN" == "3.20.1" ]]; then
     log "phase 3: head writes a DEVELOPER membership and joiner role (P31)"
     psql_at "UPDATE mydb.\"OrganizationUser\" SET role = 'DEVELOPER' WHERE \"userId\" = 'rh_${RUN_ID}_u_never' AND \"organizationId\" = 'rh_${RUN_ID}_org_a'; UPDATE mydb.\"Organization\" SET \"joinerRole\" = 'DEVELOPER' WHERE id = 'rh_${RUN_ID}_org_a'" \
@@ -500,6 +538,10 @@ phase3_rollback() {
       APP_BASE="http://localhost:${OLD_APP_PORT}" SMOKE_EMAIL="$email" SMOKE_PASSWORD="$password" \
         SMOKE_TRPC_FORMAT="$(old_trpc_format)" SMOKE_LABEL="rollback" node "$REPO_ROOT/dev/scripts/migration-compat-smoke/smoke.mjs" \
         >>"$RUN_DIR/evidence/logs/rollback-smoke.log" 2>&1 || smoke=$?
+    fi
+    if [[ "$CHECK_EVALUATION_ROLLBACK" == 1 ]]; then
+      log "phase 3: appending a span to the evaluated trace through the previous fork"
+      evaluation_rollback_probe append "$OLD_APP_PORT"
     fi
     sleep 30
   fi
@@ -558,6 +600,10 @@ phase4_reupgrade() {
   ledger_query ledger-steps-reupgrade.json
   snapshot_queues queues-reupgrade.json
   printf '{"migrateExit":%s}' "$REUPGRADE_EXIT" >"$RUN_DIR/evidence/reupgrade.json"
+  if [[ "$CHECK_EVALUATION_ROLLBACK" == 1 ]]; then
+    log "phase 4: reading the candidate evaluation and the rollback span after re-upgrade"
+    evaluation_rollback_probe check "$HEAD_API_PORT"
+  fi
 }
 
 # Phase 5: a second upgrade run over a settled ledger applies nothing.
@@ -594,8 +640,8 @@ main() {
   RUN_DIR="$(cd "$RUN_DIR" && pwd)" # compose resolves a relative env_file against compose.yml's directory
   write_env_file
   node -e 'process.stdout.write(JSON.stringify(Object.fromEntries(process.argv.slice(1).map((kv) => kv.split(/=(.*)/s).slice(0, 2))), null, 2))' \
-    $plan "startedAt=$(date -u +%FT%TZ)" "runId=$RUN_ID" |
-    node -e 'const p=JSON.parse(require("node:fs").readFileSync(0,"utf8")); process.stdout.write(JSON.stringify({origin:p.origin, oldImage:p.old_image||null, headImage:p.head_image, order:p.order, startedAt:p.startedAt, runId:p.runId}, null, 2))' \
+    $plan "startedAt=$(date -u +%FT%TZ)" "runId=$RUN_ID" "checkEvaluationRollback=$CHECK_EVALUATION_ROLLBACK" |
+    node -e 'const p=JSON.parse(require("node:fs").readFileSync(0,"utf8")); process.stdout.write(JSON.stringify({origin:p.origin, oldImage:p.old_image||null, headImage:p.head_image, order:p.order, startedAt:p.startedAt, runId:p.runId, checkEvaluationRollback:p.checkEvaluationRollback==="1"}, null, 2))' \
       >"$RUN_DIR/evidence/run.json"
   trap teardown EXIT
   [[ -n "$BOUNDS" ]] && cp "$BOUNDS" "$RUN_DIR/evidence/bounds.json"

@@ -4,7 +4,7 @@ name: Upgrade rehearsal
 on:
   workflow_dispatch:
   push:
-    branches: ["upgrade/upstream-3.23.0"]
+    branches: ["upgrade/upstream-3.25.0"]
 
 permissions:
   contents: read
@@ -15,13 +15,14 @@ concurrency:
 
 jobs:
   rehearse:
-    name: Rehearse from ${{ matrix.origin }}
+    name: Rehearse the release image
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        origin: ["main", "empty"]
+    timeout-minutes: 180
+    env:
+      OLD_FORK_COMMIT: d71a11654b7316f68fadae742472808bc15dc972
+      OLD_FORK_IMAGE: langwatch-fork:3.23.0-d71a11654
+      HEAD_IMAGE: langwatch-fork:3.25.0
+      REHEARSAL_IS_SAAS: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -34,48 +35,77 @@ jobs:
           node-version: "24.22.1"
 
       - name: Build the release image
+        id: candidate
         run: |
           docker build -f infra/docker/Dockerfile \
             --build-arg LANGWATCH_BUILD_COMMIT="${GITHUB_SHA}" \
-            -t langwatch-fork:3.23.0 .
+            -t "$HEAD_IMAGE" .
+          echo "image_id=$(docker image inspect --format '{{.Id}}' "$HEAD_IMAGE")" >> "$GITHUB_OUTPUT"
 
-      - name: Rehearse the upgrade
-        env:
-          ORIGIN: ${{ matrix.origin }}
-          REHEARSAL_IS_SAAS: "false"
+      - name: Build the previous fork image
         run: |
-          args=(--origin "$ORIGIN" --head-image langwatch-fork:3.23.0)
-          if [[ "$ORIGIN" == "main" ]]; then args+=(--build-main); fi
-          run_dir="${RUNNER_TEMP}/upgrade-rehearsal/${ORIGIN}"
-          bash dev/scripts/upgrade-rehearsal/rehearse.sh "${args[@]}" --run-dir "$run_dir"
+          git archive --format=tar "$OLD_FORK_COMMIT" |
+            docker build -f infra/docker/Dockerfile \
+              --build-arg LANGWATCH_BUILD_COMMIT="$OLD_FORK_COMMIT" \
+              -t "$OLD_FORK_IMAGE" -
+
+      - name: Rehearse upgrade, rollback and re-upgrade from the previous fork
+        id: fork
+        run: |
+          run_dir="${RUNNER_TEMP}/upgrade-rehearsal/main"
+          bash dev/scripts/upgrade-rehearsal/rehearse.sh --origin main \
+            --old-image "$OLD_FORK_IMAGE" --head-image "$HEAD_IMAGE" \
+            --check-evaluation-rollback --run-dir "$run_dir"
           node dev/scripts/upgrade-rehearsal/assert-report.mjs "$run_dir"
 
-      - name: Upload rehearsal evidence
+      - name: Rehearse an empty install
+        id: empty
+        if: ${{ !cancelled() && steps.candidate.outcome == 'success' }}
+        run: |
+          run_dir="${RUNNER_TEMP}/upgrade-rehearsal/empty"
+          bash dev/scripts/upgrade-rehearsal/rehearse.sh --origin empty \
+            --head-image "$HEAD_IMAGE" --run-dir "$run_dir"
+          node dev/scripts/upgrade-rehearsal/assert-report.mjs "$run_dir"
+
+      - name: Upload fork rehearsal evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: upgrade-rehearsal-${{ matrix.origin }}
+          name: upgrade-rehearsal-main
           path: |
-            ${{ runner.temp }}/upgrade-rehearsal/**/report.*
-            ${{ runner.temp }}/upgrade-rehearsal/**/evidence/**
-            ${{ runner.temp }}/upgrade-rehearsal/**/build.log
+            ${{ runner.temp }}/upgrade-rehearsal/main/report.*
+            ${{ runner.temp }}/upgrade-rehearsal/main/evidence/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload empty-install rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upgrade-rehearsal-empty
+          path: |
+            ${{ runner.temp }}/upgrade-rehearsal/empty/report.*
+            ${{ runner.temp }}/upgrade-rehearsal/empty/evidence/**
           if-no-files-found: warn
           retention-days: 14
 
       - name: Package the verified release image
-        if: success() && matrix.origin == 'empty'
+        if: steps.fork.outcome == 'success' && steps.empty.outcome == 'success'
+        env:
+          TESTED_IMAGE_ID: ${{ steps.candidate.outputs.image_id }}
         run: |
+          test "$(docker image inspect --format '{{.Id}}' "$HEAD_IMAGE")" = "$TESTED_IMAGE_ID"
           mkdir -p image-artifact
-          docker save langwatch-fork:3.23.0 | gzip > image-artifact/langwatch-3.23.0.tar.gz
+          docker save "$HEAD_IMAGE" | gzip > image-artifact/langwatch-3.25.0.tar.gz
           cd image-artifact
-          sha256sum langwatch-3.23.0.tar.gz > SHA256SUMS
+          sha256sum langwatch-3.25.0.tar.gz > SHA256SUMS
           printf '%s\n' "${GITHUB_SHA}" > SOURCE_COMMIT
 
       - name: Upload the release image
-        if: success() && matrix.origin == 'empty'
+        if: steps.fork.outcome == 'success' && steps.empty.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: langwatch-self-hosted-3.23.0
+          name: langwatch-self-hosted-3.25.0
           path: image-artifact/
           compression-level: 0
           retention-days: 7

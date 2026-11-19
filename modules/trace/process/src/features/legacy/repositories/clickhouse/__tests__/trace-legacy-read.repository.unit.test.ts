@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TraceCanonicalisationService } from "#features/derivation/services/trace-canonicalisation.service";
 
 import { ownProof } from "../../../../../__tests__/support/authorization-proofs.fixture.ts";
-import { mappedLegacyRead } from "./support/legacy-trace-mapping.support.ts";
+import { fencedOver, mappedLegacyRead } from "./support/legacy-trace-mapping.support.ts";
 
 const OWN_READ = ownProof({ projectId: "proj_123" });
 
@@ -99,7 +99,7 @@ describe("TraceLegacyReadClickHouseRepository", () => {
     ParentTraceId: null,
     ParentIsRemote: null,
     Sampled: true,
-    StartTime: Date.now(),
+    StartTimeMs: Date.now(),
     EndTime: Date.now() + 100,
     DurationMs: 100,
     SpanName: "test-span",
@@ -170,6 +170,38 @@ describe("TraceLegacyReadClickHouseRepository", () => {
         fromMs: startDate - 2 * 24 * 60 * 60 * 1000,
         toMs: endDate + 2 * 24 * 60 * 60 * 1000,
       });
+    });
+
+    /** @scenario "Traces the resolve finds no filed summary for read only the epoch partition" */
+    it("keeps all summary-only batches in the epoch partition for unfiled traces", async () => {
+      const traceIds = Array.from({ length: 26 }, (_, index) => `trace-${index}`);
+      const rows = traceIds.map((id) => ({ ...makeSummaryRow(id), ts_OccurredAt: 0 }));
+      mockClickHouseQuery
+        .mockResolvedValueOnce({ json: () => Promise.resolve([]) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve(rows.slice(0, 25)) })
+        .mockResolvedValueOnce({ json: () => Promise.resolve(rows.slice(25)) });
+      const { TraceLegacyReadClickHouseRepository } =
+        await import("../trace-legacy-read.repository.ts");
+      const repository = TraceLegacyReadClickHouseRepository.create({
+        clickhouse: fencedOver(testResolveClickHouseClient),
+      });
+
+      const result = await repository.findTracesWithSpans({
+        authorization: OWN_READ,
+        projectId: "proj_123",
+        traceIds,
+        includeSpans: false,
+        retentionDays: undefined,
+      });
+
+      expect(result.map(({ summary }) => summary.traceId)).toEqual(traceIds);
+      expect(mockClickHouseQuery).toHaveBeenCalledTimes(3);
+      const summaryCalls = mockClickHouseQuery.mock.calls.slice(1);
+      expect(summaryCalls.map(([call]) => call.query_params.traceIds.length)).toEqual([25, 1]);
+      for (const [call] of summaryCalls) {
+        expect(call.query).not.toContain("FROM stored_spans");
+        expect(call.query_params).toMatchObject({ fromMs: 0, toMs: 0 });
+      }
     });
   });
 
@@ -1356,7 +1388,8 @@ describe("TraceLegacyReadClickHouseRepository", () => {
         expect(summaryCall.query_params.toMs).toBe(2_000_000 + TWO_DAYS_MS);
       });
 
-      it("keeps the summary read unbounded when the ids resolve to no rows", async () => {
+      /** @scenario "Traces the resolve finds no filed summary for read only the epoch partition" */
+      it("bounds the summary read to the epoch partition when the ids resolve to no rows", async () => {
         mockClickHouseQuery
           // resolve finds nothing -> min/max default to epoch (0) = "no window"
           .mockResolvedValueOnce({
@@ -1382,11 +1415,12 @@ describe("TraceLegacyReadClickHouseRepository", () => {
         });
 
         const summaryCall = mockClickHouseQuery.mock.calls[1]![0];
-        // No OccurredAt predicate inlined at all, and no window params.
-        expect(summaryCall.query).not.toContain("OccurredAt >=");
-        expect(summaryCall.query).not.toContain("OccurredAt <=");
-        expect(summaryCall.query_params.fromMs).toBeUndefined();
-        expect(summaryCall.query_params.toMs).toBeUndefined();
+        // Only the sentinel rows' epoch partition, in outer scan and inner dedup.
+        expect(
+          summaryCall.query.match(/OccurredAt >= fromUnixTimestamp64Milli/g) ?? [],
+        ).toHaveLength(2);
+        expect(summaryCall.query_params.fromMs).toBe(0);
+        expect(summaryCall.query_params.toMs).toBe(0);
       });
 
       it("fails open to the unbounded read when the resolve query errors", async () => {

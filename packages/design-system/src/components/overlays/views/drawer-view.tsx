@@ -798,7 +798,7 @@ export function Drawer({
             display="contents"
             onSubmit={(event) => {
               event.preventDefault();
-              // React bubbles a portalled submit to the form the overlay is rendered inside.
+              // Portalled, but React bubbles submit along the tree into an opener's own form.
               event.stopPropagation();
               if (!busy) onSubmit(event);
             }}
