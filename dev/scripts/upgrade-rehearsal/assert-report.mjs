@@ -18,6 +18,7 @@ export function assertReport({ report, steps, migrateExit }) {
     report.run.origin === "empty"
       ? ["NO-OP"]
       : ["R01", "R02", "F-1", "Q09", "TARGETS", "ROLLBACK", "REUPGRADE", "NO-OP", "SPANS"];
+  if (report.run.checkEvaluationRollback) required.push("EVALUATION-ROLLBACK");
   for (const id of required) {
     const finding = report.findings.find((entry) => entry.id === id);
     if (!finding || !["not-reproduced", "settled"].includes(finding.verdict)) {

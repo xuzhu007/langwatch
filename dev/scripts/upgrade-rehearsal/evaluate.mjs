@@ -285,6 +285,29 @@ function rollback({ rollbackRun, oldAppRollbackLog, oldWorkerRollbackLog }) {
   };
 }
 
+function evaluationRollback({ evaluationRollbackRun }) {
+  const id = "EVALUATION-ROLLBACK";
+  const title = "The rollback image can append to a trace evaluated on the candidate";
+  const evidence = [
+    "evaluation-rollback-event.count",
+    "evaluation-rollback-record.exit",
+    "evaluation-rollback-append.exit",
+    "evaluation-rollback-check.exit",
+  ];
+  const { recorded, eventCount, appended, checked } = evaluationRollbackRun ?? {};
+  if ([recorded, eventCount, appended, checked].some((value) => value === undefined)) {
+    return missing(id, title, evidence);
+  }
+  const passed = recorded === 0 && eventCount > 0 && appended === 0 && checked === 0;
+  return {
+    id,
+    title,
+    verdict: passed ? VERDICT.notReproduced : VERDICT.reproduced,
+    detail: `candidate evaluation exit ${recorded}, outcome events ${eventCount}, previous fork span exit ${appended}, re-upgrade read exit ${checked}`,
+    evidence,
+  };
+}
+
 function reupgrade({
   reupgradeRun,
   stepsBeforeRollback,
@@ -534,6 +557,7 @@ export function evaluate(evidence) {
     q09(evidence),
     targets(evidence),
     rollback(evidence),
+    evaluationRollback(evidence),
     reupgrade(evidence),
     lease(evidence),
     sigkill(evidence),
@@ -572,6 +596,10 @@ function readEvidence({ dir }) {
     existsSync(join(dir, name)) ? JSON.parse(readFileSync(join(dir, name), "utf8")) : undefined;
   const text = (name) =>
     existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : undefined;
+  const number = (name) => {
+    const value = text(name)?.trim();
+    return value && /^\d+$/.test(value) ? Number(value) : undefined;
+  };
   const run = json("run.json") ?? {};
   return {
     run,
@@ -587,6 +615,12 @@ function readEvidence({ dir }) {
     targetRows: json("ledger-targets.json"),
     gooseTargets: json("goose-targets.json"),
     rollbackRun: json("rollback.json"),
+    evaluationRollbackRun: {
+      recorded: number("evaluation-rollback-record.exit"),
+      eventCount: number("evaluation-rollback-event.count"),
+      appended: number("evaluation-rollback-append.exit"),
+      checked: number("evaluation-rollback-check.exit"),
+    },
     oldAppRollbackLog: text("logs/old-app-rollback.log"),
     oldWorkerRollbackLog: text("logs/old-worker-rollback.log"),
     reupgradeRun: json("reupgrade.json"),

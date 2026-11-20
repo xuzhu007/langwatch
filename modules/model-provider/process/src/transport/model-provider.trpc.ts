@@ -155,6 +155,7 @@ export const modelProviderTrpcTransport: TrpcRouterDeclaration<
         organizationId: input.organizationId,
         provider: input.provider,
         customKeys: input.customKeys,
+        model: input.model,
       },
       actor,
     ),

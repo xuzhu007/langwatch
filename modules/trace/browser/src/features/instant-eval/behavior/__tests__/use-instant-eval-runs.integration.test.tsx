@@ -25,6 +25,8 @@ beforeEach(() => {
     debouncedTimeRange: WINDOW,
     evalRuns: {},
   });
+  // Another suite in this worker may leave the conversations lens active, which targets threads.
+  useViewStore.setState({ activeLensId: "all-traces" });
 });
 
 describe("given a query with an eval chip", () => {

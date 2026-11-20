@@ -37,7 +37,8 @@ const CH_URL = process.env.LANGWATCH_TEST_CLICKHOUSE_URL;
 const REPO_GOOSE = fileURLToPath(new URL("../../../../.bin/goose/goose", import.meta.url));
 const GOOSE = existsSync(REPO_GOOSE) ? REPO_GOOSE : "goose";
 const ENVIRONMENT = { PATH: process.env.PATH, HOME: process.env.HOME };
-const PASSWORD = DB_URL ? decodeURIComponent(new URL(DB_URL).password) : "";
+/** Set when the test URL carries no password (trust auth); a URL with one keeps it, as CI's. */
+const PASSWORD = "e2e-pw-7731";
 const HOSTILE = `x'); DROP TABLE "_langwatch_upgrade_run"; --`;
 
 type Release = { release: string; prisma: Record<string, string>; goose: Record<string, string> };
@@ -107,6 +108,7 @@ let scratch: {
   name: string;
   dir: string;
   postgresUrl: string;
+  password: string;
   postgres: Pool;
   admin: Pool;
   clickhouse: ClickHouseClient;
@@ -119,6 +121,7 @@ beforeEach(async () => {
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(DB_URL ?? "");
   url.pathname = `/${name}`;
+  if (!url.password) url.password = PASSWORD;
   const root = createClient({ url: CH_URL });
   await root.command({ query: `CREATE DATABASE ${name}` });
   const dir = await mkdtemp(join(tmpdir(), "upgrade-e2e-"));
@@ -137,6 +140,7 @@ beforeEach(async () => {
     name,
     dir,
     postgresUrl: url.toString(),
+    password: decodeURIComponent(url.password),
     postgres: new Pool({ connectionString: url.toString(), max: 4 }),
     admin,
     clickhouse: createClient({ url: CH_URL, database: name }),
@@ -354,10 +358,10 @@ describe.skipIf(!DB_URL || !CH_URL)("the upgrade, end to end over live stores", 
     /** @scenario "No log line of a full upgrade carries the database password" */
     it("never logs the password the database URL carries", async () => {
       const lines: Line[] = [];
-      expect(scratch.postgresUrl).toContain(PASSWORD);
+      expect(decodeURIComponent(scratch.postgresUrl)).toContain(scratch.password);
       await run(runnerFor({ release: "3.21.0", lines, codeSteps: [copyNotes(async () => ({}))] }));
       expect(lines.length).toBeGreaterThan(5);
-      expect(JSON.stringify(lines)).not.toContain(PASSWORD);
+      expect(JSON.stringify(lines)).not.toContain(scratch.password);
     });
   });
 

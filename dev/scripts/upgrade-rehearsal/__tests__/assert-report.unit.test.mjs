@@ -43,6 +43,15 @@ void describe("upgrade report gate", () => {
     assert.throws(() => assertReport(input), /ROLLBACK/);
   });
 
+  /** @scenario "The rollback image appends to a trace evaluated before rolling back" */
+  void it("requires the evaluation rollback finding when requested", () => {
+    const input = evidence();
+    input.report.run.checkEvaluationRollback = true;
+    assert.throws(() => assertReport(input), /EVALUATION-ROLLBACK/);
+    input.report.findings.push({ id: "EVALUATION-ROLLBACK", verdict: "not-reproduced" });
+    assert.doesNotThrow(() => assertReport(input));
+  });
+
   /** @scenario "Only completed rehearsal evidence permits packaging an upgrade image" */
   void it("rejects a reproduced product loss even when the required upgrade checks pass", () => {
     const input = evidence();

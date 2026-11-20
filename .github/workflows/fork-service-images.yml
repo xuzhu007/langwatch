@@ -2,8 +2,7 @@ name: Fork service images
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["upgrade/upstream-3.23.0"]
+  workflow_call:
 
 permissions:
   contents: read
@@ -11,6 +10,13 @@ permissions:
 concurrency:
   group: fork-service-images-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: "3.25.0"
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   package:
@@ -22,9 +28,13 @@ jobs:
       matrix:
         include:
           - service: langwatch_nlp
+            dockerfile: infra/docker/Dockerfile.go-services
+            target: nlp
             python: /usr/bin/python3.11
             health: http://127.0.0.1:5561/healthz
           - service: langevals
+            dockerfile: infra/docker/Dockerfile.langevals
+            target: ""
             python: /usr/local/bin/python
             health: http://127.0.0.1:5562/healthcheck
     steps:
@@ -32,19 +42,27 @@ jobs:
       - name: Build the service image
         env:
           SERVICE: ${{ matrix.service }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          TARGET: ${{ matrix.target }}
         run: |
-          docker build -f "infra/docker/Dockerfile.${SERVICE}" \
-            --build-arg VERSION="3.23.0-${GITHUB_SHA}" \
-            -t "langwatch-fork-${SERVICE}:3.23.0" .
+          build_args=(-f "$DOCKERFILE")
+          if [[ -n "$TARGET" ]]; then
+            build_args+=(--target "$TARGET" --build-arg VERSION="${RELEASE_VERSION}-${GITHUB_SHA}")
+          fi
+          docker build "${build_args[@]}" \
+            -t "langwatch-fork-${SERVICE}:${RELEASE_VERSION}" .
       - name: Verify without outbound networking
         env:
           SERVICE: ${{ matrix.service }}
           PYTHON: ${{ matrix.python }}
           HEALTH: ${{ matrix.health }}
         run: |
-          docker run -d --name service-smoke --network none \
-            -e DISABLE_EVALUATORS_PRELOAD=true \
-            "langwatch-fork-${SERVICE}:3.23.0"
+          image="langwatch-fork-${SERVICE}:${RELEASE_VERSION}"
+          if [[ "$SERVICE" == langwatch_nlp ]]; then
+            docker run -d --name service-smoke --network none -e SERVER_ADDR=:5561 "$image" nlpgo
+          else
+            docker run -d --name service-smoke --network none -e DISABLE_EVALUATORS_PRELOAD=true "$image"
+          fi
           ready=false
           for attempt in $(seq 1 90); do
             if docker exec service-smoke "$PYTHON" -c \
@@ -81,14 +99,15 @@ jobs:
           SERVICE: ${{ matrix.service }}
         run: |
           mkdir -p image-artifact
-          docker save "langwatch-fork-${SERVICE}:3.23.0" | gzip > "image-artifact/${SERVICE}-3.23.0.tar.gz"
+          archive="${SERVICE}-${RELEASE_VERSION}.tar.gz"
+          docker save "langwatch-fork-${SERVICE}:${RELEASE_VERSION}" | gzip > "image-artifact/$archive"
           cd image-artifact
-          sha256sum "${SERVICE}-3.23.0.tar.gz" > SHA256SUMS
+          sha256sum "$archive" > SHA256SUMS
           printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT
       - name: Upload the service image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.service }}-self-hosted-3.23.0
+          name: ${{ matrix.service }}-self-hosted-${{ env.RELEASE_VERSION }}
           path: image-artifact/
           compression-level: 0
           retention-days: 7

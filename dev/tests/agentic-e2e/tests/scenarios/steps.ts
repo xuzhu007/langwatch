@@ -237,10 +237,10 @@ export async function thenCriteriaFieldHolds(page: Page, criteria: string[]) {
  * When I click "Save"
  * The drawer closes itself after the success toast.
  */
-export async function whenIClickSave(page: Page) {
+export async function whenIClickSave(page: Page, outcome: "created" | "updated") {
   await page.getByTestId("case-modal-save").last().click();
 
-  await expect(page.getByText(/scenario (created|updated)/i)).toBeVisible({
+  await expect(page.getByText(`Scenario ${outcome}`, { exact: true })).toBeVisible({
     timeout: 10000,
   });
   await expect(titleField(page)).not.toBeVisible({ timeout: 10000 });

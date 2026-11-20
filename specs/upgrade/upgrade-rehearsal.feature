@@ -25,6 +25,13 @@ Feature: The upgrade is rehearsed from real images before it ships
     Then there is no old image and phase 0 seeds nothing
 
   @unit
+  Scenario: The rollback image appends to a trace evaluated before rolling back
+    Given a trace with an evaluation on the candidate and a recorded evaluation outcome event
+    When the old image appends a span to the trace and the candidate is deployed again
+    Then both the old and new image can read the evaluation and appended span
+    And a requested evaluation rollback check prevents release packaging without passing evidence
+
+  @unit
   Scenario: Historical seeds remain inside the public collector ingestion window
     Given the preceding calendar month has 31 days
     When historical traces are seeded through the public collector

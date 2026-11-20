@@ -36,6 +36,9 @@
       "path": "../../modules/stored-object/process/tsconfig.build.json"
     },
     {
+      "path": "../../modules/stored-object/contract/tsconfig.build.json"
+    },
+    {
       "path": "../../modules/slack/process/tsconfig.build.json"
     },
     {
@@ -268,6 +271,9 @@
     },
     {
       "path": "../../modules/gateway/contract/tsconfig.build.json"
+    },
+    {
+      "path": "../../modules/feature-flag/contract/tsconfig.build.json"
     },
     {
       "path": "../../packages/eventing/tsconfig.build.json"

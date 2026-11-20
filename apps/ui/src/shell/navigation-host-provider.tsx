@@ -146,6 +146,7 @@ function useNavigationHostReading({
     commandBar: palette,
     presenceMenuItem,
     impersonationBanner,
+    braidsPresence,
   },
   process,
 }: {
@@ -157,6 +158,7 @@ function useNavigationHostReading({
   const activeScope = useUiScope().activeScope();
   const memory = scopeHostService.useUiScopeMemory();
   const facts = organizationFacts.useUiOrganizationFacts();
+  const braidsPresent = braidsPresence.useBraidsPresent();
   const routeReading = scopeHostService.useUiRouteReading();
   const address = useUiAddress();
   const rpc = useUiRpc();
@@ -366,7 +368,9 @@ function useNavigationHostReading({
           waiting: <LoadingScreen />,
           notFound: <UiPageNotFound />,
           hasPermission: (permission) => session.hasPermission(permission),
+          hasOrganizationPermission: (permission) => session.hasOrganizationPermission(permission),
           featureFlag: (flag) => flags.flag(flag),
+          braidsPresent,
         },
         {
           navigate: (to) => navigation.navigate(to),
@@ -399,6 +403,7 @@ function useNavigationHostReading({
       facts,
       session,
       flags,
+      braidsPresent,
       commandBarAnswer,
       langy,
       accountMenu,

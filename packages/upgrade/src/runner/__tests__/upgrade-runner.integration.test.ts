@@ -1,6 +1,7 @@
 /**
  * @vitest-environment node
  * @see specs/upgrade/upgrade-command.feature
+ * @see specs/upgrade/release-manifests.feature
  * Requires LANGWATCH_TEST_DATABASE_URL. Every test gets its own Postgres schema; the schema applier
  * is a fake that writes `_prisma_migrations` rows and reports ClickHouse targets as told.
  */
@@ -301,10 +302,11 @@ describe.skipIf(!DB_URL)("the upgrade runner", () => {
     /** @scenario "The lease is renewed on a heartbeat while the run is in progress" */
     it("renews the lease so no other runner can take it mid-run", async () => {
       let intruder: unknown = "not tried";
+      const lease = { ttlMs: 2_000, heartbeatMs: 100, waitMs: 1_000, pollMs: 50 };
       const applier = fakeApplier({
         release: "3.21.0",
         during: async () => {
-          await sleep(900);
+          await sleep(lease.ttlMs + 500);
           intruder = await ledger().acquireLease({
             name: "upgrade",
             owner: "x",
@@ -314,15 +316,9 @@ describe.skipIf(!DB_URL)("the upgrade runner", () => {
           });
         },
       });
-      const outcome = await run(
-        runnerFor({
-          release: "3.21.0",
-          applier,
-          lease: { ttlMs: 400, heartbeatMs: 100, waitMs: 1_000, pollMs: 50 },
-        }),
-      );
+      const outcome = await run(runnerFor({ release: "3.21.0", applier, lease }));
       expect(intruder).toBeNull();
-      expect(outcome.code).toBe("done");
+      expect(outcome).toMatchObject({ exitCode: 0, code: "done" });
     });
   });
 
@@ -348,6 +344,38 @@ describe.skipIf(!DB_URL)("the upgrade runner", () => {
       expect(applier.calls).toEqual([]);
       expect(outcome.message).toContain("in packages/prisma-client with DATABASE_URL set");
       expect(outcome.message).toContain("runs the upgrade again by itself");
+    });
+  });
+
+  describe("when the image declares two goose files on one step id", () => {
+    /** @scenario "Two goose files sharing a numeric prefix are refused before the upgrade registers steps" */
+    it("records the run failed naming the id and both files, and registers and applies nothing", async () => {
+      const applier = fakeApplier({ release: "3.21.0" });
+      const shared = step("clickhouse:00125", "clickhouse-schema");
+      const image = {
+        release: "3.21.0",
+        steps: [...shippedUpTo("3.21.0"), shared, shared],
+        gooseFiles: ["00001_base.sql", "00002_add.sql", "00125_a.sql", "00125_b.sql"],
+      };
+      const message =
+        "two migrations share step id clickhouse:00125: 00125_a.sql, 00125_b.sql; " +
+        "renumber the one that has not been applied yet";
+
+      const outcome = await run(runnerFor({ release: "3.21.0", applier, image }));
+
+      expect(outcome).toMatchObject({ exitCode: 1, code: "failed", message });
+      expect((await ledger().findRuns()).at(-1)).toMatchObject({
+        kind: "upgrade",
+        outcome: "failed",
+        report: expect.objectContaining({
+          code: "failed",
+          error: message,
+          step: "clickhouse:00125",
+          files: ["00125_a.sql", "00125_b.sql"],
+        }),
+      });
+      expect(await ledger().findSteps()).toEqual([]);
+      expect(applier.calls).toEqual([]);
     });
   });
 

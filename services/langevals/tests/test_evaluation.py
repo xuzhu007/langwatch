@@ -46,6 +46,7 @@ def test_run_simple_evaluation():
                 "label": None,
                 "details": None,
                 "cost": None,
+                "usage": None,
             },
             {
                 "status": "processed",
@@ -54,6 +55,7 @@ def test_run_simple_evaluation():
                 "label": None,
                 "details": None,
                 "cost": None,
+                "usage": None,
             },
             {
                 "status": "processed",
@@ -62,6 +64,7 @@ def test_run_simple_evaluation():
                 "label": None,
                 "details": "Competitors mentioned: Bob",
                 "cost": None,
+                "usage": None,
             },
         ],
     }

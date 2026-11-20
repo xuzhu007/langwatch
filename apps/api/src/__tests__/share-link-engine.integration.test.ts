@@ -7,6 +7,7 @@
 import { AUTHZ_ENGINE_MIGRATION_NAME, AuthzApi } from "@langwatch/authz-contract";
 import { parseProcessConfig } from "@langwatch/config";
 import { EventSourcing } from "@langwatch/eventing";
+import { FeatureFlagApi } from "@langwatch/feature-flag-contract";
 import { generate } from "@langwatch/ksuid";
 import { createLogger } from "@langwatch/observability";
 import {
@@ -28,7 +29,9 @@ import {
 } from "@langwatch/prisma-client/generated";
 import { bootInstalledProcess, processConfig } from "@langwatch/process";
 import { memoryStores, type StoresMemberSource } from "@langwatch/process-stores";
+import { testPeer } from "@langwatch/process/testing";
 import { createTestLogger } from "@langwatch/test-harness";
+import { createApiFixture } from "@langwatch/test-harness/api-fixture";
 import { memoryRedisDouble } from "@langwatch/test-harness/client-doubles/redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -64,6 +67,12 @@ const bootAuthz = () =>
       environment: { NODE_ENV: "test" },
     }),
     stores: liveStores(),
+    peers: [
+      testPeer({
+        token: FeatureFlagApi,
+        instance: createApiFixture<FeatureFlagApi>({ isEnabled: async () => false }),
+      }),
+    ],
   });
 
 /** The live tier over the test database; the memory stores answer every other name. */
